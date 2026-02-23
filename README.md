@@ -36,3 +36,11 @@ python manage.py runserver
 ```
 
 The script creates `.venv`, installs dependencies, optionally starts `reports-postgres` Docker container, runs `python manage.py check`, and executes `python manage.py run_etl`.
+
+### Windows quick notes
+
+- Create venv: `python -m venv reports`
+- Activate venv (CMD): `reports\Scripts\activate`
+- Activate venv (PowerShell): `.\reports\Scripts\Activate.ps1`
+
+If you see `The system cannot find the path specified` for activation, verify the folder name (`reports` vs `.venv`) and use `Scripts` (not `scripts`) on Windows.

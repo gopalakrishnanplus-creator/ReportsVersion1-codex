@@ -11,6 +11,17 @@ def ensure_bronze_tables() -> None:
             execute(f"CREATE TABLE IF NOT EXISTS bronze.{table} ({column_sql});")
 
 
+def _dedup_order_expression(columns: list[str]) -> str:
+    """Build a safe ORDER BY expression for dedup without referencing missing columns."""
+    precedence: list[str] = []
+    if "updated_at" in columns:
+        precedence.append('"updated_at"')
+    if "created_at" in columns:
+        precedence.append('"created_at"')
+    precedence.append('"_ingested_at"')
+    return f"COALESCE({', '.join(precedence)}) DESC, _record_hash DESC"
+
+
 def build_bronze() -> None:
     ensure_bronze_tables()
     execute("CREATE SCHEMA IF NOT EXISTS ops;")
@@ -32,6 +43,7 @@ def build_bronze() -> None:
         for table, columns in tables.items():
             execute(f"TRUNCATE TABLE bronze.{table};")
             base_cols = ",".join(f'"{c}"' for c in columns + AUDIT_COLUMNS)
+            dedup_order = _dedup_order_expression(columns)
             execute(
                 f"""
                 INSERT INTO bronze.{table} ({base_cols}, _bronze_deduped_at, _bronze_source_raw_ingested_at)
@@ -40,7 +52,7 @@ def build_bronze() -> None:
                     SELECT *,
                         ROW_NUMBER() OVER (
                             PARTITION BY COALESCE("id", _record_hash)
-                            ORDER BY COALESCE("updated_at", "created_at", "_ingested_at") DESC, _record_hash DESC
+                            ORDER BY {dedup_order}
                         ) AS rn
                     FROM {raw_schema}.{table}
                 ) q
