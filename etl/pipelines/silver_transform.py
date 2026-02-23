@@ -13,26 +13,28 @@ def build_silver(run_id: str) -> None:
         CREATE TABLE silver.dim_field_rep AS
         SELECT
             id,
-            full_name,
-            phone_number,
-            brand_supplied_field_rep_id,
-            is_active,
-            password_hash,
+            NULL::text AS full_name,
+            NULL::text AS phone_number,
+            field_rep_id AS brand_supplied_field_rep_id,
+            'true'::text AS is_active,
+            NULL::text AS password_hash,
             created_at,
-            updated_at,
-            brand_id,
-            user_id,
+            NULL::text AS updated_at,
+            NULL::text AS brand_id,
+            NULL::text AS user_id,
             state,
-            regexp_replace(COALESCE(phone_number,''), '[^0-9+]', '', 'g') AS field_rep_phone_normalized,
+            regexp_replace(COALESCE(NULL::text,''), '[^0-9+]', '', 'g') AS field_rep_phone_normalized,
             NULL::text AS field_rep_email_best,
             COALESCE(NULLIF(initcap(trim(state)), ''), 'UNKNOWN') AS state_normalized,
-            CASE WHEN lower(COALESCE(is_active,'')) IN ('1','true','t','yes') THEN 'true' ELSE 'false' END AS is_active_flag,
+            'true'::text AS is_active_flag,
             created_at::text AS created_at_ts,
-            updated_at::text AS updated_at_ts,
+            NULL::text AS updated_at_ts,
+            campaign_id AS campaign_id,
+            field_rep_id AS source_field_rep_id,
             NOW()::text AS _silver_updated_at,
             'PASS'::text AS _dq_status,
             NULL::text AS _dq_errors
-        FROM bronze.campaign_fieldrep
+        FROM bronze.campaign_campaignfieldrep
         """
     )
 
@@ -56,7 +58,7 @@ def build_silver(run_id: str) -> None:
             'PASS'::text AS _dq_status,
             NULL::text AS _dq_errors
         FROM bronze.doctor_viewer_doctor d
-        LEFT JOIN silver.dim_field_rep fr ON fr.id = d.rep_id
+        LEFT JOIN silver.dim_field_rep fr ON COALESCE(NULLIF(fr.source_field_rep_id,''), fr.id) = d.rep_id
         """
     )
 
@@ -159,12 +161,13 @@ def build_silver(run_id: str) -> None:
         CREATE TABLE silver.map_brand_campaign_to_campaign AS
         SELECT
             t.brand_campaign_id,
-            MIN(c.campaign_id) AS campaign_id_resolved,
-            COUNT(DISTINCT c.campaign_id) AS distinct_campaign_id_count,
-            CASE WHEN COUNT(DISTINCT c.campaign_id)=1 THEN 'PASS' ELSE 'FAIL' END AS _dq_status,
-            CASE WHEN COUNT(DISTINCT c.campaign_id)=1 THEN NULL ELSE 'Campaign mapping inconsistency' END AS _dq_errors,
+            COALESCE(MIN(cm.id::text), MIN(c.campaign_id)) AS campaign_id_resolved,
+            COUNT(DISTINCT COALESCE(cm.id::text, c.campaign_id)) AS distinct_campaign_id_count,
+            CASE WHEN COUNT(DISTINCT COALESCE(cm.id::text, c.campaign_id)) <= 1 THEN 'PASS' ELSE 'FAIL' END AS _dq_status,
+            CASE WHEN COUNT(DISTINCT COALESCE(cm.id::text, c.campaign_id)) <= 1 THEN NULL ELSE 'Campaign mapping inconsistency' END AS _dq_errors,
             NOW()::text AS _silver_updated_at
         FROM silver.fact_collateral_transaction t
+        LEFT JOIN bronze.campaign_management_campaign cm ON cm.brand_campaign_id = t.brand_campaign_id
         LEFT JOIN silver.dim_collateral c ON c.id = t.collateral_id
         GROUP BY t.brand_campaign_id
         """
@@ -186,7 +189,7 @@ def build_silver(run_id: str) -> None:
             NULL::text AS _dq_errors
         FROM silver.fact_collateral_transaction t
         LEFT JOIN silver.dim_doctor d ON d.doctor_identity_key = t.doctor_identity_key
-        LEFT JOIN silver.dim_field_rep fr ON fr.id = t.field_rep_id
+        LEFT JOIN silver.dim_field_rep fr ON COALESCE(NULLIF(fr.source_field_rep_id,''), fr.id) = t.field_rep_id
         """
     )
 

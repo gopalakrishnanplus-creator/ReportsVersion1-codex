@@ -24,10 +24,24 @@ python manage.py runserver
 
 Source extraction reads directly from configured MySQL source tables (`MYSQL_SERVER1_*` and `MYSQL_SERVER2_*` in `.env`). CSV files in the repository are reference samples only and are not used by ETL ingestion.
 
+Settings now auto-load variables from a local `.env` file at startup, so `python manage.py run_etl` uses those credentials even if your shell session has not exported them.
+
 ## Main entry points
 
 - ETL command: `etl.management.commands.run_etl`
 - Dashboard page: `/` or `/campaign/<brand_campaign_id>/`
+
+### MySQL extraction scope
+
+- **Server 1** (`MYSQL_SERVER1_*`, DB: `healthcare_forms_2`)
+  - `campaign_campaignfieldrep`
+  - `campaign_campaign`
+- **Server 2** (`MYSQL_SERVER2_*`, DB: `myproject_dev`)
+  - `campaign_management_campaign`
+  - `collateral_management_campaigncollateral`
+  - `collateral_management_collateral`
+  - `sharing_management_collateraltransaction`
+  - `doctor_viewer_doctor`
 
 ## Quick local bootstrap
 
