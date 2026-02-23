@@ -1,4 +1,4 @@
-# ReportsVersion1 — Reporting v2.1 Implementation
+# ReportsVersion1 — Reporting v2.1 Implementation 2
 
 This repository now contains a full Django + PostgreSQL medallion implementation for the In-Clinic Sharing System reporting pipeline.
 
