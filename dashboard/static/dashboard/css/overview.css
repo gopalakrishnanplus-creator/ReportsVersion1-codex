@@ -1,0 +1,9 @@
+body { font-family: Arial, sans-serif; background: #f4f6f8; margin: 0; }
+.container { max-width: 980px; margin: 0 auto; padding: 24px; }
+.selector { margin: 12px 0 20px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.tile { background: white; border-radius: 8px; padding: 14px; border: 1px solid #d9dde1; }
+.footnote { color: #606770; }
+.health.red { color: #d9363e; }
+.health.yellow { color: #f0ad00; }
+.health.green { color: #1f9d55; }
