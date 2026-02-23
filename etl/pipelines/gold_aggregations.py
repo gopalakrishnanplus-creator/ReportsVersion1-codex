@@ -131,7 +131,7 @@ def build_gold(run_id: str) -> None:
                 SELECT
                     (
                         COALESCE(max_event_date, CURRENT_DATE)
-                        + ((6 - EXTRACT(DOW FROM COALESCE(max_event_date, CURRENT_DATE))::int + 7) % 7) * interval '1 day'
+                        + ((6 - EXTRACT(DOW FROM COALESCE(max_event_date, CURRENT_DATE))::int + 7) %% 7) * interval '1 day'
                     )::date AS anchor_week_end_date
                 FROM bounds
             ),
