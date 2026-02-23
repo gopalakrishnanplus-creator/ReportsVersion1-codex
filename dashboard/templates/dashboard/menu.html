@@ -1,0 +1,37 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Campaign Menu</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}">
+</head>
+<body>
+  <main class="dashboard">
+    <section class="card header-card" style="grid-template-columns:1fr;">
+      <h1>In-Clinic Sharing Report Menu</h1>
+      <p class="subtext">Select a campaign and click View Report.</p>
+    </section>
+
+    <section class="card">
+      <table>
+        <thead>
+          <tr><th>Campaign ID</th><th>Campaign Name</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          {% for c in campaigns %}
+          <tr>
+            <td>{{ c.brand_campaign_id }}</td>
+            <td>{{ c.campaign_name }}</td>
+            <td><a class="download-btn" href="/campaign/{{ c.brand_campaign_id }}/login/">View Report</a></td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="3">No campaigns available in gold_global.campaign_registry</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
