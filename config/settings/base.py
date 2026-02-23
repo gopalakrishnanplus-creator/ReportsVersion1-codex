@@ -82,3 +82,7 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# Use cookie-based sessions so local report authentication works even when
+# Django auth/session migrations are not applied yet.
+SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"

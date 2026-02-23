@@ -56,3 +56,8 @@ If you hit `DataError: invalid input syntax for type date: "NULL"` during `run_e
 If you hit `DataError: invalid input syntax for type date: "NULL"` in GOLD (`kpi_weekly_summary`), pull latest code and rerun: weekly aggregation now normalizes literal `NULL`/blank timestamp strings before date casts.
 
 Weekly GOLD buckets are now anchored to the latest observed campaign event week (Saturday-ending), not fixed to the current week, so historical campaign activity appears in the dashboard KPIs.
+
+
+### Session/Auth note
+
+This project uses signed-cookie sessions (`SESSION_ENGINE=django.contrib.sessions.backends.signed_cookies`) for local campaign login flow, so report auth works without requiring `django_session` table migrations.
