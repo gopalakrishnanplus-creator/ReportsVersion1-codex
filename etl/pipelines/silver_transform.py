@@ -3,44 +3,14 @@ from etl.connectors.postgres import execute
 
 def ensure_silver_tables() -> None:
     execute("CREATE SCHEMA IF NOT EXISTS silver;")
-    execute(
-        """
-        CREATE TABLE IF NOT EXISTS silver.dim_field_rep AS
-        SELECT * FROM (SELECT ''::text AS id) s WHERE false;
-        """
-    )
-    execute(
-        """
-        CREATE TABLE IF NOT EXISTS silver.dim_doctor AS
-        SELECT * FROM (SELECT ''::text AS id) s WHERE false;
-        """
-    )
-    execute(
-        """
-        CREATE TABLE IF NOT EXISTS silver.dim_collateral AS
-        SELECT * FROM (SELECT ''::text AS id) s WHERE false;
-        """
-    )
-    execute(
-        """
-        CREATE TABLE IF NOT EXISTS silver.bridge_campaign_collateral_schedule AS
-        SELECT * FROM (SELECT ''::text AS id) s WHERE false;
-        """
-    )
-    execute(
-        """
-        CREATE TABLE IF NOT EXISTS silver.fact_collateral_transaction AS
-        SELECT * FROM (SELECT ''::text AS id) s WHERE false;
-        """
-    )
 
 
 def build_silver(run_id: str) -> None:
     ensure_silver_tables()
-    execute("TRUNCATE silver.dim_field_rep;")
+    execute("DROP TABLE IF EXISTS silver.dim_field_rep;")
     execute(
         """
-        INSERT INTO silver.dim_field_rep
+        CREATE TABLE silver.dim_field_rep AS
         SELECT
             id,
             full_name,
@@ -66,10 +36,10 @@ def build_silver(run_id: str) -> None:
         """
     )
 
-    execute("TRUNCATE silver.dim_doctor;")
+    execute("DROP TABLE IF EXISTS silver.dim_doctor;")
     execute(
         """
-        INSERT INTO silver.dim_doctor
+        CREATE TABLE silver.dim_doctor AS
         SELECT
             d.id,
             d.name,
@@ -90,10 +60,10 @@ def build_silver(run_id: str) -> None:
         """
     )
 
-    execute("TRUNCATE silver.dim_collateral;")
+    execute("DROP TABLE IF EXISTS silver.dim_collateral;")
     execute(
         """
-        INSERT INTO silver.dim_collateral
+        CREATE TABLE silver.dim_collateral AS
         SELECT
             *,
             CASE WHEN lower(COALESCE(is_active,'')) IN ('1','true','t','yes') THEN 'true' ELSE 'false' END AS is_active_flag,
