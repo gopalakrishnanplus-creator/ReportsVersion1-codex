@@ -1,0 +1,44 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>In-Clinic Sharing Dashboard</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}">
+</head>
+<body>
+  <main class="container">
+    <h1>In-Clinic Sharing Dashboard</h1>
+    <p class="footnote">Week = 7-day period ending on Saturday.</p>
+
+    <section class="selector">
+      <label for="campaign">Campaign</label>
+      <select id="campaign" onchange="window.location='/campaign/' + this.value + '/'">
+        {% for c in campaigns %}
+          <option value="{{ c.brand_campaign_id }}" {% if c.brand_campaign_id == selected_campaign %}selected{% endif %}>{{ c.brand_campaign_id }}</option>
+        {% endfor %}
+      </select>
+    </section>
+
+    <section class="grid">
+      {% for row in weekly_rows %}
+      <article class="tile">
+        <h3>Week {{ row.week_index }}</h3>
+        <p>Reached: {{ row.doctors_reached_unique }}</p>
+        <p>Opened: {{ row.doctors_opened_unique }}</p>
+        <p>Video >50%: {{ row.video_viewed_50_unique }}</p>
+        <p>PDF Downloads: {{ row.pdf_download_unique }}</p>
+        <p class="health {{ row.health_color|lower }}">Weekly Health: {{ row.weekly_health_score|floatformat:1 }}</p>
+      </article>
+      {% empty %}
+      <article class="tile">
+        <h3>No campaign data yet</h3>
+        <p>Run <code>python manage.py run_etl</code> to populate GOLD tables.</p>
+      </article>
+      {% endfor %}
+    </section>
+  </main>
+  <script src="{% static 'dashboard/js/overview.js' %}"></script>
+</body>
+</html>
