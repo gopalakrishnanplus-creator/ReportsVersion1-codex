@@ -54,3 +54,5 @@ If you hit `ProgrammingError: column "_dq_status" specified more than once` duri
 If you hit `DataError: invalid input syntax for type date: "NULL"` during `run_etl`, pull latest code and rerun: Silver schedule/date parsing now treats literal `NULL`/blank strings as null before casting.
 
 If you hit `DataError: invalid input syntax for type date: "NULL"` in GOLD (`kpi_weekly_summary`), pull latest code and rerun: weekly aggregation now normalizes literal `NULL`/blank timestamp strings before date casts.
+
+Weekly GOLD buckets are now anchored to the latest observed campaign event week (Saturday-ending), not fixed to the current week, so historical campaign activity appears in the dashboard KPIs.
