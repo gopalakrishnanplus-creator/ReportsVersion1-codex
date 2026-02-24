@@ -96,6 +96,8 @@ In EC2 deployment, settings now load dotenv from the first existing path in this
 
 For your server (`13.126.7.118`), keep production credentials in `/var/www/secrets/.env` or set `DJANGO_ENV_FILE=/var/www/secrets/.env` in the deploy shell.
 
+The settings loader also accepts common DB env aliases in addition to `POSTGRES_*`: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` (and `PG*` variants). This helps CI/CD pipelines that export generic DB variable names.
+
 ### Session/Auth note
 
 This project uses signed-cookie sessions (`SESSION_ENGINE=django.contrib.sessions.backends.signed_cookies`) for local campaign login flow, so report auth works without requiring `django_session` table migrations.

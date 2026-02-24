@@ -26,17 +26,42 @@ def _load_dotenv() -> None:
 
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or line.startswith("#"):
             continue
+        if line.lower().startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip("\"'")
+        if not key:
+            continue
+        # Keep explicit process env precedence when already set.
         os.environ.setdefault(key, value)
 
 
+def _env(*names: str, default: str = "") -> str:
+    """Return the first non-empty env value from a list of variable names."""
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and str(value).strip() != "":
+            return value
+    return default
+
+
+def _env_int(*names: str, default: int) -> int:
+    value = _env(*names, default=str(default))
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 _load_dotenv()
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret-key")
-DEBUG = os.getenv("DJANGO_DEBUG", "0") == "1"
+SECRET_KEY = _env("DJANGO_SECRET_KEY", default="dev-secret-key")
+DEBUG = _env("DJANGO_DEBUG", default="0") == "1"
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
@@ -83,38 +108,38 @@ ASGI_APPLICATION = "config.asgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("POSTGRES_DB", "reports"),
-        "USER": os.getenv("POSTGRES_USER", "postgres"),
-        "PASSWORD": os.getenv("POSTGRES_PASSWORD", "postgres"),
-        "HOST": os.getenv("POSTGRES_HOST", "localhost"),
-        "PORT": os.getenv("POSTGRES_PORT", "5432"),
+        "NAME": _env("POSTGRES_DB", "DB_NAME", "PGDATABASE", default="reports"),
+        "USER": _env("POSTGRES_USER", "DB_USER", "PGUSER", default="postgres"),
+        "PASSWORD": _env("POSTGRES_PASSWORD", "DB_PASSWORD", "PGPASSWORD", default="postgres"),
+        "HOST": _env("POSTGRES_HOST", "DB_HOST", "PGHOST", default="localhost"),
+        "PORT": _env("POSTGRES_PORT", "DB_PORT", "PGPORT", default="5432"),
     }
 }
 
 MYSQL_SERVER_1 = {
-    "HOST": os.getenv("MYSQL_SERVER1_HOST", "localhost"),
-    "PORT": int(os.getenv("MYSQL_SERVER1_PORT", "3306")),
-    "USER": os.getenv("MYSQL_SERVER1_USER", "root"),
-    "PASSWORD": os.getenv("MYSQL_SERVER1_PASSWORD", ""),
-    "DATABASE": os.getenv("MYSQL_SERVER1_DB", ""),
-    "CONNECT_TIMEOUT": int(os.getenv("MYSQL_SERVER1_CONNECT_TIMEOUT", "10")),
-    "READ_TIMEOUT": int(os.getenv("MYSQL_SERVER1_READ_TIMEOUT", "60")),
-    "WRITE_TIMEOUT": int(os.getenv("MYSQL_SERVER1_WRITE_TIMEOUT", "60")),
-    "SSL_MODE": os.getenv("MYSQL_SERVER1_SSL_MODE", ""),
-    "SSL_CA": os.getenv("MYSQL_SERVER1_SSL_CA", ""),
+    "HOST": _env("MYSQL_SERVER1_HOST", "MYSQL1_HOST", default="localhost"),
+    "PORT": _env_int("MYSQL_SERVER1_PORT", "MYSQL1_PORT", default=3306),
+    "USER": _env("MYSQL_SERVER1_USER", "MYSQL1_USER", default="root"),
+    "PASSWORD": _env("MYSQL_SERVER1_PASSWORD", "MYSQL1_PASSWORD", default=""),
+    "DATABASE": _env("MYSQL_SERVER1_DB", "MYSQL1_DB", default=""),
+    "CONNECT_TIMEOUT": _env_int("MYSQL_SERVER1_CONNECT_TIMEOUT", default=10),
+    "READ_TIMEOUT": _env_int("MYSQL_SERVER1_READ_TIMEOUT", default=60),
+    "WRITE_TIMEOUT": _env_int("MYSQL_SERVER1_WRITE_TIMEOUT", default=60),
+    "SSL_MODE": _env("MYSQL_SERVER1_SSL_MODE", default=""),
+    "SSL_CA": _env("MYSQL_SERVER1_SSL_CA", default=""),
 }
 
 MYSQL_SERVER_2 = {
-    "HOST": os.getenv("MYSQL_SERVER2_HOST", "localhost"),
-    "PORT": int(os.getenv("MYSQL_SERVER2_PORT", "3306")),
-    "USER": os.getenv("MYSQL_SERVER2_USER", "root"),
-    "PASSWORD": os.getenv("MYSQL_SERVER2_PASSWORD", ""),
-    "DATABASE": os.getenv("MYSQL_SERVER2_DB", ""),
-    "CONNECT_TIMEOUT": int(os.getenv("MYSQL_SERVER2_CONNECT_TIMEOUT", "10")),
-    "READ_TIMEOUT": int(os.getenv("MYSQL_SERVER2_READ_TIMEOUT", "60")),
-    "WRITE_TIMEOUT": int(os.getenv("MYSQL_SERVER2_WRITE_TIMEOUT", "60")),
-    "SSL_MODE": os.getenv("MYSQL_SERVER2_SSL_MODE", ""),
-    "SSL_CA": os.getenv("MYSQL_SERVER2_SSL_CA", ""),
+    "HOST": _env("MYSQL_SERVER2_HOST", "MYSQL2_HOST", default="localhost"),
+    "PORT": _env_int("MYSQL_SERVER2_PORT", "MYSQL2_PORT", default=3306),
+    "USER": _env("MYSQL_SERVER2_USER", "MYSQL2_USER", default="root"),
+    "PASSWORD": _env("MYSQL_SERVER2_PASSWORD", "MYSQL2_PASSWORD", default=""),
+    "DATABASE": _env("MYSQL_SERVER2_DB", "MYSQL2_DB", default=""),
+    "CONNECT_TIMEOUT": _env_int("MYSQL_SERVER2_CONNECT_TIMEOUT", default=10),
+    "READ_TIMEOUT": _env_int("MYSQL_SERVER2_READ_TIMEOUT", default=60),
+    "WRITE_TIMEOUT": _env_int("MYSQL_SERVER2_WRITE_TIMEOUT", default=60),
+    "SSL_MODE": _env("MYSQL_SERVER2_SSL_MODE", default=""),
+    "SSL_CA": _env("MYSQL_SERVER2_SSL_CA", default=""),
 }
 
 LANGUAGE_CODE = "en-us"
