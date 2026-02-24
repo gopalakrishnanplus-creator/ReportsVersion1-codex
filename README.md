@@ -85,6 +85,17 @@ If `run_etl` fails with MySQL timeout/access errors (for example `OperationalErr
 Use SSL mode `required`, `verify_ca`, or `verify_identity` when your managed MySQL/RDS setup enforces TLS.
 
 
+
+### Deployment env file path
+
+In EC2 deployment, settings now load dotenv from the first existing path in this order:
+
+1. `DJANGO_ENV_FILE` (explicit override)
+2. `/var/www/secrets/.env`
+3. `<repo>/.env`
+
+For your server (`13.126.7.118`), keep production credentials in `/var/www/secrets/.env` or set `DJANGO_ENV_FILE=/var/www/secrets/.env` in the deploy shell.
+
 ### Session/Auth note
 
 This project uses signed-cookie sessions (`SESSION_ENGINE=django.contrib.sessions.backends.signed_cookies`) for local campaign login flow, so report auth works without requiring `django_session` table migrations.

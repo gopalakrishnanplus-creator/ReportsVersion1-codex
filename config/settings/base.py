@@ -6,9 +6,24 @@ BASE_DIR = Path(BASE_DIR)
 
 
 def _load_dotenv() -> None:
-    env_path = Path(BASE_DIR) / ".env"
-    if not env_path.exists():
+    """Load environment variables from candidate dotenv files.
+
+    Precedence (first existing file wins):
+    1) DJANGO_ENV_FILE (explicit path override)
+    2) /var/www/secrets/.env (EC2 deployment default)
+    3) <repo>/.env (local development fallback)
+    """
+    explicit = os.getenv("DJANGO_ENV_FILE")
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.append(Path("/var/www/secrets/.env"))
+    candidates.append(Path(BASE_DIR) / ".env")
+
+    env_path = next((c for c in candidates if c.exists()), None)
+    if env_path is None:
         return
+
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
