@@ -54,6 +54,8 @@ def extract_table(table: str) -> list[dict[str, Any]]:
         )
         if "cryptography" in str(exc).lower():
             hint += " Install missing dependency with: pip install cryptography"
+        if "(1045" in str(exc) or "access denied for user" in str(exc).lower():
+            hint += " Verify username/password in .env and ensure MySQL grants allow this EC2 host/IP for that user."
         raise MySQLExtractionError(
             f"mysql_server_1 extract failed for table '{table}' on {host}:{port} "
             f"(db={database}, user={user}): {exc}. {hint}"
