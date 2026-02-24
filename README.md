@@ -21,7 +21,6 @@ python manage.py run_etl
 python manage.py runserver
 ```
 
-
 Source extraction reads directly from configured MySQL source tables (`MYSQL_SERVER1_*` and `MYSQL_SERVER2_*` in `.env`). CSV files in the repository are reference samples only and are not used by ETL ingestion.
 
 Settings now auto-load variables from a local `.env` file at startup, so `python manage.py run_etl` uses those credentials even if your shell session has not exported them.
@@ -36,6 +35,7 @@ Settings now auto-load variables from a local `.env` file at startup, so `python
 - **Server 1** (`MYSQL_SERVER1_*`, DB: `healthcare_forms_2`)
   - `campaign_campaignfieldrep`
   - `campaign_campaign`
+
 - **Server 2** (`MYSQL_SERVER2_*`, DB: `myproject_dev`)
   - `campaign_management_campaign`
   - `collateral_management_campaigncollateral`
@@ -74,7 +74,6 @@ If you hit `DataError: invalid input syntax for type date: "NULL"` in GOLD (`kpi
 
 Weekly GOLD buckets are now anchored to the latest observed campaign event week (Saturday-ending), not fixed to the current week, so historical campaign activity appears in the dashboard KPIs.
 
-
 If `run_etl` fails with MySQL timeout/access errors (for example `OperationalError(2003)` / `OperationalError(1045)`), verify network access to each MySQL host (security group / firewall / VPC), credentials, and optional SSL settings. The app supports:
 
 - `MYSQL_SERVER1_CONNECT_TIMEOUT`, `MYSQL_SERVER1_READ_TIMEOUT`, `MYSQL_SERVER1_WRITE_TIMEOUT`
@@ -83,8 +82,6 @@ If `run_etl` fails with MySQL timeout/access errors (for example `OperationalErr
 - `MYSQL_SERVER2_SSL_MODE`, `MYSQL_SERVER2_SSL_CA`
 
 Use SSL mode `required`, `verify_ca`, or `verify_identity` when your managed MySQL/RDS setup enforces TLS.
-
-
 
 ### Deployment env file path
 
@@ -101,3 +98,21 @@ The settings loader also accepts common DB env aliases in addition to `POSTGRES_
 ### Session/Auth note
 
 This project uses signed-cookie sessions (`SESSION_ENGINE=django.contrib.sessions.backends.signed_cookies`) for local campaign login flow, so report auth works without requiring `django_session` table migrations.
+
+### EC2 deployment script (`deploy.sh`)
+
+The repository includes `deploy.sh` for server deployments.
+
+Key behavior:
+- Uses production settings by default: `DJANGO_SETTINGS_MODULE=config.settings.prod`
+- Loads env vars from the first available file:
+  1. `ENV_FILE` (default `/var/www/secrets/.env`)
+  2. `<project>/.env.prod`
+  3. `<project>/.env`
+- Runs migrations, collects static files, and restarts `gunicorn`.
+
+You can override paths at runtime, for example:
+
+```bash
+PROJECT_DIR=/var/www/ReportsVersion1 VENV_DIR=/var/www/venv ENV_FILE=/var/www/secrets/.env ./deploy.sh
+```
