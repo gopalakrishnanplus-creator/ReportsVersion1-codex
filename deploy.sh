@@ -7,6 +7,8 @@ PYTHON="$VENV_DIR/bin/python"
 PIP="$VENV_DIR/bin/pip"
 DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-config.settings.prod}
 ENV_FILE=${ENV_FILE:-/var/www/secrets/.env}
+RUN_ETL_ON_DEPLOY=${RUN_ETL_ON_DEPLOY:-1}
+RUN_ETL_CONTINUE_ON_ERROR=${RUN_ETL_CONTINUE_ON_ERROR:-0}
 
 cd "$PROJECT_DIR"
 
@@ -41,6 +43,21 @@ export DJANGO_SETTINGS_MODULE
 
 echo "[deploy] Running Django migrations with $DJANGO_SETTINGS_MODULE..."
 "$PYTHON" manage.py migrate --noinput --fake-initial
+
+
+if [ "$RUN_ETL_ON_DEPLOY" = "1" ]; then
+  echo "[deploy] Running ETL..."
+  if ! "$PYTHON" manage.py run_etl; then
+    if [ "$RUN_ETL_CONTINUE_ON_ERROR" = "1" ]; then
+      echo "[deploy] WARNING: run_etl failed, continuing because RUN_ETL_CONTINUE_ON_ERROR=1"
+    else
+      echo "[deploy] ERROR: run_etl failed. Set RUN_ETL_CONTINUE_ON_ERROR=1 to continue deployment anyway."
+      exit 1
+    fi
+  fi
+else
+  echo "[deploy] Skipping ETL (RUN_ETL_ON_DEPLOY=$RUN_ETL_ON_DEPLOY)"
+fi
 
 echo "[deploy] Collecting static files..."
 "$PYTHON" manage.py collectstatic --noinput
