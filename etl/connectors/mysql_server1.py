@@ -52,6 +52,8 @@ def extract_table(table: str) -> list[dict[str, Any]]:
             "Check host/port reachability, VPC/security-group access,"
             " credentials, and SSL settings (MYSQL_SERVER1_SSL_MODE / MYSQL_SERVER1_SSL_CA)."
         )
+        if "cryptography" in str(exc).lower():
+            hint += " Install missing dependency with: pip install cryptography"
         raise MySQLExtractionError(
             f"mysql_server_1 extract failed for table '{table}' on {host}:{port} "
             f"(db={database}, user={user}): {exc}. {hint}"
