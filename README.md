@@ -110,6 +110,9 @@ Key behavior:
   2. `<project>/.env.prod`
   3. `<project>/.env`
 - Runs migrations, collects static files, and restarts `gunicorn`.
+- Runs ETL by default (`python manage.py run_etl`) to create/update RAW→GOLD tables required by the dashboard (`gold_global.campaign_registry`).
+  - Disable with `RUN_ETL_ON_DEPLOY=0`
+  - Continue despite ETL failure with `RUN_ETL_CONTINUE_ON_ERROR=1` (not recommended for production)
 
 You can override paths at runtime, for example:
 
