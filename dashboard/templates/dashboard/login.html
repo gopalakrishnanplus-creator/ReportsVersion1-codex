@@ -1,0 +1,28 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Campaign Login</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}">
+</head>
+<body>
+  <main class="dashboard" style="max-width:680px;">
+    <section class="card">
+      <h2>Brand Authentication</h2>
+      <p class="subtext"><strong>Campaign:</strong> {{ campaign.brand_campaign_id }}</p>
+      <p class="subtext"><strong>Name:</strong> {{ campaign.campaign_name }}</p>
+      {% if error_message %}<p class="error">{{ error_message }}</p>{% endif %}
+      <form method="post" style="display:grid;gap:10px;max-width:420px;">
+        {% csrf_token %}
+        <label>Username <input type="text" name="username" required></label>
+        <label>Password <input type="password" name="password" required></label>
+        <button type="submit" class="download-btn">Login & Open Report</button>
+      </form>
+      <p class="subtext" style="margin-top:10px;">Credential hint (dev): {{ credential_hint }}</p>
+      <p><a href="/">← Back to menu</a></p>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,2 @@
+# Deployment helper is maintained out-of-repo to avoid recurring PR merge conflicts.
+deploy.sh
