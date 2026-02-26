@@ -1,0 +1,47 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Campaign Menu</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}">
+</head>
+<body>
+  <main class="dashboard menu-page">
+    <section class="card menu-hero">
+      <div>
+        <p class="menu-eyebrow">Reporting Workspace</p>
+        <h1>In-Clinic Sharing Report Menu</h1>
+        <p class="subtext">Select a campaign to open the secured reporting dashboard.</p>
+      </div>
+      <a class="ghost-btn" href="{% url 'etl-debug' %}">Open ETL Debug Page</a>
+    </section>
+
+    <section class="card menu-table-card">
+      <div class="menu-table-head">
+        <h2>Available Campaigns</h2>
+        <p class="subtext">Only campaigns present in <code>gold_global.campaign_registry</code> are listed here.</p>
+      </div>
+      <div class="table-wrap">
+        <table class="menu-table">
+          <thead>
+            <tr><th>Campaign ID</th><th>Campaign Name</th><th>Action</th></tr>
+          </thead>
+          <tbody>
+            {% for c in campaigns %}
+            <tr>
+              <td data-label="Campaign ID"><code>{{ c.brand_campaign_id }}</code></td>
+              <td data-label="Campaign Name">{{ c.campaign_name }}</td>
+              <td data-label="Action"><a class="download-btn" href="/campaign/{{ c.brand_campaign_id }}/login/">View Report</a></td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="3">No campaigns available in gold_global.campaign_registry</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
