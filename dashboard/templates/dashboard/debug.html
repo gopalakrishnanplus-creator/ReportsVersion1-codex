@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}">
 </head>
 <body>
-  <main class="dashboard">
+  <main class="dashboard debug-page">
     <section class="card">
       <div class="menu-table-head">
         <h1>ETL Debug Snapshot</h1>
@@ -31,7 +31,7 @@
 
       {% if debug_snapshot.latest_run.notes_errors %}
       <h4 style="margin-top:12px;">Latest ETL Source Errors (top 20)</h4>
-      <table>
+      <div class="table-wrap"><table>
         <thead><tr><th>Source Table</th><th>Error</th></tr></thead>
         <tbody>
           {% for e in debug_snapshot.latest_run.notes_errors %}
@@ -41,7 +41,7 @@
           </tr>
           {% endfor %}
         </tbody>
-      </table>
+      </table></div>
       {% else %}
       <p class="subtext">{{ debug_snapshot.latest_run.notes }}</p>
       {% endif %}
@@ -53,7 +53,7 @@
 
       {% for layer in debug_snapshot.layers %}
       <h4 style="margin-top:12px;">Schema: {{ layer.schema }}</h4>
-      <table>
+      <div class="table-wrap"><table>
         <thead><tr><th>Table</th><th>Exists</th><th>Row Count</th><th>Error</th></tr></thead>
         <tbody>
           {% for t in layer.tables %}
@@ -65,14 +65,14 @@
           </tr>
           {% endfor %}
         </tbody>
-      </table>
+      </table></div>
       {% endfor %}
 
       <h4 style="margin-top:12px;">Per-Campaign GOLD Schemas</h4>
       {% if debug_snapshot.campaign_schema_tables %}
         {% for schema_debug in debug_snapshot.campaign_schema_tables %}
         <h5 style="margin-top:10px;">{{ schema_debug.schema }}</h5>
-        <table>
+        <div class="table-wrap"><table>
           <thead><tr><th>Table</th><th>Exists</th><th>Row Count</th><th>Error</th></tr></thead>
           <tbody>
             {% for t in schema_debug.tables %}
@@ -84,7 +84,7 @@
             </tr>
             {% endfor %}
           </tbody>
-        </table>
+        </table></div>
         {% endfor %}
       {% else %}
       <p class="subtext">No campaign-level GOLD schemas detected (gold_campaign_*).</p>

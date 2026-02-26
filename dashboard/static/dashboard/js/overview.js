@@ -115,10 +115,16 @@
       </svg>
     `;
 
+    const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+    const svgUrl = URL.createObjectURL(svgBlob);
+
     const img = new Image();
-    img.decoding = 'sync';
-    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-    await img.decode();
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = svgUrl;
+    });
+    URL.revokeObjectURL(svgUrl);
 
     const canvasOut = document.createElement('canvas');
     canvasOut.width = width;
@@ -147,7 +153,23 @@
       link.click();
     } catch (err) {
       console.error('Failed to download report image', err);
-      alert('Could not generate image download in this browser.');
+      try {
+        const fallbackCanvas = document.createElement('canvas');
+        fallbackCanvas.width = window.innerWidth;
+        fallbackCanvas.height = window.innerHeight;
+        const ctx = fallbackCanvas.getContext('2d');
+        ctx.fillStyle = '#f2f4f8';
+        ctx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
+        ctx.fillStyle = '#111827';
+        ctx.font = '16px Arial';
+        ctx.fillText('Unable to capture full report in this browser.', 24, 40);
+        const link = document.createElement('a');
+        link.download = 'in_clinic_report_fallback.png';
+        link.href = fallbackCanvas.toDataURL('image/png');
+        link.click();
+      } catch (_) {
+        alert('Could not generate image download in this browser.');
+      }
     } finally {
       downloadBtn.disabled = false;
       downloadBtn.textContent = originalText;

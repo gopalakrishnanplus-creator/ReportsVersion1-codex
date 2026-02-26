@@ -130,3 +130,33 @@ h1{letter-spacing:-.02em}
   .menu-table td:last-child{width:auto}
   .week-filter-row select,.week-filter-row .ghost-btn{width:100%}
 }
+
+/* Global table responsiveness */
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.table-wrap{width:100%;overflow:auto}
+
+/* Debug page */
+.debug-page h1{font-size:34px}
+
+@media (max-width: 1024px){
+  .dashboard{padding:0 12px}
+  .card{padding:12px}
+  .brand-logo{font-size:38px}
+  .score{font-size:52px}
+}
+
+@media (max-width: 640px){
+  .dashboard{margin:12px auto;gap:10px}
+  .card{border-radius:12px}
+  .brand-block{flex-direction:column;gap:8px}
+  .brand-logo{font-size:34px}
+  h1{font-size:28px;line-height:1.12}
+  .login-title{font-size:28px}
+  .meta{font-size:13px}
+  .score{font-size:44px}
+  .kpi-value{font-size:40px}
+  .kpi-rate{font-size:20px}
+  .comparison-card p{font-size:13px}
+  #weekly_table th,#weekly_table td{padding:8px}
+}
