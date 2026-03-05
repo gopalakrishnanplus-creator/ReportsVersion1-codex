@@ -72,6 +72,10 @@ def _campaign_credentials(brand_campaign_id: str) -> dict[str, str]:
     }
 
 
+def _normalize_campaign_id(value: Any) -> str:
+    return str(value or "").strip()
+
+
 def _campaign_list() -> list[dict[str, Any]]:
     """Return campaign list for menu page.
 
@@ -80,27 +84,34 @@ def _campaign_list() -> list[dict[str, Any]]:
     """
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT to_regclass('bronze.campaign_management_campaign')")
-            campaigns_exists = cursor.fetchone()[0] is not None
-        if not campaigns_exists:
+            cursor.execute("SELECT to_regclass('gold_global.campaign_registry')")
+            registry_exists = cursor.fetchone()[0] is not None
+        if not registry_exists:
             return []
 
         return _fetch_dicts(
             """
             SELECT
-              COALESCE(NULLIF(btrim(cm.brand_campaign_id), ''), cm.id::text) AS brand_campaign_id,
+              r.brand_campaign_id,
               r.gold_schema_name,
-              COALESCE(NULLIF(cm.name, ''), 'Campaign ' || COALESCE(NULLIF(btrim(cm.brand_campaign_id), ''), cm.id::text)) AS campaign_name
-            FROM bronze.campaign_management_campaign cm
-            LEFT JOIN gold_global.campaign_registry r
-              ON r.brand_campaign_id = COALESCE(NULLIF(btrim(cm.brand_campaign_id), ''), cm.id::text)
-            WHERE COALESCE(NULLIF(btrim(cm.brand_campaign_id), ''), cm.id::text) IS NOT NULL
-            ORDER BY COALESCE(NULLIF(cm.name, ''), COALESCE(NULLIF(btrim(cm.brand_campaign_id), ''), cm.id::text))
+              COALESCE(
+                MIN(NULLIF(cc.name, '')),
+                MIN(NULLIF(cm.name, '')),
+                'Campaign ' || r.brand_campaign_id
+              ) AS campaign_name
+            FROM gold_global.campaign_registry r
+            LEFT JOIN silver.map_brand_campaign_to_campaign m ON m.brand_campaign_id = r.brand_campaign_id
+            LEFT JOIN bronze.campaign_campaign cc ON cc.id = m.campaign_id_resolved
+            LEFT JOIN bronze.campaign_management_campaign cm ON cm.brand_campaign_id = r.brand_campaign_id
+            GROUP BY r.brand_campaign_id, r.gold_schema_name
+            ORDER BY r.brand_campaign_id
             """
         )
     except (ProgrammingError, OperationalError):
         return []
-        
+
+
+
 def _table_exists(schema: str, table: str) -> bool:
     with connection.cursor() as cursor:
         cursor.execute("SELECT to_regclass(%s)", [f"{schema}.{table}"])
@@ -261,8 +272,9 @@ def etl_debug_page(request: HttpRequest) -> HttpResponse:
 
 
 def campaign_login(request: HttpRequest, brand_campaign_id: str) -> HttpResponse:
-    campaigns = {c["brand_campaign_id"]: c for c in _campaign_list()}
-    campaign = campaigns.get(brand_campaign_id)
+    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
+    campaigns = {_normalize_campaign_id(c["brand_campaign_id"]): c for c in _campaign_list()}
+    campaign = campaigns.get(normalized_campaign_id)
     if not campaign:
         return redirect("menu")
 
@@ -270,10 +282,10 @@ def campaign_login(request: HttpRequest, brand_campaign_id: str) -> HttpResponse
     if request.method == "POST":
         username = (request.POST.get("username") or "").strip()
         password = (request.POST.get("password") or "").strip()
-        expected = _campaign_credentials(brand_campaign_id)
+        expected = _campaign_credentials(normalized_campaign_id)
         if username == expected["username"] and password == expected["password"]:
-            request.session[f"auth_{brand_campaign_id}"] = True
-            return redirect("campaign-overview-specific", brand_campaign_id=brand_campaign_id)
+            request.session[f"auth_{normalized_campaign_id}"] = True
+            return redirect("campaign-overview-specific", brand_campaign_id=normalized_campaign_id)
         error_message = "Invalid brand credentials"
 
     return render(
@@ -282,7 +294,7 @@ def campaign_login(request: HttpRequest, brand_campaign_id: str) -> HttpResponse
         {
             "campaign": campaign,
             "error_message": error_message,
-            "credential_hint": f"Username: brand_{brand_campaign_id.replace('-', '')[:6]} / Password: report_{brand_campaign_id.replace('-', '')[-4:]}",
+            "credential_hint": f"Username: brand_{normalized_campaign_id.replace('-', '')[:6]} / Password: report_{normalized_campaign_id.replace('-', '')[-4:]}",
         },
     )
 
@@ -327,13 +339,28 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     }
 
     try:
+        selected_campaign = _normalize_campaign_id(selected_campaign)
         schema_rows = _fetch_dicts(
-            "SELECT gold_schema_name FROM gold_global.campaign_registry WHERE brand_campaign_id=%s",
+            """
+            SELECT brand_campaign_id, gold_schema_name
+            FROM gold_global.campaign_registry
+            WHERE btrim(brand_campaign_id) = btrim(%s)
+            """,
             [selected_campaign],
         )
         if not schema_rows:
-            return {"error_message": "Campaign schema not found", **context_metrics}
+            schema_rows = _fetch_dicts(
+                """
+                SELECT brand_campaign_id, gold_schema_name
+                FROM gold_global.campaign_registry
+                WHERE lower(btrim(brand_campaign_id)) = lower(btrim(%s))
+                """,
+                [selected_campaign],
+            )
+        if not schema_rows:
+            return {"error_message": f"Campaign schema not found for {selected_campaign}", **context_metrics}
 
+        selected_campaign = _normalize_campaign_id(schema_rows[0]["brand_campaign_id"])
         selected_schema = schema_rows[0]["gold_schema_name"]
         all_weekly_rows = _fetch_dicts(f"SELECT * FROM {selected_schema}.kpi_weekly_summary ORDER BY week_index")
 
@@ -674,22 +701,24 @@ def campaign_overview(request: HttpRequest, brand_campaign_id: str | None = None
     if not brand_campaign_id:
         return redirect("menu")
 
-    if not request.session.get(f"auth_{brand_campaign_id}"):
-        return redirect("campaign-login", brand_campaign_id=brand_campaign_id)
+    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
+    if not request.session.get(f"auth_{normalized_campaign_id}"):
+        return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
 
-    context = _build_report_context(brand_campaign_id, week_filter)
+    context = _build_report_context(normalized_campaign_id, week_filter)
     return render(request, "dashboard/overview.html", context)
 
 
 def export_report(request: HttpRequest, brand_campaign_id: str):
-    if not request.session.get(f"auth_{brand_campaign_id}"):
-        return redirect("campaign-login", brand_campaign_id=brand_campaign_id)
+    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
+    if not request.session.get(f"auth_{normalized_campaign_id}"):
+        return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(brand_campaign_id, week_filter)
+    context = _build_report_context(normalized_campaign_id, week_filter)
     context["export_mode"] = True
     return render(request, "dashboard/overview.html", context)

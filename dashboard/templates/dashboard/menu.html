@@ -21,7 +21,7 @@
     <section class="card menu-table-card">
       <div class="menu-table-head">
         <h2>Available Campaigns</h2>
-        <p class="subtext">Campaign names are loaded from <code>healthcare_forms_2.campaign_management_campaign.name</code>.</p>
+        <p class="subtext">Only campaigns present in <code>gold_global.campaign_registry</code> are listed here.</p>
       </div>
       <div class="table-wrap">
         <table class="menu-table">
@@ -36,7 +36,7 @@
               <td data-label="Action"><a class="download-btn" href="/campaign/{{ c.brand_campaign_id }}/login/">View Report</a></td>
             </tr>
             {% empty %}
-            <tr><td colspan="3">No campaigns available in campaign_management_campaign</td></tr>
+            <tr><td colspan="3">No campaigns available in gold_global.campaign_registry</td></tr>
             {% endfor %}
           </tbody>
         </table>
