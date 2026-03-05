@@ -1,0 +1,216 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>In-Clinic Sharing Dashboard</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}">
+</head>
+<body>
+  <main id="report-root" class="dashboard">
+    <section id="header" class="card header-card">
+      <div class="brand-block">
+        {% if company_logo_url %}
+        <img class="brand-logo-image" src="{{ company_logo_url }}" alt="{{ brand_name }} logo" loading="lazy">
+        {% else %}
+        <div class="brand-logo">{{ brand_logo_text|slice:":6" }}</div>
+        {% endif %}
+        <div>
+          <p class="brand-sub">{{ brand_name }}</p>
+          <h1>In-Clinic Sharing System</h1>
+        </div>
+      </div>
+      <div class="header-center">
+        <p class="label">Collateral Scheduled</p>
+        <h2>{{ collateral_name }}</h2>
+      </div>
+      <div class="header-right">
+        <p class="label">Schedule Date</p>
+        <p class="schedule">{{ schedule_text }}</p>
+        <p class="footnote">Week = 7-day period ending on Saturday</p>
+      </div>
+      <button type="button" id="download-pdf-btn" class="download-btn">Download PDF</button>
+    </section>
+
+    <section class="card controls-card">
+      <form id="week-filter-form" method="get" class="week-filter-form">
+        <label for="week-select">Week Filter</label>
+        <div class="week-filter-row">
+          <select id="week-select" name="week">
+            <option value="" {% if not selected_week %}selected{% endif %}>All Weeks</option>
+            {% for w in week_options %}
+            <option value="{{ w }}" {% if selected_week == w %}selected{% endif %}>Week {{ w }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="ghost-btn">Apply</button>
+        </div>
+      </form>
+      <div class="meta">
+        <span><strong>Campaign:</strong> {{ selected_campaign }}</span>
+        <span><a href="/">← Back to Menu</a></span>
+      </div>
+    </section>
+
+    <section class="top-grid">
+      <article id="health_summary" class="card score-card {{ campaign_color }}">
+        <h3>Campaign Health</h3>
+        <div class="score-line"><span class="score">{{ campaign_health|floatformat:0 }}</span><span>/100</span></div>
+        <p class="wow {% if campaign_wow >= 0 %}up{% else %}down{% endif %}">{% if campaign_wow >= 0 %}↑{% else %}↓{% endif %} {{ campaign_wow|floatformat:1 }} WoW</p>
+        <p class="subtext">Benchmark: {{ campaign_benchmark_label }}</p>
+        <p class="caption">Average Collateral Health</p>
+      </article>
+
+      <article class="card score-card {{ weekly_color }}">
+        <h3>Weekly Campaign Health</h3>
+        <div class="score-line"><span class="score">{{ weekly_health|floatformat:0 }}</span><span>/100</span></div>
+        <p class="wow {% if weekly_wow >= 0 %}up{% else %}down{% endif %}">{% if weekly_wow >= 0 %}↑{% else %}↓{% endif %} {{ weekly_wow|floatformat:1 }} WoW</p>
+        <p class="subtext">Benchmark: {{ weekly_benchmark_label }}</p>
+        <p class="caption">Performance for {{ week_of }}</p>
+      </article>
+
+      <article id="state_panel" class="card side-panel">
+        <div class="panel-title-row">
+          <h3>States Requiring Attention</h3>
+          <a href="#">View All</a>
+        </div>
+        {% for s in state_attention %}
+          <div class="state-row">
+            <div>
+              <strong>{{ s.state }}</strong>
+              <p>Open: {{ s.open_pct }}%</p>
+            </div>
+            <div class="state-right">
+              <span class="badge {{ s.label|lower }}">{{ s.label }}</span>
+              <p>Reached: {{ s.reached_pct }}%</p>
+            </div>
+          </div>
+        {% empty %}
+          <p class="subtext">No state data available.</p>
+        {% endfor %}
+      </article>
+
+      <article id="action_panel" class="card side-panel action-panel">
+        <h3>Action Required This Week</h3>
+        <p class="subtext">Primary Issue:</p>
+        <p class="issue">{{ action_panel.primary_issue }}</p>
+        <p class="subtext">Who should act:</p>
+        <p><strong>{{ action_panel.who_should_act }}</strong></p>
+        <ul>
+          {% for a in action_panel.actions %}<li>{{ a }}</li>{% endfor %}
+        </ul>
+      </article>
+    </section>
+
+    <section id="kpi_tiles" class="kpi-grid">
+      <article class="card kpi-card">
+        <h4>Doctors Reached <span>(Unique)</span></h4>
+        <p class="kpi-value">{{ kpi_reached }}</p>
+        <p class="kpi-rate">{{ kpi_reached_pct }}%</p>
+        <p class="caption">Reached / Total Doctors in Campaign</p>
+      </article>
+      <article class="card kpi-card needs-attention">
+        <h4>Doctors Opened <span>(Unique)</span></h4>
+        <p class="kpi-value">{{ kpi_opened }}</p>
+        <p class="kpi-rate">{{ kpi_opened_pct }}%</p>
+        <p class="caption">Opened / Reached</p>
+      </article>
+      <article class="card kpi-card">
+        <h4>Video Viewed <span>(Unique)</span></h4>
+        <p class="kpi-value">{{ kpi_video }}</p>
+        <p class="kpi-rate">&gt;50% viewed: {{ kpi_video_pct }}%</p>
+        <p class="caption">Doctors who viewed &gt;50% / Doctors Opened</p>
+      </article>
+      <article class="card kpi-card">
+        <h4>PDF Downloads <span>(Unique)</span></h4>
+        <p class="kpi-value">{{ kpi_pdf }}</p>
+        <p class="kpi-rate">{{ kpi_pdf_pct }}%</p>
+        <p class="caption">Downloads / Doctors Opened</p>
+      </article>
+    </section>
+
+    <section class="bottom-grid">
+      <article id="collateral_comparison" class="card">
+        <h3>Collateral Comparison</h3>
+        <div class="comparison-grid">
+          <div class="comparison-card">
+            <h4>Current Collateral</h4>
+            <p class="label">{{ collateral_cards.current.title }}</p>
+            <p>Doctors Reached <b>{{ collateral_cards.current.reached }}</b> ({{ collateral_cards.current.reached_pct }}%)</p>
+            <p>Doctors Opened <b>{{ collateral_cards.current.opened }}</b> ({{ collateral_cards.current.opened_pct }}%)</p>
+            <p>Video Viewed (&gt;50%) <b>{{ collateral_cards.current.video }}</b> ({{ collateral_cards.current.video_pct }}%)</p>
+            <p>PDF Downloads <b>{{ collateral_cards.current.pdf }}</b> ({{ collateral_cards.current.pdf_pct }}%)</p>
+          </div>
+          <div class="comparison-card">
+            <h4>Best Collateral</h4>
+            <p class="label">{{ collateral_cards.best.title }}</p>
+            <p>Doctors Reached <b>{{ collateral_cards.best.reached }}</b> ({{ collateral_cards.best.reached_pct }}%)</p>
+            <p>Doctors Opened <b>{{ collateral_cards.best.opened }}</b> ({{ collateral_cards.best.opened_pct }}%)</p>
+            <p>Video Viewed (&gt;50%) <b>{{ collateral_cards.best.video }}</b> ({{ collateral_cards.best.video_pct }}%)</p>
+            <p>PDF Downloads <b>{{ collateral_cards.best.pdf }}</b> ({{ collateral_cards.best.pdf_pct }}%)</p>
+          </div>
+          <div class="comparison-card">
+            <h4>Benchmark Best</h4>
+            <p class="label">Last 10 Campaigns</p>
+            <p>Doctors Reached <b>{{ collateral_cards.benchmark.reached }}</b> ({{ collateral_cards.benchmark.reached_pct }}%)</p>
+            <p>Doctors Opened <b>{{ collateral_cards.benchmark.opened }}</b> ({{ collateral_cards.benchmark.opened_pct }}%)</p>
+            <p>Video Viewed (&gt;50%) <b>{{ collateral_cards.benchmark.video }}</b> ({{ collateral_cards.benchmark.video_pct }}%)</p>
+            <p>PDF Downloads <b>{{ collateral_cards.benchmark.pdf }}</b> ({{ collateral_cards.benchmark.pdf_pct }}%)</p>
+          </div>
+        </div>
+      </article>
+
+      <article id="weekly_trend" class="card">
+        <h3>Weekly Trend</h3>
+        <p class="subtext">(Current Collateral)</p>
+        <canvas id="trend-chart" height="260"></canvas>
+        <div class="trend-legend" aria-label="Weekly trend legend">
+          <div class="trend-legend-item"><span class="legend-swatch opened"></span><span>Doctors Opened %</span></div>
+          <div class="trend-legend-item"><span class="legend-swatch reached"></span><span>Doctors Reached %</span></div>
+          <div class="trend-legend-item"><span class="legend-swatch pdf"></span><span>PDF Downloads %</span></div>
+          <div class="trend-legend-item"><span class="legend-swatch video"></span><span>Video Viewed (&gt;50%) %</span></div>
+        </div>
+        <p class="footnote">Week = 7-day period ending on Saturday</p>
+      </article>
+    </section>
+
+    <section id="weekly_table" class="card">
+      <h3>Weekly KPI Table</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Week</th><th>Reached</th><th>Opened</th><th>Video &gt;50%</th><th>PDF</th><th>Consumed</th><th>Health</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in weekly_rows %}
+            <tr>
+              <td>Week {{ row.week_index }}</td>
+              <td>{{ row.doctors_reached_unique }}</td>
+              <td>{{ row.doctors_opened_unique }}</td>
+              <td>{{ row.video_viewed_50_unique }}</td>
+              <td>{{ row.pdf_download_unique }}</td>
+              <td>{{ row.doctors_consumed_unique }}</td>
+              <td>{{ row.weekly_health_score|floatformat:1 }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="7">Insufficient Data</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if error_message %}
+        <p class="error">Data issue: {{ error_message }}</p>
+      {% endif %}
+    </section>
+  </main>
+
+  {{ trend_labels|json_script:"trend-labels" }}
+  {{ opened_pct_series|json_script:"trend-opened" }}
+  {{ reached_pct_series|json_script:"trend-reached" }}
+  {{ pdf_pct_series|json_script:"trend-pdf" }}
+  {{ video_pct_series|json_script:"trend-video" }}
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}"></script>
+</body>
+</html>
