@@ -415,6 +415,18 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
 
         schedule_rows = _fetch_dicts(
             """
+            WITH campaign_source AS (
+                SELECT cm.*
+                FROM bronze.campaign_management_campaign cm
+                LEFT JOIN silver.map_brand_campaign_to_campaign m
+                  ON regexp_replace(lower(btrim(m.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
+                WHERE
+                    regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
+                    OR cm.id::text = btrim(%s)
+                    OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
+                ORDER BY cm.id DESC
+                LIMIT 1
+            )
             SELECT
                 MIN(
                     CASE
@@ -433,32 +445,29 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 MIN(NULLIF(c.title, '')) AS collateral_title,
                 MIN(
                     CASE
-                        WHEN cm.brand_name IS NULL OR btrim(cm.brand_name) = '' OR lower(btrim(cm.brand_name)) = 'null'
+                        WHEN cs.brand_name IS NULL OR btrim(cs.brand_name) = '' OR lower(btrim(cs.brand_name)) = 'null'
                         THEN NULL
-                        ELSE cm.brand_name
+                        ELSE cs.brand_name
                     END
                 ) AS brand_name,
                 MIN(
                     CASE
-                        WHEN cm.company_logo IS NOT NULL
-                             AND btrim(cm.company_logo) <> ''
-                             AND lower(btrim(cm.company_logo)) <> 'null'
-                        THEN cm.company_logo
-                        WHEN cm.brand_logo IS NOT NULL
-                             AND btrim(cm.brand_logo) <> ''
-                             AND lower(btrim(cm.brand_logo)) <> 'null'
-                        THEN cm.brand_logo
+                        WHEN cs.company_logo IS NOT NULL
+                             AND btrim(cs.company_logo) <> ''
+                             AND lower(btrim(cs.company_logo)) <> 'null'
+                        THEN cs.company_logo
+                        WHEN cs.brand_logo IS NOT NULL
+                             AND btrim(cs.brand_logo) <> ''
+                             AND lower(btrim(cs.brand_logo)) <> 'null'
+                        THEN cs.brand_logo
                         ELSE NULL
                     END
                 ) AS company_logo
-            FROM bronze.campaign_management_campaign cm
-            LEFT JOIN bronze.collateral_management_campaigncollateral cc ON cc.campaign_id = cm.id
+            FROM campaign_source cs
+            LEFT JOIN bronze.collateral_management_campaigncollateral cc ON cc.campaign_id::text = cs.id::text
             LEFT JOIN bronze.collateral_management_collateral c ON c.id = cc.collateral_id
-            WHERE
-                regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
-                OR cm.id::text = btrim(%s)
             """,
-            [selected_campaign, selected_campaign],
+            [selected_campaign, selected_campaign, selected_campaign],
         )
         if schedule_rows:
             start = _format_schedule_date(schedule_rows[0].get("schedule_start_date"))
@@ -551,7 +560,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                       f.reached_first_ts,
                       f.opened_first_ts
                     FROM {selected_schema}.fact_doctor_collateral_latest f
-                    LEFT JOIN {selected_schema}.dim_field_rep fr
+                    LEFT JOIN silver.dim_field_rep fr
                       ON fr.id::text = NULLIF(btrim(f.field_rep_id_resolved), '')
                 ),
                 x AS (
