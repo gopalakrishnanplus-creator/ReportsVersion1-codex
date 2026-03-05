@@ -119,7 +119,7 @@ def _campaign_list() -> list[dict[str, Any]]:
             LEFT JOIN bronze.campaign_campaign cc
               ON cc.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
             LEFT JOIN bronze.campaign_management_campaign cm
-              ON lower(btrim(cm.brand_campaign_id)) = lower(btrim(r.brand_campaign_id))
+              ON regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(r.brand_campaign_id)), '-', '', 'g')
               OR cm.id::text = btrim(r.brand_campaign_id)
               OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
             GROUP BY r.brand_campaign_id, r.gold_schema_name
@@ -428,16 +428,22 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 ) AS brand_name,
                 MIN(
                     CASE
-                        WHEN cm.company_logo IS NULL OR btrim(cm.company_logo) = '' OR lower(btrim(cm.company_logo)) = 'null'
-                        THEN NULL
-                        ELSE cm.company_logo
+                        WHEN cm.company_logo IS NOT NULL
+                             AND btrim(cm.company_logo) <> ''
+                             AND lower(btrim(cm.company_logo)) <> 'null'
+                        THEN cm.company_logo
+                        WHEN cm.brand_logo IS NOT NULL
+                             AND btrim(cm.brand_logo) <> ''
+                             AND lower(btrim(cm.brand_logo)) <> 'null'
+                        THEN cm.brand_logo
+                        ELSE NULL
                     END
                 ) AS company_logo
             FROM bronze.campaign_management_campaign cm
             LEFT JOIN bronze.collateral_management_campaigncollateral cc ON cc.campaign_id = cm.id
             LEFT JOIN bronze.collateral_management_collateral c ON c.id = cc.collateral_id
             WHERE
-                lower(btrim(cm.brand_campaign_id)) = lower(btrim(%s))
+                regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
                 OR cm.id::text = btrim(%s)
             """,
             [selected_campaign, selected_campaign],
@@ -456,16 +462,22 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 """
                 SELECT MIN(
                     CASE
-                        WHEN cm.company_logo IS NULL OR btrim(cm.company_logo) = '' OR lower(btrim(cm.company_logo)) = 'null'
-                        THEN NULL
-                        ELSE cm.company_logo
+                        WHEN cm.company_logo IS NOT NULL
+                             AND btrim(cm.company_logo) <> ''
+                             AND lower(btrim(cm.company_logo)) <> 'null'
+                        THEN cm.company_logo
+                        WHEN cm.brand_logo IS NOT NULL
+                             AND btrim(cm.brand_logo) <> ''
+                             AND lower(btrim(cm.brand_logo)) <> 'null'
+                        THEN cm.brand_logo
+                        ELSE NULL
                     END
                 ) AS company_logo
                 FROM bronze.campaign_management_campaign cm
                 LEFT JOIN silver.map_brand_campaign_to_campaign m
-                  ON lower(btrim(m.brand_campaign_id)) = lower(btrim(%s))
+                  ON regexp_replace(lower(btrim(m.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
                 WHERE
-                    lower(btrim(cm.brand_campaign_id)) = lower(btrim(%s))
+                    regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
                     OR cm.id::text = btrim(%s)
                     OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
                 """,
