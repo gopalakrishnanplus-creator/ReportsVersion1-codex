@@ -63,6 +63,15 @@ select{min-width:360px;padding:8px;border:1px solid var(--line);border-radius:6p
 .comparison-card h4{margin:0 0 4px}
 .comparison-card .label{font-size:13px;color:var(--muted);margin:0 0 8px}
 .comparison-card p{margin:6px 0;font-size:14px}
+
+.trend-legend{display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:10px}
+.trend-legend-item{display:inline-flex;align-items:center;gap:7px;color:#4b5563;font-size:13px;font-weight:600}
+.legend-swatch{width:12px;height:12px;border-radius:2px;display:inline-block}
+.legend-swatch.opened{background:#18a668}
+.legend-swatch.reached{background:#3279db}
+.legend-swatch.pdf{background:#7a57d1}
+.legend-swatch.video{background:#f0aa12}
+
 #weekly_table table{width:100%;border-collapse:collapse}
 #weekly_table th,#weekly_table td{padding:10px;border-bottom:1px solid var(--line);text-align:left}
 #weekly_table th{background:#f4f6fb}

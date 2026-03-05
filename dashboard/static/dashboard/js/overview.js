@@ -62,24 +62,7 @@
       ctx.fillText(label, xBase + barWidth, margin.top + chartH + 18);
     });
 
-    let legendX = margin.left;
-    let legendY = margin.top + chartH + 36;
-    const legendMaxX = margin.left + chartW;
-    series.forEach((s) => {
-      const labelWidth = ctx.measureText(s.name).width;
-      const itemWidth = 12 + 4 + labelWidth + 18;
-      if (legendX + itemWidth > legendMaxX) {
-        legendX = margin.left;
-        legendY += 16;
-      }
-      ctx.fillStyle = s.color;
-      ctx.fillRect(legendX, legendY - 9, 12, 12);
-      legendX += 16;
-      ctx.fillStyle = '#4b5563';
-      ctx.font = '11px Arial';
-      ctx.fillText(s.name, legendX, legendY);
-      legendX += labelWidth + 18;
-    });
+    // Legend is rendered in HTML for clarity and responsiveness.
   }
 
   const weekForm = document.getElementById('week-filter-form');
