@@ -1,0 +1,40 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Campaign Login</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}">
+</head>
+<body>
+  <main class="dashboard login-page">
+    <section class="card login-card">
+      <p class="menu-eyebrow">Secure Access</p>
+      <h1 class="login-title">Campaign Authentication</h1>
+      <p class="subtext"><strong>Campaign ID:</strong> {{ campaign.brand_campaign_id }}</p>
+      <p class="subtext"><strong>Campaign Name:</strong> {{ campaign.campaign_name }}</p>
+
+      {% if error_message %}
+      <p class="error">{{ error_message }}</p>
+      {% endif %}
+
+      <form method="post" class="login-form">
+        {% csrf_token %}
+        <div>
+          <label for="username">Username</label>
+          <input id="username" type="text" name="username" autocomplete="username" required>
+        </div>
+        <div>
+          <label for="password">Password</label>
+          <input id="password" type="password" name="password" autocomplete="current-password" required>
+        </div>
+        <button type="submit" class="download-btn login-submit">Login &amp; Open Report</button>
+      </form>
+
+      <p class="subtext credential-hint">Credential hint (dev): {{ credential_hint }}</p>
+      <p class="subtext"><a href="/">← Back to menu</a></p>
+    </section>
+  </main>
+</body>
+</html>
