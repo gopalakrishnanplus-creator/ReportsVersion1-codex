@@ -544,9 +544,19 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
 
             state_rows = _fetch_dicts(
                 f"""
-                WITH x AS (
+                WITH fact_enriched AS (
                     SELECT
-                      COALESCE(NULLIF(state_normalized,''),'UNKNOWN') AS state_normalized,
+                      f.doctor_identity_key,
+                      COALESCE(NULLIF(f.state_normalized,''), NULLIF(fr.state_normalized,''), 'UNKNOWN') AS state_normalized,
+                      f.reached_first_ts,
+                      f.opened_first_ts
+                    FROM {selected_schema}.fact_doctor_collateral_latest f
+                    LEFT JOIN {selected_schema}.dim_field_rep fr
+                      ON fr.id::text = NULLIF(btrim(f.field_rep_id_resolved), '')
+                ),
+                x AS (
+                    SELECT
+                      state_normalized,
                       COUNT(DISTINCT doctor_identity_key) FILTER (
                         WHERE reached_first_ts IS NOT NULL
                           AND reached_first_ts::date BETWEEN %s::date AND %s::date
@@ -556,7 +566,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                           AND opened_first_ts::date BETWEEN %s::date AND %s::date
                       ) AS opened,
                       COUNT(DISTINCT doctor_identity_key) AS total_state
-                    FROM {selected_schema}.fact_doctor_collateral_latest
+                    FROM fact_enriched
                     GROUP BY 1
                 )
                 SELECT state_normalized,reached,opened,total_state
@@ -692,14 +702,30 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     FROM silver.doctor_action_first_seen a
                     JOIN recent_campaigns r ON r.brand_campaign_id = a.brand_campaign_id
                     GROUP BY a.brand_campaign_id
+                ),
+                campaign_stats AS (
+                    SELECT
+                        x.brand_campaign_id,
+                        x.reached,
+                        x.opened,
+                        x.video,
+                        x.pdf,
+                        CASE WHEN d.total_doctors=0 THEN 0 ELSE (x.reached::numeric / d.total_doctors) * 100 END AS reached_pct,
+                        CASE WHEN x.reached=0 THEN 0 ELSE (x.opened::numeric / x.reached) * 100 END AS opened_pct,
+                        CASE WHEN x.opened=0 THEN 0 ELSE (x.video::numeric / x.opened) * 100 END AS video_pct,
+                        CASE WHEN x.opened=0 THEN 0 ELSE (x.pdf::numeric / x.opened) * 100 END AS pdf_pct,
+                        (
+                          CASE WHEN d.total_doctors=0 THEN 0 ELSE (x.reached::numeric / d.total_doctors) END
+                          + CASE WHEN x.reached=0 THEN 0 ELSE (x.opened::numeric / x.reached) END
+                          + CASE WHEN x.opened=0 THEN 0 ELSE ((GREATEST(x.video, x.pdf))::numeric / x.opened) END
+                        ) / 3.0 * 100 AS health_score
+                    FROM campaign_actions x
+                    JOIN campaign_doctor_base d ON d.brand_campaign_id = x.brand_campaign_id
                 )
-                SELECT
-                    AVG(CASE WHEN d.total_doctors=0 THEN 0 ELSE (x.reached::numeric / d.total_doctors) * 100 END) AS reached_pct,
-                    AVG(CASE WHEN x.reached=0 THEN 0 ELSE (x.opened::numeric / x.reached) * 100 END) AS opened_pct,
-                    AVG(CASE WHEN x.opened=0 THEN 0 ELSE (x.video::numeric / x.opened) * 100 END) AS video_pct,
-                    AVG(CASE WHEN x.opened=0 THEN 0 ELSE (x.pdf::numeric / x.opened) * 100 END) AS pdf_pct
-                FROM campaign_actions x
-                JOIN campaign_doctor_base d ON d.brand_campaign_id = x.brand_campaign_id
+                SELECT *
+                FROM campaign_stats
+                ORDER BY health_score DESC, reached DESC, opened DESC
+                LIMIT 1
                 """
             )
             bm = benchmark_metric_rows[0] if benchmark_metric_rows else {}
@@ -710,15 +736,15 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
 
             collateral_cards["benchmark"] = {
                 "title": "Benchmark Best (Last 10 Campaigns)",
-                "reached": _to_int((benchmark_reached_pct / 100.0) * total_doctors),
-                "opened": _to_int((benchmark_opened_pct / 100.0) * max(latest_reached, 1)),
-                "video": _to_int((benchmark_video_pct / 100.0) * max(latest_opened, 1)),
-                "pdf": _to_int((benchmark_pdf_pct / 100.0) * max(latest_opened, 1)),
+                "reached": _to_int(bm.get("reached")),
+                "opened": _to_int(bm.get("opened")),
+                "video": _to_int(bm.get("video")),
+                "pdf": _to_int(bm.get("pdf")),
                 "reached_pct": benchmark_reached_pct,
                 "opened_pct": benchmark_opened_pct,
                 "video_pct": benchmark_video_pct,
                 "pdf_pct": benchmark_pdf_pct,
-                "benchmark_health": round(benchmark_health, 1),
+                "benchmark_health": round(_to_float(bm.get("health_score"), benchmark_health), 1),
             }
 
             context_metrics = {
