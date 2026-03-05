@@ -415,8 +415,21 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
 
         schedule_rows = _fetch_dicts(
             """
-            WITH campaign_source AS (
-                SELECT cm.*
+            WITH campaign_row AS (
+                SELECT
+                    cm.id,
+                    cm.brand_campaign_id,
+                    cm.brand_name,
+                    cm.company_logo,
+                    ROW_NUMBER() OVER (
+                        ORDER BY
+                            CASE
+                                WHEN regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g') THEN 1
+                                WHEN cm.id::text = btrim(%s) THEN 2
+                                ELSE 3
+                            END,
+                            cm.id DESC
+                    ) AS rn
                 FROM bronze.campaign_management_campaign cm
                 LEFT JOIN silver.map_brand_campaign_to_campaign m
                   ON regexp_replace(lower(btrim(m.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
@@ -424,8 +437,11 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
                     OR cm.id::text = btrim(%s)
                     OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
-                ORDER BY cm.id DESC
-                LIMIT 1
+            ),
+            campaign_source AS (
+                SELECT id, brand_campaign_id, brand_name, company_logo
+                FROM campaign_row
+                WHERE rn = 1
             )
             SELECT
                 MIN(
@@ -452,22 +468,16 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 ) AS brand_name,
                 MIN(
                     CASE
-                        WHEN cs.company_logo IS NOT NULL
-                             AND btrim(cs.company_logo) <> ''
-                             AND lower(btrim(cs.company_logo)) <> 'null'
-                        THEN cs.company_logo
-                        WHEN cs.brand_logo IS NOT NULL
-                             AND btrim(cs.brand_logo) <> ''
-                             AND lower(btrim(cs.brand_logo)) <> 'null'
-                        THEN cs.brand_logo
-                        ELSE NULL
+                        WHEN cs.company_logo IS NULL OR btrim(cs.company_logo) = '' OR lower(btrim(cs.company_logo)) = 'null'
+                        THEN NULL
+                        ELSE cs.company_logo
                     END
                 ) AS company_logo
             FROM campaign_source cs
             LEFT JOIN bronze.collateral_management_campaigncollateral cc ON cc.campaign_id::text = cs.id::text
             LEFT JOIN bronze.collateral_management_collateral c ON c.id = cc.collateral_id
             """,
-            [selected_campaign, selected_campaign, selected_campaign],
+            [selected_campaign, selected_campaign, selected_campaign, selected_campaign, selected_campaign],
         )
         if schedule_rows:
             start = _format_schedule_date(schedule_rows[0].get("schedule_start_date"))
@@ -481,28 +491,31 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         if not company_logo_url:
             fallback_logo = _fetch_dicts(
                 """
-                SELECT MIN(
-                    CASE
-                        WHEN cm.company_logo IS NOT NULL
-                             AND btrim(cm.company_logo) <> ''
-                             AND lower(btrim(cm.company_logo)) <> 'null'
-                        THEN cm.company_logo
-                        WHEN cm.brand_logo IS NOT NULL
-                             AND btrim(cm.brand_logo) <> ''
-                             AND lower(btrim(cm.brand_logo)) <> 'null'
-                        THEN cm.brand_logo
-                        ELSE NULL
-                    END
-                ) AS company_logo
-                FROM bronze.campaign_management_campaign cm
-                LEFT JOIN silver.map_brand_campaign_to_campaign m
-                  ON regexp_replace(lower(btrim(m.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
-                WHERE
-                    regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
-                    OR cm.id::text = btrim(%s)
-                    OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
+                WITH matched_campaign AS (
+                    SELECT
+                        cm.company_logo,
+                        ROW_NUMBER() OVER (
+                            ORDER BY
+                                CASE
+                                    WHEN regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g') THEN 1
+                                    WHEN cm.id::text = btrim(%s) THEN 2
+                                    ELSE 3
+                                END,
+                                cm.id DESC
+                        ) AS rn
+                    FROM bronze.campaign_management_campaign cm
+                    LEFT JOIN silver.map_brand_campaign_to_campaign m
+                      ON regexp_replace(lower(btrim(m.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
+                    WHERE
+                        regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
+                        OR cm.id::text = btrim(%s)
+                        OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
+                )
+                SELECT company_logo
+                FROM matched_campaign
+                WHERE rn = 1
                 """,
-                [selected_campaign, selected_campaign, selected_campaign],
+                [selected_campaign, selected_campaign, selected_campaign, selected_campaign, selected_campaign],
             )
             if fallback_logo:
                 company_logo_url = _build_media_logo_url(fallback_logo[0].get("company_logo"))
