@@ -1,0 +1,102 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ETL Debug</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}">
+</head>
+<body>
+  <main class="dashboard debug-page">
+    <section class="card">
+      <div class="menu-table-head">
+        <h1>ETL Debug Snapshot</h1>
+        <p class="subtext"><a href="/">← Back to Menu</a></p>
+      </div>
+
+      {% if debug_snapshot.latest_run %}
+      <p class="subtext">
+        Latest ETL Run: <strong>{{ debug_snapshot.latest_run.run_id }}</strong> |
+        Status: <strong>{{ debug_snapshot.latest_run.status }}</strong>
+      </p>
+      {% if debug_snapshot.latest_run.notes_summary %}
+      <p class="subtext">
+        Source tables: total={{ debug_snapshot.latest_run.notes_summary.total_tables }},
+        loaded={{ debug_snapshot.latest_run.notes_summary.loaded_tables }},
+        failed={{ debug_snapshot.latest_run.notes_summary.failed_tables }},
+        rows={{ debug_snapshot.latest_run.notes_summary.loaded_rows }}
+      </p>
+      {% endif %}
+
+      {% if debug_snapshot.latest_run.notes_errors %}
+      <h4 style="margin-top:12px;">Latest ETL Source Errors (top 20)</h4>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Source Table</th><th>Error</th></tr></thead>
+        <tbody>
+          {% for e in debug_snapshot.latest_run.notes_errors %}
+          <tr>
+            <td>{{ e.0 }}</td>
+            <td>{{ e.1 }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      {% else %}
+      <p class="subtext">{{ debug_snapshot.latest_run.notes }}</p>
+      {% endif %}
+      {% else %}
+      <p class="subtext">No ETL run log found yet.</p>
+      {% endif %}
+
+      <p class="subtext">Gold campaign schemas: <strong>{{ debug_snapshot.gold_campaign_schema_count|default:0 }}</strong></p>
+
+      {% for layer in debug_snapshot.layers %}
+      <h4 style="margin-top:12px;">Schema: {{ layer.schema }}</h4>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Table</th><th>Exists</th><th>Row Count</th><th>Error</th></tr></thead>
+        <tbody>
+          {% for t in layer.tables %}
+          <tr>
+            <td>{{ t.table }}</td>
+            <td>{% if t.exists %}Yes{% else %}No{% endif %}</td>
+            <td>{{ t.row_count }}</td>
+            <td>{{ t.error|default:"-" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      {% endfor %}
+
+      <h4 style="margin-top:12px;">Per-Campaign GOLD Schemas</h4>
+      {% if debug_snapshot.campaign_schema_tables %}
+        {% for schema_debug in debug_snapshot.campaign_schema_tables %}
+        <h5 style="margin-top:10px;">{{ schema_debug.schema }}</h5>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Table</th><th>Exists</th><th>Row Count</th><th>Error</th></tr></thead>
+          <tbody>
+            {% for t in schema_debug.tables %}
+            <tr>
+              <td>{{ t.table }}</td>
+              <td>{% if t.exists %}Yes{% else %}No{% endif %}</td>
+              <td>{{ t.row_count }}</td>
+              <td>{{ t.error|default:"-" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table></div>
+        {% endfor %}
+      {% else %}
+      <p class="subtext">No campaign-level GOLD schemas detected (gold_campaign_*).</p>
+      {% endif %}
+
+      {% if debug_snapshot.errors %}
+      <h4 style="margin-top:12px;">Snapshot Errors</h4>
+      <ul>
+        {% for e in debug_snapshot.errors %}<li>{{ e }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>
