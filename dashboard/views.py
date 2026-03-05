@@ -391,14 +391,28 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     END
                 ) AS schedule_end_date,
                 MIN(NULLIF(c.title, '')) AS collateral_title,
-                MIN(NULLIF(cm.brand_name, '')) AS brand_name,
-                MIN(NULLIF(cm.company_logo, '')) AS company_logo
+                MIN(
+                    CASE
+                        WHEN cm.brand_name IS NULL OR btrim(cm.brand_name) = '' OR lower(btrim(cm.brand_name)) = 'null'
+                        THEN NULL
+                        ELSE cm.brand_name
+                    END
+                ) AS brand_name,
+                MIN(
+                    CASE
+                        WHEN cm.company_logo IS NULL OR btrim(cm.company_logo) = '' OR lower(btrim(cm.company_logo)) = 'null'
+                        THEN NULL
+                        ELSE cm.company_logo
+                    END
+                ) AS company_logo
             FROM bronze.campaign_management_campaign cm
             LEFT JOIN bronze.collateral_management_campaigncollateral cc ON cc.campaign_id = cm.id
             LEFT JOIN bronze.collateral_management_collateral c ON c.id = cc.collateral_id
-            WHERE cm.brand_campaign_id=%s
+            WHERE
+                lower(btrim(cm.brand_campaign_id)) = lower(btrim(%s))
+                OR cm.id::text = btrim(%s)
             """,
-            [selected_campaign],
+            [selected_campaign, selected_campaign],
         )
         if schedule_rows:
             start = _format_schedule_date(schedule_rows[0].get("schedule_start_date"))
