@@ -1,7 +1,7 @@
 # ReportsVersion1 — Reporting v2.1 Implementation
 
 This repository now contains a full Django + PostgreSQL medallion implementation for the In-Clinic Sharing System reporting pipeline.
-Test 1 -0903
+
 ## Implemented architecture
 
 - **RAW**: exact source replication in `raw_server1`/`raw_server2` with all source columns as text + ingestion metadata.
