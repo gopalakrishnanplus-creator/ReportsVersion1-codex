@@ -578,7 +578,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                       f.opened_first_ts
                     FROM {selected_schema}.fact_doctor_collateral_latest f
                     LEFT JOIN silver.dim_field_rep fr
-                      ON fr.id::text = NULLIF(btrim(f.field_rep_id_resolved), '')
+                      ON lower(COALESCE(NULLIF(btrim(fr.source_field_rep_id), ''), btrim(fr.id::text)))
+                       = lower(NULLIF(btrim(f.field_rep_id_resolved), ''))
                 ),
                 x AS (
                     SELECT

@@ -453,6 +453,7 @@ erDiagram
 - **Purpose:** KPI and trend visualization for one campaign.
 - **User flow:** open campaign page, optionally choose week.
 - **Backend logic:** `_build_report_context` loads weekly rows, computes KPI percentages/colors/wow deltas, state attention rows, collateral comparison cards, and brand metadata.
+- **State attribution detail:** state fallback in dashboard queries resolves field reps by `source_field_rep_id` (brand-supplied id) with `id` fallback, aligning state joins with current `campaign_fieldrep` data shape.
 - **DB interactions:** campaign-specific GOLD tables and related SILVER/BRONZE metadata joins.
 - **Frontend:** `overview.html`, `overview.css`, `overview.js` chart rendering.
 
