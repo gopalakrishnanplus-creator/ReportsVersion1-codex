@@ -340,7 +340,9 @@ Major responsibilities:
 #### mysql_server_1 tables
 1. `campaign_fieldrep`
    - `id, full_name, phone_number, brand_supplied_field_rep_id, is_active, password_hash, created_at, updated_at, brand_id, user_id, state`
-2. `campaign_campaign`
+2. `campaign_campaignfieldrep`
+   - `state, id, field_rep_id, created_at, campaign_id`
+3. `campaign_campaign`
    - `updated_at, system_rfa, system_pe, system_ic, status, start_date, register_message, num_doctors_supported, name, id, end_date, doctor_recruitment_link, created_at, contact_person_phone, contact_person_name, contact_person_email, brand_manager_password_encrypted, brand_manager_login_token, brand_manager_login_link, brand_manager_email, brand_id, banner_target_url, banner_small_url, banner_small_key, banner_large_url, banner_large_key, add_to_campaign_message`
 
 #### mysql_server_2 tables

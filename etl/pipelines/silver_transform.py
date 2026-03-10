@@ -11,12 +11,57 @@ def build_silver(run_id: str) -> None:
     execute(
         """
         CREATE TABLE silver.dim_field_rep AS
+        WITH unified AS (
+            SELECT
+                id::text AS id,
+                NULLIF(btrim(full_name), '') AS full_name,
+                NULLIF(btrim(phone_number), '') AS phone_number,
+                NULLIF(btrim(brand_supplied_field_rep_id), '') AS brand_supplied_field_rep_id,
+                CASE WHEN lower(COALESCE(is_active,'')) IN ('1','true','t','yes') THEN 'true' ELSE 'false' END AS is_active,
+                NULLIF(btrim(password_hash), '') AS password_hash,
+                created_at,
+                updated_at,
+                brand_id,
+                user_id,
+                NULLIF(btrim(state), '') AS state,
+                NULL::text AS campaign_id,
+                'campaign_fieldrep'::text AS source_table
+            FROM bronze.campaign_fieldrep
+            UNION ALL
+            SELECT
+                id::text AS id,
+                NULL::text AS full_name,
+                NULL::text AS phone_number,
+                NULLIF(btrim(field_rep_id), '') AS brand_supplied_field_rep_id,
+                'true'::text AS is_active,
+                NULL::text AS password_hash,
+                created_at,
+                NULL::text AS updated_at,
+                NULL::text AS brand_id,
+                NULL::text AS user_id,
+                NULLIF(btrim(state), '') AS state,
+                NULLIF(btrim(campaign_id), '') AS campaign_id,
+                'campaign_campaignfieldrep'::text AS source_table
+            FROM bronze.campaign_campaignfieldrep
+        ),
+        ranked AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY lower(regexp_replace(COALESCE(NULLIF(btrim(brand_supplied_field_rep_id),''), btrim(id)), '[^a-zA-Z0-9]', '', 'g'))
+                    ORDER BY
+                        CASE WHEN state IS NULL OR lower(state) = 'null' THEN 1 ELSE 0 END,
+                        COALESCE(NULLIF(updated_at,''), created_at) DESC NULLS LAST,
+                        id DESC
+                ) AS rn
+            FROM unified
+        )
         SELECT
             id,
             full_name,
             phone_number,
             brand_supplied_field_rep_id,
-            CASE WHEN lower(COALESCE(is_active,'')) IN ('1','true','t','yes') THEN 'true' ELSE 'false' END AS is_active,
+            is_active,
             password_hash,
             created_at,
             updated_at,
@@ -29,12 +74,13 @@ def build_silver(run_id: str) -> None:
             CASE WHEN lower(COALESCE(is_active,'')) IN ('1','true','t','yes') THEN 'true' ELSE 'false' END AS is_active_flag,
             created_at::text AS created_at_ts,
             updated_at::text AS updated_at_ts,
-            NULL::text AS campaign_id,
+            campaign_id,
             COALESCE(NULLIF(brand_supplied_field_rep_id,''), id::text) AS source_field_rep_id,
             NOW()::text AS _silver_updated_at,
             'PASS'::text AS _dq_status,
             NULL::text AS _dq_errors
-        FROM bronze.campaign_fieldrep
+        FROM ranked
+        WHERE rn = 1
         """
     )
 

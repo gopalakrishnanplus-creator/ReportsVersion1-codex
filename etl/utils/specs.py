@@ -15,6 +15,13 @@ SOURCE_TABLE_SPECS = {
             "user_id",
             "state",
         ],
+        "campaign_campaignfieldrep": [
+            "state",
+            "id",
+            "field_rep_id",
+            "created_at",
+            "campaign_id",
+        ],
         "campaign_campaign": [
             "updated_at",
             "system_rfa",

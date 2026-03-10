@@ -578,6 +578,17 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     WHERE state IS NOT NULL
                       AND btrim(state) <> ''
                       AND lower(btrim(state)) <> 'null'
+                    UNION
+                    SELECT DISTINCT
+                      lower(regexp_replace(COALESCE(NULLIF(btrim(ccf.field_rep_id), ''), btrim(ccf.id::text)), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
+                      initcap(btrim(ccf.state)) AS state_normalized
+                    FROM bronze.campaign_campaignfieldrep ccf
+                    LEFT JOIN silver.map_brand_campaign_to_campaign map
+                      ON NULLIF(btrim(map.campaign_id_resolved), '') = NULLIF(btrim(ccf.campaign_id), '')
+                    WHERE state IS NOT NULL
+                      AND btrim(state) <> ''
+                      AND lower(btrim(state)) <> 'null'
+                      AND lower(regexp_replace(btrim(map.brand_campaign_id), '[^a-zA-Z0-9]', '', 'g')) = lower(regexp_replace(btrim(%s), '[^a-zA-Z0-9]', '', 'g'))
                 ),
                 tx_rep AS (
                     SELECT DISTINCT ON (brand_campaign_id, doctor_identity_key)
@@ -648,6 +659,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 LIMIT 3
                 """,
                 [
+                    selected_campaign,
                     latest_week.get("week_start_date"),
                     latest_week.get("week_end_date"),
                     latest_week.get("week_start_date"),
