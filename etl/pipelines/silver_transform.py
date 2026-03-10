@@ -29,20 +29,22 @@ def build_silver(run_id: str) -> None:
             FROM bronze.campaign_fieldrep
             UNION ALL
             SELECT
-                id::text AS id,
+                ccf.id::text AS id,
                 NULL::text AS full_name,
                 NULL::text AS phone_number,
-                NULLIF(btrim(field_rep_id), '') AS brand_supplied_field_rep_id,
+                NULLIF(btrim(ccf.field_rep_id), '') AS brand_supplied_field_rep_id,
                 'true'::text AS is_active,
                 NULL::text AS password_hash,
-                created_at,
+                ccf.created_at,
                 NULL::text AS updated_at,
                 NULL::text AS brand_id,
                 NULL::text AS user_id,
-                NULLIF(btrim(state), '') AS state,
-                NULLIF(btrim(campaign_id), '') AS campaign_id,
+                NULLIF(btrim(cfr.state), '') AS state,
+                NULLIF(btrim(ccf.campaign_id), '') AS campaign_id,
                 'campaign_campaignfieldrep'::text AS source_table
-            FROM bronze.campaign_campaignfieldrep
+            FROM bronze.campaign_campaignfieldrep ccf
+            LEFT JOIN bronze.campaign_fieldrep cfr
+              ON cfr.id::text = ccf.field_rep_id::text
         ),
         ranked AS (
             SELECT
@@ -252,12 +254,28 @@ def build_silver(run_id: str) -> None:
     execute(
         """
         CREATE TABLE silver.bridge_brand_campaign_doctor_base AS
+        WITH campaign_rep_state AS (
+            SELECT DISTINCT
+                m.brand_campaign_id,
+                lower(regexp_replace(btrim(ccf.field_rep_id::text), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
+                COALESCE(NULLIF(initcap(btrim(cfr.state)), ''), 'UNKNOWN') AS state_normalized
+            FROM silver.map_brand_campaign_to_campaign m
+            JOIN bronze.campaign_campaignfieldrep ccf
+              ON NULLIF(btrim(ccf.campaign_id), '') = NULLIF(btrim(m.campaign_id_resolved), '')
+            LEFT JOIN bronze.campaign_fieldrep cfr
+              ON cfr.id::text = ccf.field_rep_id::text
+        )
         SELECT DISTINCT
             x.brand_campaign_id,
             x.doctor_identity_key,
             d.id AS doctor_master_id_resolved,
             x.field_rep_id_resolved,
-            COALESCE(fr.state_normalized, d.state_normalized, 'UNKNOWN') AS state_normalized,
+            COALESCE(
+                crs.state_normalized,
+                fr.state_normalized,
+                d.state_normalized,
+                'UNKNOWN'
+            ) AS state_normalized,
             x.inclusion_reason,
             NOW()::text AS _silver_updated_at,
             'PASS'::text AS _dq_status,
@@ -277,10 +295,14 @@ def build_silver(run_id: str) -> None:
                 'OBSERVED_IN_SHARELOG'::text AS inclusion_reason
             FROM silver.fact_share_log s
         ) x
-        LEFT JOIN silver.dim_doctor d ON d.doctor_identity_key = x.doctor_identity_key
+        LEFT JOIN silver.dim_doctor d
+          ON d.doctor_identity_key = x.doctor_identity_key
         LEFT JOIN silver.dim_field_rep fr
-          ON lower(COALESCE(NULLIF(btrim(fr.source_field_rep_id),''), btrim(fr.id::text)))
-           = lower(NULLIF(btrim(x.field_rep_id_resolved), ''))
+          ON lower(regexp_replace(COALESCE(NULLIF(btrim(fr.source_field_rep_id),''), btrim(fr.id::text)), '[^a-zA-Z0-9]', '', 'g'))
+           = lower(regexp_replace(NULLIF(btrim(x.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
+        LEFT JOIN campaign_rep_state crs
+          ON crs.brand_campaign_id = x.brand_campaign_id
+         AND crs.rep_key = lower(regexp_replace(NULLIF(btrim(x.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
         """
     )
 
