@@ -58,7 +58,9 @@ def build_silver(run_id: str) -> None:
             'PASS'::text AS _dq_status,
             NULL::text AS _dq_errors
         FROM bronze.doctor_viewer_doctor d
-        LEFT JOIN silver.dim_field_rep fr ON COALESCE(NULLIF(fr.source_field_rep_id,''), fr.id) = d.rep_id
+        LEFT JOIN silver.dim_field_rep fr
+          ON lower(COALESCE(NULLIF(btrim(fr.source_field_rep_id),''), btrim(fr.id::text)))
+           = lower(NULLIF(btrim(d.rep_id), ''))
         """
     )
 
@@ -230,7 +232,9 @@ def build_silver(run_id: str) -> None:
             FROM silver.fact_share_log s
         ) x
         LEFT JOIN silver.dim_doctor d ON d.doctor_identity_key = x.doctor_identity_key
-        LEFT JOIN silver.dim_field_rep fr ON COALESCE(NULLIF(fr.source_field_rep_id,''), fr.id) = x.field_rep_id_resolved
+        LEFT JOIN silver.dim_field_rep fr
+          ON lower(COALESCE(NULLIF(btrim(fr.source_field_rep_id),''), btrim(fr.id::text)))
+           = lower(NULLIF(btrim(x.field_rep_id_resolved), ''))
         """
     )
 
