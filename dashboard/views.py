@@ -571,17 +571,32 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             state_rows = _fetch_dicts(
                 f"""
                 WITH campaign_ref AS (
-                    SELECT DISTINCT NULLIF(btrim(m.campaign_id_resolved), '') AS campaign_id_resolved
-                    FROM silver.map_brand_campaign_to_campaign m
-                    WHERE lower(regexp_replace(btrim(m.brand_campaign_id), '[^a-zA-Z0-9]', '', 'g')) = lower(regexp_replace(btrim(%s), '[^a-zA-Z0-9]', '', 'g'))
+                    SELECT DISTINCT candidate_campaign_id
+                    FROM (
+                        SELECT NULLIF(btrim(%s), '') AS candidate_campaign_id
+                        UNION ALL
+                        SELECT NULLIF(btrim(m.campaign_id_resolved), '') AS candidate_campaign_id
+                        FROM silver.map_brand_campaign_to_campaign m
+                        WHERE lower(regexp_replace(btrim(m.brand_campaign_id), '[^a-zA-Z0-9]', '', 'g'))
+                              = lower(regexp_replace(btrim(%s), '[^a-zA-Z0-9]', '', 'g'))
+                        UNION ALL
+                        SELECT NULLIF(btrim(cc.id::text), '') AS candidate_campaign_id
+                        FROM bronze.campaign_campaign cc
+                        WHERE lower(regexp_replace(btrim(cc.id::text), '[^a-zA-Z0-9]', '', 'g'))
+                              = lower(regexp_replace(btrim(%s), '[^a-zA-Z0-9]', '', 'g'))
+                    ) q
+                    WHERE candidate_campaign_id IS NOT NULL
                 ),
                 rep_state_campaign AS (
                     SELECT DISTINCT
                       lower(regexp_replace(btrim(ccf.field_rep_id::text), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
                       initcap(btrim(cfr.state)) AS state_normalized
                     FROM bronze.campaign_campaignfieldrep ccf
-                    JOIN campaign_ref cr ON cr.campaign_id_resolved = NULLIF(btrim(ccf.campaign_id), '')
-                    LEFT JOIN bronze.campaign_fieldrep cfr ON cfr.id::text = ccf.field_rep_id::text
+                    JOIN campaign_ref cr
+                      ON lower(regexp_replace(NULLIF(btrim(ccf.campaign_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+                       = lower(regexp_replace(cr.candidate_campaign_id, '[^a-zA-Z0-9]', '', 'g'))
+                    LEFT JOIN bronze.campaign_fieldrep cfr
+                      ON cfr.id::text = ccf.field_rep_id::text
                     WHERE cfr.state IS NOT NULL
                       AND btrim(cfr.state) <> ''
                       AND lower(btrim(cfr.state)) <> 'null'
@@ -679,6 +694,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 LIMIT 3
                 """,
                 [
+                    selected_campaign,
+                    selected_campaign,
                     selected_campaign,
                     latest_week.get("week_start_date"),
                     latest_week.get("week_end_date"),
@@ -930,3 +947,7 @@ def export_report(request: HttpRequest, brand_campaign_id: str):
     context = _build_report_context(normalized_campaign_id, week_filter)
     context["export_mode"] = True
     return render(request, "dashboard/overview.html", context)
+
+
+
+
