@@ -62,9 +62,9 @@ def _env_int(*names: str, default: int) -> int:
 _load_dotenv()
 SECRET_KEY = _env("DJANGO_SECRET_KEY", default="dev-secret-key")
 DEBUG = _env("DJANGO_DEBUG", default="0") == "1"
-ALLOWED_HOSTS = ["*"]
+ALLOWED_HOSTS = ["reports.inditech.co.in"]
 CSRF_TRUSTED_ORIGINS = [
-    "https://reports.cpdinclinic.co.in",
+    "https://reports.inditech.co.in",
 ]
 
 INSTALLED_APPS = [
