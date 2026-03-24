@@ -1,0 +1,66 @@
+{% if not supported %}
+<section class="certified-panel certified-panel--disabled">
+  <p>Certification logic is not configured in the source system yet.</p>
+</section>
+{% else %}
+<section class="certified-panel">
+  <div class="certified-toolbar">
+    <h3>Certified Clinics List</h3>
+    <form class="certified-filter-form" method="get" action="/sapa-growth/certified-clinics/">
+      {% if filters.state %}<input type="hidden" name="state" value="{{ filters.state }}">{% endif %}
+      <label>
+        <span>Doctor</span>
+        <select name="cert_doctor_key">
+          <option value="">All Doctors</option>
+          {% for option in filter_options.doctors %}
+          <option value="{{ option.underlying_key }}" {% if filters.doctor_key == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>Field Rep</span>
+        <select name="cert_field_rep_id">
+          <option value="">All Field Reps</option>
+          {% for option in filter_options.field_reps %}
+          <option value="{{ option.underlying_key }}" {% if filters.field_rep_id == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>City</span>
+        <select name="cert_city">
+          <option value="">All Cities</option>
+          {% for option in filter_options.cities %}
+          <option value="{{ option.underlying_key }}" {% if filters.city == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <a class="download-button" href="/sapa-growth/certified-clinics/export/{% if export_query %}?{{ export_query }}{% endif %}">Download</a>
+    </form>
+  </div>
+  <div class="table-wrap">
+    <table class="detail-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Doctor's Name</th>
+          <th>City</th>
+          <th>Field Rep ID</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.serial_order }}</td>
+          <td>{{ row.doctor_display_name }}</td>
+          <td>{{ row.city|default:row.district|default:row.state }}</td>
+          <td>{{ row.field_rep_id }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="4">No data available for current filters</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
