@@ -1,0 +1,184 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SAPA Growth Clinic Program</title>
+  <link rel="stylesheet" href="{% static 'sapa_growth/css/dashboard.css' %}">
+</head>
+<body class="sapa-body">
+  <form id="pdf-export-csrf" hidden>{% csrf_token %}</form>
+  <main id="report-root" class="sapa-shell" data-export-filename="sapa-growth-dashboard-{{ summary.as_of_date|default:refresh.as_of_date|default:'report' }}.pdf">
+    {% if not ready %}
+    <section class="sapa-empty">
+      <h1>SAPA Growth Clinic Program</h1>
+      <p>The dashboard is not available yet. Run <code>python manage.py run_sapa_growth_etl</code> after configuring the SAPA sources.</p>
+    </section>
+    {% else %}
+    <section class="sapa-header">
+      <div>
+        <p class="eyebrow">SAPA Program Dashboard</p>
+        <h1>ISAPA GROWTH CLINIC PROGRAM</h1>
+      </div>
+      <div class="header-meta">
+        <p><strong>Last Updated:</strong> {{ refresh.published_at|default:refresh.as_of_date }}</p>
+        <button id="download-pdf-btn" class="download-button" type="button" data-export-url="{% url 'sapa_growth:dashboard-export' %}{% if filters_query %}?{{ filters_query }}{% endif %}">Download</button>
+      </div>
+    </section>
+
+    <section class="filters-card">
+      <form id="global-filters" method="get" class="filters-grid">
+        <label>
+          <span>State</span>
+          <select name="state">
+            <option value="">All States</option>
+            {% for option in filter_options.states %}
+            <option value="{{ option.underlying_key }}" {% if filters.state == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Field Rep</span>
+          <select name="field_rep_id">
+            <option value="">All Reps</option>
+            {% for option in filter_options.field_reps %}
+            <option value="{{ option.underlying_key }}" {% if filters.field_rep_id == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Doctor</span>
+          <select name="doctor_key">
+            <option value="">All Doctors</option>
+            {% for option in filter_options.doctors %}
+            <option value="{{ option.underlying_key }}" {% if filters.doctor_key == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </form>
+    </section>
+
+    <section class="section-block">
+      <div class="section-label">Field Rep Performance</div>
+      <div class="cards-grid two-up">
+        {% for tile in tiles.field_rep %}
+        <a class="metric-card metric-card--{{ tile.theme }}" href="{{ tile.href }}">
+          <div class="metric-card__title">{{ tile.title }}</div>
+          <div class="metric-card__value">{{ tile.value }}</div>
+          <div class="metric-card__meta">Cumulative: {{ tile.cumulative }}</div>
+          <div class="metric-card__delta {% if tile.delta > 0 %}up{% elif tile.delta < 0 %}down{% else %}flat{% endif %}">
+            {% if tile.delta > 0 %}↑{% elif tile.delta < 0 %}↓{% else %}•{% endif %} {{ tile.delta|default:0 }}
+          </div>
+        </a>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="section-block">
+      <div class="section-label">Clinic Performance</div>
+      <div class="cards-grid six-up">
+        {% for tile in tiles.clinic %}
+        <a class="metric-card metric-card--{{ tile.theme }} {% if not tile.supported %}metric-card--disabled{% endif %}" {% if not tile.supported %}href="#" aria-disabled="true"{% else %}href="{{ tile.href }}"{% endif %}>
+          <div class="metric-card__title">{{ tile.title }}</div>
+          <div class="metric-card__value">{% if not tile.supported %}Not Configured{% else %}{{ tile.value }}{% endif %}</div>
+          <div class="metric-card__meta">
+            {% if not tile.supported %}
+            Awaiting certification source logic
+            {% else %}
+            Cumulative: {{ tile.cumulative }}
+            {% endif %}
+          </div>
+          <div class="metric-card__delta {% if tile.delta > 0 %}up{% elif tile.delta < 0 %}down{% else %}flat{% endif %}">
+            {% if not tile.supported %}
+            Unsupported
+            {% else %}
+            {% if tile.delta > 0 %}↑{% elif tile.delta < 0 %}↓{% else %}•{% endif %} {{ tile.delta|default:0 }}
+            {% endif %}
+          </div>
+        </a>
+        {% endfor %}
+      </div>
+      <div class="mini-list-row">
+        <article class="mini-list-card">
+          <h3>Top 3 Red Flags</h3>
+          <ol>
+            {% for row in red_flag_rankings %}
+            <li><span>{{ row.red_flag }}</span><strong>{{ row.occurrence_count }}</strong></li>
+            {% empty %}
+            <li class="empty-copy">No data available for current filters</li>
+            {% endfor %}
+          </ol>
+        </article>
+      </div>
+    </section>
+
+    <section class="section-block">
+      <div class="cards-grid two-up">
+        {% for tile in tiles.operational %}
+        <a class="metric-card metric-card--{{ tile.theme }}" href="{{ tile.href }}">
+          <div class="metric-card__title">{{ tile.title }}</div>
+          <div class="metric-card__value">{{ tile.value }}</div>
+          <div class="metric-card__meta">Cumulative: {{ tile.cumulative }}</div>
+          <div class="metric-card__delta {% if tile.delta > 0 %}up{% elif tile.delta < 0 %}down{% else %}flat{% endif %}">
+            {% if tile.delta > 0 %}↑{% elif tile.delta < 0 %}↓{% else %}•{% endif %} {{ tile.delta|default:0 }}
+          </div>
+        </a>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="section-block">
+      <div class="section-label">Education (Courses)</div>
+      <div class="cards-grid two-up">
+        {% for course in course_cards %}
+        <article class="course-card">
+          <h3>{{ course.title }}</h3>
+          {% for row in course.rows %}
+          <a class="course-row" href="{{ row.href }}">
+            <div class="course-row__head">
+              <span>{{ row.label }}</span>
+              <strong>{{ row.count }}/{{ course.total }}</strong>
+            </div>
+            <div class="course-bar">
+              <div class="course-bar__fill" style="width: {{ row.ratio }}%"></div>
+            </div>
+          </a>
+          {% endfor %}
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="section-block">
+      <div class="cards-grid two-up">
+        <article class="list-card">
+          <h3><a href="/sapa-growth/details/patient_videos/{% if filters_query %}?{{ filters_query }}{% endif %}">Top 5 Patient Education Videos Viewed</a></h3>
+          <ol>
+            {% for row in patient_videos %}
+            <li><span><a href="{{ row.content_identifier }}" target="_blank" rel="noopener noreferrer">{{ row.preferred_display_label }}</a></span><strong>{{ row.view_count }}</strong></li>
+            {% empty %}
+            <li class="empty-copy">No data available for current filters</li>
+            {% endfor %}
+          </ol>
+        </article>
+        <article class="list-card">
+          <h3><a href="/sapa-growth/details/doctor_videos/{% if filters_query %}?{{ filters_query }}{% endif %}">Top 5 Doctor Education Videos Viewed</a></h3>
+          <ol>
+            {% for row in doctor_videos %}
+            <li><span><a href="{{ row.content_identifier }}" target="_blank" rel="noopener noreferrer">{{ row.preferred_display_label }}</a></span><strong>{{ row.view_count }}</strong></li>
+            {% empty %}
+            <li class="empty-copy">No data available for current filters</li>
+            {% endfor %}
+          </ol>
+        </article>
+      </div>
+    </section>
+
+    {% endif %}
+  </main>
+
+  <script src="{% static 'sapa_growth/vendor/html2canvas.min.js' %}"></script>
+  <script src="{% static 'sapa_growth/js/dashboard.js' %}"></script>
+</body>
+</html>

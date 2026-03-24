@@ -1,0 +1,76 @@
+{% load static sapa_growth_extras %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }} | SAPA Growth</title>
+  <link rel="stylesheet" href="{% static 'sapa_growth/css/dashboard.css' %}">
+</head>
+<body class="sapa-body">
+  <main class="sapa-shell">
+    <section class="detail-header">
+      <div>
+        <p class="eyebrow">SAPA Detail View</p>
+        <h1>{{ title }}</h1>
+        <p class="detail-meta">As of {{ as_of_date }} | Last updated {{ last_updated }}</p>
+      </div>
+      <div class="detail-actions">
+        <a class="ghost-button" href="/sapa-growth/{% if filters_query %}?{{ filters_query }}{% endif %}">Back to Dashboard</a>
+        <a class="download-button" href="/sapa-growth/details/{{ metric }}/export/{% if filters_query %}?{{ filters_query }}{% endif %}">Export CSV</a>
+      </div>
+    </section>
+
+    <section class="filters-card">
+      <p><strong>Rows:</strong> {{ row_count }}</p>
+      <p><strong>Filters:</strong> State={{ filters.state|default:"All" }}, Field Rep={{ filters.field_rep_id|default:"All" }}, Doctor={{ filters.doctor_key|default:"All" }}</p>
+    </section>
+
+    <section class="table-card">
+      <div class="table-wrap">
+        <table class="detail-table">
+          <thead>
+            <tr>
+              {% for column in columns %}
+              <th>{{ column|title|cut:"_" }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+            <tr>
+              {% for column in columns %}
+              {% with cell=row|get_item:column %}
+              <td>
+                {% if column == "preferred_display_label" and row.content_identifier|is_external_url %}
+                <a href="{{ row.content_identifier }}" target="_blank" rel="noopener noreferrer">{{ cell }}</a>
+                {% elif cell|is_external_url %}
+                <a href="{{ cell }}" target="_blank" rel="noopener noreferrer">{{ cell }}</a>
+                {% else %}
+                {{ cell }}
+                {% endif %}
+              </td>
+              {% endwith %}
+              {% endfor %}
+            </tr>
+            {% empty %}
+            <tr><td colspan="{{ columns|length }}">No data available for current filters</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if page_count > 1 %}
+      <div class="pagination">
+        {% if page > 1 %}
+        <a href="?{% if filters_query %}{{ filters_query }}&{% endif %}page={{ page|add:"-1" }}">Previous</a>
+        {% endif %}
+        <span>Page {{ page }} of {{ page_count }}</span>
+        {% if page < page_count %}
+        <a href="?{% if filters_query %}{{ filters_query }}&{% endif %}page={{ page|add:"1" }}">Next</a>
+        {% endif %}
+      </div>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>
