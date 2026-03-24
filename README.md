@@ -2,6 +2,14 @@
 Test 1003
 This repository now contains a full Django + PostgreSQL medallion implementation for the In-Clinic Sharing System reporting pipeline.
 
+## SAPA / ESAPA dashboard
+
+The SAPA dashboard is implemented as a separate app and ETL path. See [docs/ESAPA_DASHBOARD.md](docs/ESAPA_DASHBOARD.md) for:
+
+- runtime source boundaries
+- MySQL Server 1 configuration behavior
+- SAPA schema isolation from the legacy Inclinic report
+
 ## Implemented architecture
 
 - **RAW**: exact source replication in `raw_server1`/`raw_server2` with all source columns as text + ingestion metadata.
@@ -53,7 +61,9 @@ Settings now auto-load variables from a local `.env` file at startup, so `python
 ./setup_local.sh
 ```
 
-The script creates `.venv`, installs dependencies, optionally starts `reports-postgres` Docker container, runs `python manage.py check`, and executes `python manage.py run_etl`.
+The script creates `.venv`, initializes a local PostgreSQL instance, installs dependencies, seeds realistic SQLite dummy source databases, runs `python manage.py check`, resets reporting schemas, and executes `python manage.py run_etl`.
+
+For a Docker-free local setup using Postgres.app and SQLite sample sources, see [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md). The current `setup_local.sh` follows that native flow.
 
 ### Windows quick notes
 
@@ -129,5 +139,3 @@ You can override runtime values, for example:
 ```bash
 PROJECT_DIR=/var/www/ReportsVersion1 VENV_DIR=/var/www/venv ENV_FILE=/var/www/secrets/.env DJANGO_SETTINGS_MODULE=config.settings.prod RUN_ETL_ON_DEPLOY=1 RUN_ETL_CONTINUE_ON_ERROR=1 GUNICORN_SERVICE=gunicorn ./deploy.sh
 ```
-
-Test 1
