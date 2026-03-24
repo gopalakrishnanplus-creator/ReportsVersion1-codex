@@ -544,6 +544,7 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
             "ready": False,
             "filters": filters,
             "filter_options": options,
+            "export_filename": "sapa-growth-dashboard-report.pdf",
         }
 
     summary = None
@@ -599,6 +600,7 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
         "ready": True,
         "refresh": refresh,
         "summary": summary,
+        "export_filename": f"sapa-growth-dashboard-{summary.get('as_of_date') or refresh.get('as_of_date') or 'report'}.pdf",
         "tiles": _dashboard_tiles(summary, filters),
         "course_cards": _course_cards(filtered_course_rows, filters),
         "patient_videos": patient_videos[:5],

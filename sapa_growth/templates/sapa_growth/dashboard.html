@@ -9,7 +9,7 @@
 </head>
 <body class="sapa-body">
   <form id="pdf-export-csrf" hidden>{% csrf_token %}</form>
-  <main id="report-root" class="sapa-shell" data-export-filename="sapa-growth-dashboard-{{ summary.as_of_date|default:refresh.as_of_date|default:'report' }}.pdf">
+  <main id="report-root" class="sapa-shell" data-export-filename="{{ export_filename }}">
     {% if not ready %}
     <section class="sapa-empty">
       <h1>SAPA Growth Clinic Program</h1>

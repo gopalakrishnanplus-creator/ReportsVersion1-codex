@@ -9,7 +9,7 @@ from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve, reverse
 
 from sapa_growth.logic import classify_metric_event, explode_followup_schedule, map_course_status, normalize_phone, webinar_effective_date
-from sapa_growth.services import _derived_certified_rows, _enrich_video_rows, export_dashboard_pdf
+from sapa_growth.services import _derived_certified_rows, _enrich_video_rows, dashboard_context, export_dashboard_pdf
 from sapa_growth.video_metadata import resolve_video_metadata
 
 
@@ -159,6 +159,15 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertIn("attachment; filename=", response["Content-Disposition"])
         self.assertTrue(response.content.startswith(b"%PDF"))
         log_export_mock.assert_called_once()
+
+    def test_dashboard_context_without_refresh_sets_safe_export_filename(self):
+        with patch("sapa_growth.services._latest_refresh", return_value=None), patch(
+            "sapa_growth.services.filter_options",
+            return_value={"states": [], "field_reps": [], "doctors": [], "cities": []},
+        ):
+            context = dashboard_context({"state": None, "field_rep_id": None, "doctor_key": None})
+        self.assertFalse(context["ready"])
+        self.assertEqual(context["export_filename"], "sapa-growth-dashboard-report.pdf")
 
 
 class SapaGrowthRoutingTests(SimpleTestCase):
