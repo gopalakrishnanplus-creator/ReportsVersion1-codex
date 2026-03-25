@@ -8,7 +8,7 @@ The SAPA dashboard must not fetch application data from CSV files at runtime.
 
 Runtime inputs are:
 
-- MySQL source tables from `MySQL Server 1`
+- MySQL source tables from the SAPA application/source MySQL database
 - PostgreSQL reporting tables in SAPA-specific schemas
 - WordPress/LearnDash API for webinar and course data when the SAPA ETL is run against live upstreams
 
@@ -34,7 +34,23 @@ No Django migrations were added for the SAPA app.
 
 ## Source configuration
 
-SAPA MySQL extraction now defaults to `MYSQL_SERVER1_*` credentials when `SAPA_MYSQL_*` is not explicitly set.
+SAPA MySQL extraction first uses explicit `SAPA_MYSQL_*` credentials when set.
+
+If those variables are absent, SAPA falls back in this order:
+
+- `MYSQL_SERVER2_*`
+- `MYSQL_SERVER1_*`
+
+This keeps SAPA pointed at the application/source MySQL database by default while preserving an explicit SAPA override path.
+
+SAPA WordPress extraction first uses explicit `SAPA_WORDPRESS_*` variables.
+
+If those variables are absent, it also accepts the helper-style names:
+
+- `WORDPRESS_URL`
+- `WORDPRESS_API_SECRET`
+- `API_SECRET`
+- `WORDPRESS_TIMEOUT`
 
 Relevant settings are in:
 
