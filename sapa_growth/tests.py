@@ -8,6 +8,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve, reverse
 
+from etl.sapa_growth.mysql import extract_rows
 from sapa_growth.logic import classify_metric_event, explode_followup_schedule, map_course_status, normalize_phone, webinar_effective_date
 from sapa_growth.services import _derived_certified_rows, _enrich_video_rows, dashboard_context, export_dashboard_pdf
 from sapa_growth.video_metadata import resolve_video_metadata
@@ -174,3 +175,102 @@ class SapaGrowthRoutingTests(SimpleTestCase):
     def test_dashboard_route_registered(self):
         self.assertEqual(reverse("sapa_growth:dashboard"), "/sapa-growth/")
         self.assertEqual(resolve("/sapa-growth/").view_name, "sapa_growth:dashboard")
+
+
+class SapaGrowthMySQLExtractionTests(SimpleTestCase):
+    def test_extract_rows_tolerates_missing_optional_columns(self):
+        executed_queries: list[tuple[str, list[str]]] = []
+
+        class DummyCursor:
+            def __init__(self) -> None:
+                self._mode = "columns"
+                self._select_batches = [
+                    [
+                        {
+                            "id": 1,
+                            "event_type": "action_click",
+                            "action_key": "reminder_sent",
+                            "share_code": "ABC",
+                            "form_id": "FORM-1",
+                            "language_code": "en",
+                            "video_url": "https://youtu.be/example",
+                            "meta": "{}",
+                            "ts": "2026-03-25 09:00:00",
+                            "doctor_id": "DOC-1",
+                            "red_flag_id": "RF-1",
+                            "overall_flag_code": "red",
+                        }
+                    ],
+                    [],
+                ]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def execute(self, query: str, params: list[str] | None = None) -> None:
+                executed_queries.append((query, list(params or [])))
+                if query.startswith("SHOW COLUMNS"):
+                    self._mode = "columns"
+                else:
+                    self._mode = "select"
+
+            def fetchall(self):
+                return [
+                    {"Field": "id"},
+                    {"Field": "event_type"},
+                    {"Field": "action_key"},
+                    {"Field": "share_code"},
+                    {"Field": "form_id"},
+                    {"Field": "language_code"},
+                    {"Field": "video_url"},
+                    {"Field": "meta"},
+                    {"Field": "ts"},
+                    {"Field": "doctor_id"},
+                    {"Field": "red_flag_id"},
+                    {"Field": "overall_flag_code"},
+                ]
+
+            def fetchmany(self, size: int):
+                if self._mode != "select":
+                    return []
+                return self._select_batches.pop(0)
+
+        class DummyConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def cursor(self):
+                return DummyCursor()
+
+        with patch("etl.sapa_growth.mysql.pymysql.connect", return_value=DummyConnection()):
+            rows = extract_rows(
+                "redflags_metricevent",
+                [
+                    "id",
+                    "event_type",
+                    "action_key",
+                    "share_code",
+                    "form_id",
+                    "language_code",
+                    "video_url",
+                    "meta",
+                    "ts",
+                    "doctor_id",
+                    "patient_id",
+                    "red_flag_id",
+                    "overall_flag_code",
+                ],
+                watermark_field="ts",
+                watermark_start="2026-03-01 00:00:00",
+            )
+
+        self.assertEqual(rows[0]["patient_id"], None)
+        self.assertEqual(len(executed_queries), 2)
+        self.assertIn("WHERE `ts` >= %s", executed_queries[1][0])
+        self.assertEqual(executed_queries[1][1], ["2026-03-01 00:00:00"])

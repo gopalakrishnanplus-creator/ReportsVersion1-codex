@@ -169,11 +169,46 @@ MYSQL_SERVER_2 = {
 }
 
 SAPA_MYSQL = {
-    "HOST": _env("SAPA_MYSQL_HOST", "MYSQL_SERVER1_HOST", "MYSQL1_HOST", default="localhost"),
-    "PORT": _env_int("SAPA_MYSQL_PORT", "MYSQL_SERVER1_PORT", "MYSQL1_PORT", default=3306),
-    "USER": _env("SAPA_MYSQL_USER", "MYSQL_SERVER1_USER", "MYSQL1_USER", default="root"),
-    "PASSWORD": _env("SAPA_MYSQL_PASSWORD", "MYSQL_SERVER1_PASSWORD", "MYSQL1_PASSWORD", default=""),
-    "DATABASE": _env("SAPA_MYSQL_DB", "MYSQL_SERVER1_DB", "MYSQL1_DB", default=""),
+    "HOST": _env(
+        "SAPA_MYSQL_HOST",
+        "MYSQL_SERVER2_HOST",
+        "MYSQL2_HOST",
+        "MYSQL_SERVER1_HOST",
+        "MYSQL1_HOST",
+        default="localhost",
+    ),
+    "PORT": _env_int(
+        "SAPA_MYSQL_PORT",
+        "MYSQL_SERVER2_PORT",
+        "MYSQL2_PORT",
+        "MYSQL_SERVER1_PORT",
+        "MYSQL1_PORT",
+        default=3306,
+    ),
+    "USER": _env(
+        "SAPA_MYSQL_USER",
+        "MYSQL_SERVER2_USER",
+        "MYSQL2_USER",
+        "MYSQL_SERVER1_USER",
+        "MYSQL1_USER",
+        default="root",
+    ),
+    "PASSWORD": _env(
+        "SAPA_MYSQL_PASSWORD",
+        "MYSQL_SERVER2_PASSWORD",
+        "MYSQL2_PASSWORD",
+        "MYSQL_SERVER1_PASSWORD",
+        "MYSQL1_PASSWORD",
+        default="",
+    ),
+    "DATABASE": _env(
+        "SAPA_MYSQL_DB",
+        "MYSQL_SERVER2_DB",
+        "MYSQL2_DB",
+        "MYSQL_SERVER1_DB",
+        "MYSQL1_DB",
+        default="",
+    ),
     "CONNECT_TIMEOUT": _env_int("SAPA_MYSQL_CONNECT_TIMEOUT", default=10),
     "READ_TIMEOUT": _env_int("SAPA_MYSQL_READ_TIMEOUT", default=60),
     "WRITE_TIMEOUT": _env_int("SAPA_MYSQL_WRITE_TIMEOUT", default=60),
@@ -189,9 +224,9 @@ SAPA_SOURCE_FIXTURE_DIR = _env(
 SAPA_VIDEO_METADATA_TIMEOUT = _env_int("SAPA_VIDEO_METADATA_TIMEOUT", default=8)
 
 SAPA_WORDPRESS = {
-    "BASE_URL": _env("SAPA_WORDPRESS_URL", default="https://esapa.one/"),
-    "API_SECRET": _env("SAPA_WORDPRESS_SECRET", default=""),
-    "TIMEOUT": _env_int("SAPA_WORDPRESS_TIMEOUT", default=30),
+    "BASE_URL": _env("SAPA_WORDPRESS_URL", "WORDPRESS_URL", default="https://esapa.one/"),
+    "API_SECRET": _env("SAPA_WORDPRESS_SECRET", "WORDPRESS_API_SECRET", "API_SECRET", default=""),
+    "TIMEOUT": _env_int("SAPA_WORDPRESS_TIMEOUT", "WORDPRESS_TIMEOUT", default=30),
     "RETRY_COUNT": _env_int("SAPA_WORDPRESS_RETRY_COUNT", default=2),
     "BACKEND": _env("SAPA_WORDPRESS_BACKEND", default="http").strip().lower(),
     "FIXTURE_DIR": _env("SAPA_WORDPRESS_FIXTURE_DIR", default=""),

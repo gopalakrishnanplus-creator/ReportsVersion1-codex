@@ -45,22 +45,38 @@ def extract_rows(table: str, columns: list[str], watermark_field: str | None = N
             "CSV-based SAPA extraction is disabled."
         )
 
-    query_columns = ", ".join(f"`{column}`" for column in columns)
-    query = f"SELECT {query_columns} FROM `{table}`"
-    params: list[Any] = []
-    if watermark_field and clean_text(watermark_start):
-        query += f" WHERE `{watermark_field}` >= %s"
-        params.append(watermark_start)
-
     try:
         rows: list[dict[str, Any]] = []
         with pymysql.connect(**_connection_params()) as conn:
             with conn.cursor() as cursor:
+                cursor.execute(f"SHOW COLUMNS FROM `{table}`")
+                available_columns = {str(item["Field"]) for item in cursor.fetchall()}
+                if not available_columns:
+                    return []
+
+                selected_columns = [column for column in columns if column in available_columns]
+                missing_columns = [column for column in columns if column not in available_columns]
+                if not selected_columns:
+                    raise SapaMySQLExtractionError(
+                        f"SAPA MySQL extract failed for table '{table}': none of the requested columns exist"
+                    )
+
+                query_columns = ", ".join(f"`{column}`" for column in selected_columns)
+                query = f"SELECT {query_columns} FROM `{table}`"
+                params: list[Any] = []
+                if watermark_field and clean_text(watermark_start) and watermark_field in available_columns:
+                    query += f" WHERE `{watermark_field}` >= %s"
+                    params.append(watermark_start)
+
                 cursor.execute(query, params)
                 while True:
                     batch = cursor.fetchmany(1000)
                     if not batch:
                         break
+                    if missing_columns:
+                        for row in batch:
+                            for column in missing_columns:
+                                row[column] = None
                     rows.extend(batch)
         return rows
     except Exception as exc:
