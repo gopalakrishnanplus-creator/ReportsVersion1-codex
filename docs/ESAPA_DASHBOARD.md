@@ -38,10 +38,10 @@ SAPA MySQL extraction first uses explicit `SAPA_MYSQL_*` credentials when set.
 
 If those variables are absent, SAPA falls back in this order:
 
-- `MYSQL_SERVER2_*`
 - `MYSQL_SERVER1_*`
+- `MYSQL_SERVER2_*`
 
-This keeps SAPA pointed at the application/source MySQL database by default while preserving an explicit SAPA override path.
+This keeps SAPA pointed at `healthcare_forms_2` by default while preserving an explicit SAPA override path when a deployment needs something different.
 
 SAPA WordPress extraction first uses explicit `SAPA_WORDPRESS_*` variables.
 
