@@ -1,0 +1,467 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ campaign_name }} | Patient Education Reporting</title>
+  <link rel="stylesheet" href="{% static 'pe_reports/css/dashboard.css' %}?v=20260327d">
+</head>
+<body class="pe-body">
+  <form id="pdf-export-csrf" hidden>{% csrf_token %}</form>
+  <main id="report-root" class="pe-shell" data-export-filename="{{ export_filename }}">
+    {% if not ready %}
+    <section class="empty-state pe-surface">
+      <div class="empty-state-icon">PE</div>
+      <h1>Patient Education Reporting Dashboard</h1>
+      <p>The dashboard is not available yet. Run <code>python manage.py run_pe_reports_etl</code> after configuring the PE portal and master MySQL sources.</p>
+    </section>
+    {% else %}
+    <section class="pe-header pe-surface">
+      <div class="header-primary">
+        <div class="brand-lockup">
+          <div class="brand-mark">{{ brand_name|default:campaign_name|slice:":2"|upper }}</div>
+          <div>
+            <p class="eyebrow">{{ brand_name|default:"Patient Education" }}</p>
+            <h1>Patient Education Reporting Dashboard</h1>
+            <p class="subtext">{{ campaign_name }}</p>
+          </div>
+        </div>
+        <div class="header-badges">
+          <span class="info-pill">Campaign ID: {{ campaign_id }}</span>
+        </div>
+      </div>
+
+      <div class="header-highlight">
+        <div class="panel-title-row">
+          <div>
+            <p class="eyebrow">Campaign Snapshot</p>
+            <h2>{{ campaign_name }}</h2>
+          </div>
+          <span class="info-pill">As of {{ refresh.as_of_date|default:refresh.published_at }}</span>
+        </div>
+        <div class="snapshot-grid">
+          <div class="snapshot-card">
+            <span class="detail-kicker">Current Health</span>
+            <strong class="highlight-value">{{ summary.campaign_health_score|floatformat:0 }}<span>/100</span></strong>
+            <span class="highlight-note">Activation {{ summary.activation_pct|floatformat:1 }}% · Play {{ summary.play_rate_pct|floatformat:1 }}%</span>
+          </div>
+          <div class="snapshot-card">
+            <span class="detail-kicker">Weekly Health</span>
+            <strong class="highlight-value">{{ current_week.weekly_health_score|floatformat:0 }}<span>/100</span></strong>
+            <span class="highlight-note">Week {{ current_week.week_index|default:"-" }} ending {{ current_week.week_end_date|default:"-" }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="header-meta">
+        <div class="meta-stack">
+          <p class="meta-label">Published Snapshot</p>
+          <h2>{{ campaign_name }}</h2>
+          <p class="subtext">Last Updated {{ refresh.published_at|default:refresh.as_of_date }}</p>
+        </div>
+        <div class="header-actions">
+          <button id="download-pdf-btn" class="cta-button" type="button" data-export-url="{% url 'pe_reports:dashboard-export' campaign_id=campaign_id %}{% if filters_query %}?{{ filters_query }}{% endif %}">Download PDF</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel filters-panel pe-surface">
+      <div class="panel-head panel-head-stack">
+        <div>
+          <p class="eyebrow">Global Filters</p>
+          <h2>Filter The Dashboard</h2>
+        </div>
+        <p class="helper-copy">Every card, ranking, detail page, and export respects the same query parameter state.</p>
+      </div>
+      <form id="global-filters" method="get" class="filters-grid">
+        <label>
+          <span>Week</span>
+          <select name="week">
+            <option value="">All Weeks</option>
+            {% for option in filter_options.weeks %}
+            <option value="{{ option.underlying_key }}" {% if filters.week == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>State</span>
+          <select name="state">
+            <option value="">All States</option>
+            {% for option in filter_options.states %}
+            <option value="{{ option.underlying_key }}" {% if filters.state == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Field Rep</span>
+          <select name="field_rep_id">
+            <option value="">All Field Reps</option>
+            {% for option in filter_options.field_reps %}
+            <option value="{{ option.underlying_key }}" {% if filters.field_rep_id == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Doctor</span>
+          <select name="doctor_key">
+            <option value="">All Doctors</option>
+            {% for option in filter_options.doctors %}
+            <option value="{{ option.underlying_key }}" {% if filters.doctor_key == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Language</span>
+          <select name="language_code">
+            <option value="">All Languages</option>
+            {% for option in filter_options.languages %}
+            <option value="{{ option.underlying_key }}" {% if filters.language_code == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Share Type</span>
+          <select name="share_type">
+            <option value="">All Share Types</option>
+            {% for option in filter_options.share_types %}
+            <option value="{{ option.underlying_key }}" {% if filters.share_type == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Therapy Area</span>
+          <select name="therapy_area">
+            <option value="">All Therapy Areas</option>
+            {% for option in filter_options.therapy_areas %}
+            <option value="{{ option.underlying_key }}" {% if filters.therapy_area == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Trigger</span>
+          <select name="trigger">
+            <option value="">All Triggers</option>
+            {% for option in filter_options.triggers %}
+            <option value="{{ option.underlying_key }}" {% if filters.trigger == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Bundle</span>
+          <select name="bundle">
+            <option value="">All Bundles</option>
+            {% for option in filter_options.bundles %}
+            <option value="{{ option.underlying_key }}" {% if filters.bundle == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </form>
+      <div class="filter-footer">
+        <p class="helper-copy">Filters auto-apply on change. Use a clean URL to reset the view.</p>
+      </div>
+    </section>
+
+    <section class="health-grid">
+      <article class="score-card pe-surface {{ summary.health_color }}">
+        <div class="metric-label">Campaign Health</div>
+        <div class="score-line"><strong>{{ summary.campaign_health_score|floatformat:0 }}</strong><span>/100</span></div>
+        <p class="subtext">Activation {{ summary.activation_pct|floatformat:1 }}% · Play {{ summary.play_rate_pct|floatformat:1 }}%</p>
+      </article>
+      <article class="score-card pe-surface {{ current_week.health_color }}">
+        <div class="metric-label">Weekly Campaign Health</div>
+        <div class="score-line"><strong>{{ current_week.weekly_health_score|floatformat:0 }}</strong><span>/100</span></div>
+        <p class="subtext">Week {{ current_week.week_index|default:"-" }} ending {{ current_week.week_end_date|default:"-" }}</p>
+      </article>
+      <article class="panel attention-panel pe-surface">
+        <div class="panel-title-row">
+          <div>
+            <p class="eyebrow">Attention</p>
+            <h3>States Requiring Attention</h3>
+          </div>
+          <a href="{{ detail_links.state_attention }}">View All</a>
+        </div>
+        {% for row in state_attention %}
+        <div class="attention-row">
+          <div>
+            <strong>{{ row.state }}</strong>
+            <p>Activation {{ row.activation_pct|floatformat:1 }}%</p>
+          </div>
+          <div class="align-right">
+            <span class="badge badge-{{ row.label|lower }}">{{ row.label }}</span>
+            <p>50% {{ row.engagement_50_pct|floatformat:1 }}%</p>
+          </div>
+        </div>
+        {% empty %}
+        <p class="empty-copy">No state alerts for the current filter set.</p>
+        {% endfor %}
+      </article>
+      <article class="panel action-panel pe-surface">
+        <div class="panel-title-row">
+          <div>
+            <p class="eyebrow">Recommended Action</p>
+            <h3>Action Required This Week</h3>
+          </div>
+        </div>
+        <p class="action-title">{{ action_row.primary_issue_title }}</p>
+        <p class="subtext"><strong>Who should act:</strong> {{ action_row.who_should_act_role }}</p>
+        <ul class="action-list">
+          <li>{{ action_row.recommended_action_1 }}</li>
+          <li>{{ action_row.recommended_action_2 }}</li>
+          <li>{{ action_row.recommended_action_3 }}</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="section-block">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Weekly Movement</p>
+          <h2>Sharing Performance</h2>
+        </div>
+      </div>
+      <div class="metric-grid">
+        {% for card in sharing_cards %}
+        <a class="metric-card pe-surface" href="{{ card.href }}">
+          <div class="metric-card-top">
+            <div class="metric-label">{{ card.title }}</div>
+            <span class="metric-chip">KPI</span>
+          </div>
+          <div class="metric-value">{{ card.value }}</div>
+          <div class="metric-meta">{{ card.subtitle }}</div>
+          <div class="metric-delta {% if card.delta > 0 %}positive{% elif card.delta < 0 %}negative{% endif %}">
+            {% if card.delta > 0 %}+{% endif %}{{ card.delta }}
+          </div>
+        </a>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="section-block">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Playback Funnel</p>
+          <h2>Playback Engagement</h2>
+        </div>
+      </div>
+      <div class="metric-grid">
+        {% for card in playback_cards %}
+        <a class="metric-card compact pe-surface" href="{{ card.href }}">
+          <div class="metric-card-top">
+            <div class="metric-label">{{ card.title }}</div>
+            <span class="metric-chip">Weekly</span>
+          </div>
+          <div class="metric-value">{{ card.value }}</div>
+          <div class="metric-delta {% if card.delta > 0 %}positive{% elif card.delta < 0 %}negative{% endif %}">
+            {% if card.delta > 0 %}+{% endif %}{{ card.delta }}
+          </div>
+        </a>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="section-block">
+      <article class="panel comparison-panel pe-surface">
+        <div class="panel-title-row">
+          <div>
+            <p class="eyebrow">Benchmarks</p>
+            <h3>Comparison Cards</h3>
+          </div>
+        </div>
+        <div class="comparison-grid">
+          <div class="comparison-card">
+            <p class="eyebrow">Current Campaign</p>
+            <p>Enrolled <strong>{{ comparison_cards.current.enrolled_doctors_current }}</strong></p>
+            <p>Doctors Sharing <strong>{{ comparison_cards.current.doctors_sharing_unique_cumulative }}</strong></p>
+            <p>Shares <strong>{{ comparison_cards.current.shares_total_cumulative }}</strong></p>
+            <p>Played <strong>{{ comparison_cards.current.shares_played_cumulative }}</strong></p>
+            <p>50% <strong>{{ comparison_cards.current.shares_viewed_50_cumulative }}</strong></p>
+            <p>100% <strong>{{ comparison_cards.current.shares_viewed_100_cumulative }}</strong></p>
+            <p>Health <strong>{{ comparison_cards.current.campaign_health_score|floatformat:1 }}</strong></p>
+          </div>
+          <div class="comparison-card">
+            <p class="eyebrow">Best Week</p>
+            <p>Enrolled <strong>{{ comparison_cards.best_week.enrolled_doctors_current|default:"0" }}</strong></p>
+            <p>Doctors Sharing <strong>{{ comparison_cards.best_week.doctors_sharing_unique|default:"0" }}</strong></p>
+            <p>Shares <strong>{{ comparison_cards.best_week.shares_total|default:"0" }}</strong></p>
+            <p>Played <strong>{{ comparison_cards.best_week.shares_played|default:"0" }}</strong></p>
+            <p>50% <strong>{{ comparison_cards.best_week.shares_viewed_50|default:"0" }}</strong></p>
+            <p>100% <strong>{{ comparison_cards.best_week.shares_viewed_100|default:"0" }}</strong></p>
+            <p>Health <strong>{{ comparison_cards.best_week.weekly_health_score|floatformat:1 }}</strong></p>
+          </div>
+          <div class="comparison-card">
+            <p class="eyebrow">Benchmark Best</p>
+            <p>Enrolled <strong>{{ comparison_cards.benchmark.enrolled_doctors_current|default:"0" }}</strong></p>
+            <p>Doctors Sharing <strong>{{ comparison_cards.benchmark.doctors_sharing_unique_cumulative|default:"0" }}</strong></p>
+            <p>Shares <strong>{{ comparison_cards.benchmark.shares_total_cumulative|default:"0" }}</strong></p>
+            <p>Played <strong>{{ comparison_cards.benchmark.shares_played_cumulative|default:"0" }}</strong></p>
+            <p>50% <strong>{{ comparison_cards.benchmark.shares_viewed_50_cumulative|default:"0" }}</strong></p>
+            <p>100% <strong>{{ comparison_cards.benchmark.shares_viewed_100_cumulative|default:"0" }}</strong></p>
+            <p>Health <strong>{{ comparison_cards.benchmark.campaign_health_score|floatformat:1 }}</strong></p>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="section-block">
+      <article class="panel chart-panel pe-surface">
+        <div class="panel-title-row">
+          <div>
+            <p class="eyebrow">Visual Trend</p>
+            <h3>Weekly Health Components</h3>
+          </div>
+        </div>
+        <p class="helper-copy chart-copy">A compact grouped column view compares the four health components week over week.</p>
+        <div class="chart-frame">
+          <canvas id="trend-chart" height="240"></canvas>
+        </div>
+        <div class="legend-grid">
+          <span><i class="legend-swatch activation"></i>Activation %</span>
+          <span><i class="legend-swatch play"></i>Play Rate %</span>
+          <span><i class="legend-swatch engage"></i>50% Engagement %</span>
+          <span><i class="legend-swatch complete"></i>Completion %</span>
+        </div>
+      </article>
+    </section>
+
+    <section class="section-block three-column">
+      <article class="panel list-panel pe-surface">
+        <div class="panel-title-row">
+          <div>
+            <p class="eyebrow">Content Ranking</p>
+            <h3>Top 5 Videos Shared</h3>
+          </div>
+          <a href="{{ detail_links.top_videos_shared }}">View All</a>
+        </div>
+        <ol class="ranking-list">
+          {% for row in top_videos_shared %}
+          <li><span>{{ row.preferred_display_label }}</span><strong>{{ row.shares_count }}</strong></li>
+          {% empty %}
+          <li class="empty-copy">No video shares for current filters.</li>
+          {% endfor %}
+        </ol>
+      </article>
+      <article class="panel list-panel pe-surface">
+        <div class="panel-title-row">
+          <div>
+            <p class="eyebrow">Content Ranking</p>
+            <h3>Top 5 Videos Viewed &gt;50%</h3>
+          </div>
+          <a href="{{ detail_links.top_videos_viewed_50 }}">View All</a>
+        </div>
+        <ol class="ranking-list">
+          {% for row in top_videos_viewed_50 %}
+          <li><span>{{ row.preferred_display_label }}</span><strong>{{ row.viewed_50_share_count }}</strong></li>
+          {% empty %}
+          <li class="empty-copy">No engaged videos for current filters.</li>
+          {% endfor %}
+        </ol>
+      </article>
+      <article class="panel list-panel pe-surface">
+        <div class="panel-title-row">
+          <div>
+            <p class="eyebrow">Bundle Ranking</p>
+            <h3>Top 5 Bundles Shared</h3>
+          </div>
+          <a href="{{ detail_links.top_bundles_shared }}">View All</a>
+        </div>
+        <ol class="ranking-list">
+          {% for row in top_bundles_shared %}
+          <li><span>{{ row.preferred_display_label }}</span><strong>{{ row.shares_count }}</strong></li>
+          {% empty %}
+          <li class="empty-copy">No bundle shares for current filters.</li>
+          {% endfor %}
+        </ol>
+      </article>
+    </section>
+
+    <section class="section-block two-column">
+      <article class="panel list-panel pe-surface">
+        <div class="panel-title-row">
+          <div>
+            <p class="eyebrow">Language Mix</p>
+            <h3>Top Languages Used</h3>
+          </div>
+          <a href="{{ detail_links.languages }}">View All</a>
+        </div>
+        <ol class="ranking-list">
+          {% for row in top_languages %}
+          <li><span>{{ row.language_code }}</span><strong>{{ row.shares_total }}</strong></li>
+          {% empty %}
+          <li class="empty-copy">No language usage for current filters.</li>
+          {% endfor %}
+        </ol>
+      </article>
+      <article class="panel list-panel pe-surface">
+        <div class="panel-title-row">
+          <div>
+            <p class="eyebrow">Rep Attention</p>
+            <h3>Field Reps Requiring Attention</h3>
+          </div>
+          <a href="{{ detail_links.field_rep_attention }}">View All</a>
+        </div>
+        <ol class="ranking-list">
+          {% for row in field_rep_attention %}
+          <li><span>{{ row.field_rep_name }}</span><strong>{{ row.weekly_rep_health_score|floatformat:1 }}</strong></li>
+          {% empty %}
+          <li class="empty-copy">No field rep alert rows for current filters.</li>
+          {% endfor %}
+        </ol>
+      </article>
+    </section>
+
+    <section class="panel pe-surface">
+      <div class="panel-title-row">
+        <div>
+          <p class="eyebrow">Weekly Table</p>
+          <h3>Weekly KPI Table</h3>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Week</th>
+              <th>Enrolled Doctors</th>
+              <th>Doctors Sharing</th>
+              <th>Shares</th>
+              <th>Recipient Refs</th>
+              <th>Played</th>
+              <th>50%</th>
+              <th>100%</th>
+              <th>Health</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in weekly_rows %}
+            <tr>
+              <td>Week {{ row.week_index }}</td>
+              <td>{{ row.enrolled_doctors_current }}</td>
+              <td>{{ row.doctors_sharing_unique }}</td>
+              <td>{{ row.shares_total }}</td>
+              <td>{{ row.unique_recipient_references }}</td>
+              <td>{{ row.shares_played }}</td>
+              <td>{{ row.shares_viewed_50 }}</td>
+              <td>{{ row.shares_viewed_100 }}</td>
+              <td><span class="health-chip {{ row.health_color }}">{{ row.weekly_health_score|floatformat:1 }}</span></td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="9">No weekly rows available for the current filters.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    {% endif %}
+  </main>
+
+  {{ trend_labels|json_script:"pe-trend-labels" }}
+  {{ trend_activation|json_script:"pe-trend-activation" }}
+  {{ trend_play_rate|json_script:"pe-trend-play" }}
+  {{ trend_engagement_50|json_script:"pe-trend-engage" }}
+  {{ trend_completion|json_script:"pe-trend-complete" }}
+  <script src="{% static 'sapa_growth/vendor/html2canvas.min.js' %}"></script>
+  <script src="{% static 'pe_reports/js/dashboard.js' %}"></script>
+</body>
+</html>

@@ -1,0 +1,72 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ campaign.campaign_name }} | Access Email</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260327d">
+</head>
+<body>
+  <main class="dashboard menu-page">
+    {% if messages %}
+    <section class="card">
+      {% for message in messages %}
+      <p class="flash-message {% if message.tags %}flash-{{ message.tags }}{% endif %}">{{ message }}</p>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <section class="card menu-hero access-hero">
+      <div>
+        <p class="menu-eyebrow">Campaign Access</p>
+        <h1>{{ campaign.campaign_name }}</h1>
+        <p class="subtext">Send this campaign's secure login link and credentials from a dedicated access workspace.</p>
+      </div>
+      <div class="access-hero-actions">
+        <a class="ghost-btn" href="/campaign/{{ campaign.brand_campaign_id }}/login/">Open Secure Login</a>
+        <a class="ghost-btn" href="{% url 'menu' %}">Back to Menu</a>
+      </div>
+    </section>
+
+    <section class="access-layout">
+      <article class="card access-pane">
+        <p class="menu-eyebrow">Send Access</p>
+        <h2>Share This Campaign</h2>
+        <p class="subtext">Enter one receiver email and send only this campaign's access link and credentials.</p>
+        <form method="post" action="/campaign/{{ campaign.brand_campaign_id }}/send-access-email/" class="access-page-form">
+          {% csrf_token %}
+          <div class="access-field">
+            <label for="recipient_email">Receiver Email</label>
+            <input id="recipient_email" type="email" name="recipient_email" placeholder="name@company.com" autocomplete="email" required>
+          </div>
+          <button type="submit" class="download-btn access-submit-btn">Send Access Email</button>
+        </form>
+      </article>
+
+      <article class="card access-pane">
+        <div class="access-history-head">
+          <div>
+            <p class="menu-eyebrow">Sent History</p>
+            <h2>Previous Recipients</h2>
+          </div>
+          <p class="subtext">Most recent sends for this campaign.</p>
+        </div>
+        <div class="access-history-list">
+          {% for row in history_rows %}
+          <div class="access-history-row">
+            <div>
+              <strong>{{ row.recipient_email }}</strong>
+              <p class="subtext">{{ row.sent_at }}</p>
+            </div>
+            <span class="history-badge">Sent</span>
+          </div>
+          {% empty %}
+          <p class="subtext">No access emails have been logged for this campaign yet.</p>
+          {% endfor %}
+        </div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

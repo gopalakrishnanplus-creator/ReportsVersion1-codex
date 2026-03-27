@@ -5,10 +5,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Campaign Menu</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260327d">
 </head>
 <body>
   <main class="dashboard menu-page">
+    {% if messages %}
+    <section class="card">
+      {% for message in messages %}
+      <p class="flash-message {% if message.tags %}flash-{{ message.tags }}{% endif %}">{{ message }}</p>
+      {% endfor %}
+    </section>
+    {% endif %}
+
     <section class="card menu-hero">
       <div>
         <p class="menu-eyebrow">Reporting Workspace</p>
@@ -33,7 +41,12 @@
             <tr>
               <td data-label="Campaign ID"><code>{{ c.brand_campaign_id }}</code></td>
               <td data-label="Campaign Name">{{ c.campaign_name }}</td>
-              <td data-label="Action"><a class="download-btn" href="/campaign/{{ c.brand_campaign_id }}/login/">View Report</a></td>
+              <td data-label="Action">
+                <div class="menu-action-stack">
+                  <a class="download-btn action-primary" href="{{ c.login_href }}">Open Secure Login</a>
+                  <a class="download-btn action-secondary" href="{{ c.access_href }}">Manage Access Email</a>
+                </div>
+              </td>
             </tr>
             {% empty %}
             <tr><td colspan="3">No campaigns available in gold_global.campaign_registry</td></tr>

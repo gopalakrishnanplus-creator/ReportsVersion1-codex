@@ -10,7 +10,7 @@
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);font-family:Inter,Arial,sans-serif;color:var(--text)}
-.dashboard{max-width:1240px;margin:20px auto;padding:0 16px;display:grid;gap:12px}
+.dashboard{max-width:1240px;margin:24px auto;padding:0 20px;display:grid;gap:16px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
 .header-card{display:grid;grid-template-columns:1.6fr 1.2fr 1fr auto;align-items:center;gap:12px}
 .brand-block{display:flex;gap:14px;align-items:flex-start}
@@ -121,8 +121,33 @@ h1{letter-spacing:-.02em}
 
 .menu-table-card{padding:18px}
 .menu-table tbody tr:hover{background:#f8fbff}
-.menu-table td:last-child{width:170px}
+.menu-table td:last-child{width:320px}
 .menu-table td .download-btn{width:100%}
+.menu-action-stack{display:grid;gap:12px;min-width:280px}
+.action-primary,.action-secondary{min-height:48px;border-radius:12px}
+.action-secondary{background:linear-gradient(135deg,#27457e,#1a2f57);box-shadow:0 12px 22px rgba(31,62,116,.22)}
+.action-secondary:hover{transform:translateY(-1px);box-shadow:0 14px 24px rgba(31,62,116,.28)}
+.action-eyebrow{margin:0 0 6px;color:#4f6b95;font-size:11px;text-transform:uppercase;letter-spacing:.08em;font-weight:700}
+.action-caption{margin:0 0 12px;color:#67748a;font-size:13px;line-height:1.5}
+.access-hero{align-items:flex-start}
+.access-hero-actions{display:grid;gap:10px;min-width:220px}
+.access-layout{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.access-pane{padding:20px}
+.access-page-form{display:grid;gap:12px;margin-top:16px}
+.access-field{display:grid;gap:8px}
+.access-page-form label{display:block;font-size:12px;color:#67748a;margin-bottom:4px;font-weight:700}
+.access-page-form input{width:100%;min-height:56px;padding:0 18px;border:1px solid #c9d8ee;border-radius:14px;font-size:15px;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,.95),0 6px 16px rgba(31,42,61,.04)}
+.access-page-form input::placeholder{color:#8a98ad}
+.access-page-form input:focus{outline:none;border-color:#4f7dd1;box-shadow:0 0 0 3px rgba(79,125,209,.14)}
+.access-submit-btn{min-height:48px;border-radius:14px}
+.access-history-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}
+.access-history-list{display:grid;gap:10px}
+.access-history-row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:14px;border:1px solid #dbe5f3;border-radius:14px;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%)}
+.access-history-row strong{display:block}
+.history-badge{display:inline-flex;align-items:center;min-height:28px;padding:0 10px;border-radius:999px;background:#eaf2ff;color:#1f3e74;font-size:12px;font-weight:700}
+.flash-message{margin:0;padding:12px 14px;border-radius:10px;font-weight:600}
+.flash-success{background:#ebf8f2;color:#16663f;border:1px solid #bee7d0}
+.flash-error{background:#fff2f0;color:#bf3d35;border:1px solid #f0c7c2}
 
 .login-page{max-width:760px;padding-top:36px}
 .login-card{padding:28px;max-width:620px;margin:0 auto;background:linear-gradient(180deg,#ffffff,#f8fbff)}
@@ -131,13 +156,14 @@ h1{letter-spacing:-.02em}
 .login-form input{width:100%;padding:12px 13px;border:1px solid #d5dfef;border-radius:10px;font-size:15px;background:#fff}
 .login-form input:focus{outline:none;border-color:#4f7dd1;box-shadow:0 0 0 3px rgba(79,125,209,.16)}
 .login-submit{margin-top:4px}
-.credential-hint{margin-top:12px;padding:10px 12px;border-radius:8px;background:#f1f5fb;border:1px solid #dbe5f3}
 
 @media (max-width: 768px){
   h1{font-size:32px}
   .header-center h2{font-size:24px}
   .download-btn{width:100%}
   .menu-table td:last-child{width:auto}
+  .access-layout{grid-template-columns:1fr}
+  .access-hero-actions{width:100%}
   .week-filter-row select,.week-filter-row .ghost-btn{width:100%}
 }
 
@@ -149,11 +175,26 @@ th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vert
 /* Debug page */
 .debug-page h1{font-size:34px}
 
+.report-home{max-width:1320px;padding-top:8px;padding-bottom:20px}
+.report-home-hero{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.78fr);gap:24px;align-items:stretch;padding:28px;background:radial-gradient(circle at top right,rgba(73,117,197,.14),transparent 30%),linear-gradient(135deg,#ffffff 0%,#eef4ff 100%)}
+.report-home-copy{display:grid;gap:10px;max-width:760px}
+.report-home-highlight{display:grid;align-content:center;gap:10px;padding:22px;border:1px solid #d7e3f7;border-radius:18px;background:linear-gradient(180deg,#ffffff 0%,#f7faff 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,.92)}
+.report-home-highlight strong{font-size:24px;line-height:1.15;color:#1f3258;letter-spacing:-.02em}
+.report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:22px;align-items:stretch}
+.report-card{display:grid;gap:22px;align-content:space-between;min-height:280px;padding:28px;border-radius:18px;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);position:relative;overflow:hidden}
+.report-card::before{content:"";position:absolute;inset:0 auto auto 0;width:100%;height:4px;background:linear-gradient(90deg,#365ca1 0%,#6d90cf 100%);opacity:.9}
+.report-card-copy{display:grid;gap:12px}
+.report-card h2{margin:0;font-size:28px;line-height:1.08;color:#16233d;letter-spacing:-.03em}
+.report-card .subtext{font-size:14px;max-width:36ch}
+.report-card-footer{display:flex;align-items:center;margin-top:auto}
+.report-card-btn{min-width:180px;min-height:48px;border-radius:14px}
+
 @media (max-width: 1024px){
   .dashboard{padding:0 12px}
   .card{padding:12px}
   .brand-logo{font-size:38px}
   .score{font-size:52px}
+  .report-home-hero{grid-template-columns:1fr}
 }
 
 @media (max-width: 640px){
@@ -170,4 +211,7 @@ th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vert
   .kpi-rate{font-size:20px}
   .comparison-card p{font-size:13px}
   #weekly_table th,#weekly_table td{padding:8px}
+  .report-home-hero,.report-card{padding:20px}
+  .report-card{min-height:auto}
+  .report-card-btn{width:100%}
 }

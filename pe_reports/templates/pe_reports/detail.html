@@ -1,0 +1,74 @@
+{% load static pe_reports_extras %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }} | Patient Education</title>
+  <link rel="stylesheet" href="{% static 'pe_reports/css/dashboard.css' %}?v=20260327d">
+</head>
+<body class="pe-body">
+  <main class="pe-shell">
+    <section class="detail-header pe-surface">
+      <div>
+        <p class="eyebrow">Patient Education Detail View</p>
+        <h1>{{ title }}</h1>
+        <p class="subtext">{{ campaign_name }} · As of {{ as_of_date }} · Last updated {{ last_updated }}</p>
+      </div>
+      <div class="detail-actions">
+        <a class="table-link" href="{{ back_href }}">Back to Dashboard</a>
+        <a class="table-link" href="/pe-reports/campaign/{{ campaign_id }}/details/{{ metric }}/export/{% if filters_query %}?{{ filters_query }}{% endif %}">Export CSV</a>
+      </div>
+    </section>
+
+    <section class="panel filter-summary pe-surface">
+      <div class="summary-grid">
+        <div class="summary-item">
+          <span class="detail-kicker">Rows</span>
+          <strong>{{ row_count }}</strong>
+        </div>
+        <div class="summary-item summary-wide">
+          <span class="detail-kicker">Filters</span>
+          <p>Week={{ filters.week|default:"All" }}, State={{ filters.state|default:"All" }}, Field Rep={{ filters.field_rep_id|default:"All" }}, Doctor={{ filters.doctor_key|default:"All" }}, Language={{ filters.language_code|default:"All" }}</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel pe-surface">
+      <div class="table-wrap">
+        <table class="data-table detail-table">
+          <thead>
+            <tr>
+              {% for column in columns %}
+              <th>{{ column|title|cut:"_" }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+            <tr>
+              {% for column in columns %}
+              <td>{{ row|get_item:column }}</td>
+              {% endfor %}
+            </tr>
+            {% empty %}
+            <tr><td colspan="{{ columns|length }}">No rows available for the current filters.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if page_count > 1 %}
+      <div class="pagination">
+        {% if page > 1 %}
+        <a class="table-link" href="?{% if filters_query %}{{ filters_query }}&{% endif %}page={{ page|add:'-1' }}">Previous</a>
+        {% endif %}
+        <span>Page {{ page }} of {{ page_count }}</span>
+        {% if page < page_count %}
+        <a class="table-link" href="?{% if filters_query %}{{ filters_query }}&{% endif %}page={{ page|add:'1' }}">Next</a>
+        {% endif %}
+      </div>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>

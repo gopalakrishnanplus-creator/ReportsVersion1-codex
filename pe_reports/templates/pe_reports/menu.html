@@ -1,0 +1,78 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Patient Education Reports</title>
+  <link rel="stylesheet" href="{% static 'pe_reports/css/dashboard.css' %}?v=20260327d">
+</head>
+<body class="pe-body">
+  <main class="pe-shell pe-menu-shell">
+    {% if messages %}
+    <section class="panel pe-surface flash-stack">
+      {% for message in messages %}
+      <div class="flash-message {% if message.tags %}flash-{{ message.tags }}{% endif %}">{{ message }}</div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <section class="pe-hero pe-surface">
+      <div>
+        <p class="eyebrow">Campaign Launcher</p>
+        <h1>Patient Education Reporting</h1>
+        <p class="lede">Launch PE dashboards from a single workspace. Each campaign keeps its own login gate, dashboard, and access email flow without affecting the existing InClinic or SAPA experiences.</p>
+      </div>
+      <div class="hero-meta">
+        <div class="hero-stat">
+          <span class="detail-kicker">Last Updated</span>
+          <strong>{% if refresh.published_at %}{{ refresh.published_at }}{% elif refresh.as_of_date %}{{ refresh.as_of_date }}{% else %}Not published{% endif %}</strong>
+        </div>
+        <a class="ghost-button" href="{% url 'pe_reports:etl-debug' %}">Open PE ETL Debug</a>
+      </div>
+    </section>
+
+    <section class="panel pe-surface">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Published Campaigns</p>
+          <h2>Available PE Campaigns</h2>
+        </div>
+        <p class="helper-copy">Choose a campaign to open its dashboard, rankings, details, and exports.</p>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Campaign</th>
+              <th>Brand</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for campaign in campaigns %}
+            <tr>
+              <td>
+                <strong>{{ campaign.campaign_name }}</strong>
+                <div class="subtle-code">{{ campaign.campaign_id }}</div>
+              </td>
+              <td>{{ campaign.brand_name|default:"-" }}</td>
+              <td>
+                <div class="access-action-stack">
+                  <a class="action-link-button" href="{{ campaign.href }}">Open Secure Login</a>
+                  <a class="action-link-button action-link-button-secondary" href="{{ campaign.access_href }}">Manage Access Email</a>
+                </div>
+              </td>
+            </tr>
+            {% empty %}
+            <tr>
+              <td colspan="3">No PE campaigns are published yet. Run <code>python manage.py run_pe_reports_etl</code> after configuring the live PE sources.</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
