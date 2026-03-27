@@ -252,6 +252,7 @@ def _date_or_none(value: Any) -> date | None:
 
 
 def _campaign_week_ranges(campaign: dict[str, Any], base_rows: list[dict[str, Any]], share_rows: list[dict[str, Any]], as_of_date: date) -> list[tuple[date, date]]:
+    period_end = week_end_saturday(as_of_date) or as_of_date
     candidates: list[date] = []
     for value in (
         campaign.get("start_date"),
@@ -262,12 +263,13 @@ def _campaign_week_ranges(campaign: dict[str, Any], base_rows: list[dict[str, An
         parsed = _date_or_none(str(value)[:10]) if value else None
         if parsed:
             candidates.append(parsed)
+    candidates = [item for item in candidates if item <= period_end]
     if not candidates:
-        week_end = week_end_saturday(as_of_date) or as_of_date
+        week_end = period_end
         return [(week_start_sunday(week_end) or week_end, week_end)]
 
     start_date = min(candidates)
-    end_date = max(max(candidates), as_of_date)
+    end_date = period_end
     first_week_end = week_end_saturday(start_date) or start_date
     ranges: list[tuple[date, date]] = []
     current_week_end = first_week_end

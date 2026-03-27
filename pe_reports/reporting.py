@@ -15,7 +15,7 @@ from etl.pe_reports.gold import (
     _video_rankings,
     compute_health_components,
 )
-from etl.pe_reports.utils import as_float, as_int, clean_text, health_color
+from etl.pe_reports.utils import as_float, as_int, clean_text, health_color, week_end_saturday
 
 
 def current_filters_query(filters: dict[str, str | None]) -> str:
@@ -106,6 +106,19 @@ def filter_weekly_rows_by_month(weekly_rows: list[dict[str, Any]], month: str | 
     if not month:
         return list(weekly_rows)
     return [row for row in weekly_rows if _month_key(row.get("week_end_date") or row.get("week_start_date")) == month]
+
+
+def bounded_weekly_rows(weekly_rows: list[dict[str, Any]], as_of_date: Any) -> list[dict[str, Any]]:
+    cutoff = week_end_saturday(as_of_date) or _date_or_none(as_of_date)
+    if cutoff is None:
+        return list(weekly_rows)
+    output: list[dict[str, Any]] = []
+    for row in weekly_rows:
+        week_end = _date_or_none(row.get("week_end_date"))
+        if week_end and week_end > cutoff:
+            continue
+        output.append(row)
+    return output
 
 
 def apply_enrollment_filters(rows: list[dict[str, Any]], filters: dict[str, str | None], *, up_to_period_end: str | None = None) -> list[dict[str, Any]]:
@@ -281,6 +294,7 @@ def build_dashboard_payload(
     thresholds: dict[str, float],
     benchmark_best_row: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    weekly_template_rows = bounded_weekly_rows(weekly_template_rows, campaign_summary_row.get("as_of_date"))
     selected_month = selected_month_key(filters, weekly_template_rows)
     effective_filters = dict(filters)
     if selected_month:

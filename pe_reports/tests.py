@@ -8,7 +8,7 @@ from django.urls import resolve, reverse
 
 from etl.pe_reports.gold import build_benchmark_row, compute_health_components
 from etl.pe_reports.silver import attribute_share_row, match_campaign_doctors, rollup_share_funnel
-from etl.pe_reports.utils import week_end_saturday
+from etl.pe_reports.utils import clean_text, week_end_saturday
 from pe_reports.reporting import build_dashboard_payload
 
 
@@ -121,6 +121,7 @@ class PeReportsLogicTests(SimpleTestCase):
                 {"week_index": 2, "week_start_date": "2026-02-08", "week_end_date": "2026-02-14"},
                 {"week_index": 5, "week_start_date": "2026-03-01", "week_end_date": "2026-03-07"},
                 {"week_index": 6, "week_start_date": "2026-03-08", "week_end_date": "2026-03-14"},
+                {"week_index": 58, "week_start_date": "2027-03-14", "week_end_date": "2027-03-20"},
             ],
             {"campaign_id_original": "camp-1", "as_of_date": "2026-03-14"},
             [{"doctor_key": "DOC-1", "enrolled_at_ts": "2026-02-03", "state": "MH", "field_rep_id_resolved": "FR-1"}],
@@ -131,6 +132,24 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(payload["selected_month"], "2026-03")
         self.assertEqual(len(payload["weekly_rows"]), 2)
         self.assertEqual(payload["filters_query"], "month=2026-03")
+
+    def test_dashboard_payload_keeps_current_saturday_week_for_midweek_publish(self):
+        payload = build_dashboard_payload(
+            {"campaign_id_original": "camp-1", "start_date": "2026-03-01", "end_date": "2027-03-31", "local_video_cluster_name": "Bundle"},
+            {},
+            [
+                {"week_index": 4, "week_start_date": "2026-03-15", "week_end_date": "2026-03-21"},
+                {"week_index": 5, "week_start_date": "2026-03-22", "week_end_date": "2026-03-28"},
+                {"week_index": 57, "week_start_date": "2027-03-14", "week_end_date": "2027-03-20"},
+            ],
+            {"campaign_id_original": "camp-1", "as_of_date": "2026-03-27"},
+            [{"doctor_key": "DOC-1", "enrolled_at_ts": "2026-03-05", "state": "MH", "field_rep_id_resolved": "FR-1"}],
+            [{"share_public_id": "SHARE-1", "doctor_key": "DOC-1", "shared_at_ts": "2026-03-27 10:00:00", "week_end_date": "2026-03-28", "recipient_reference": "R-1", "is_played": "true", "is_viewed_50": "true", "is_viewed_100": "false", "shared_item_type": "video"}],
+            [],
+            {"activation_pct": 40.0, "play_rate_pct": 40.0, "engagement_50_pct": 40.0, "completion_pct": 40.0},
+        )
+        self.assertEqual(payload["selected_month"], "2026-03")
+        self.assertEqual(clean_text(payload["current_week_row"].get("week_end_date")), "2026-03-28")
 
 
 class PeReportsRoutingTests(SimpleTestCase):
