@@ -1,0 +1,60 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ program_name }} | Access</title>
+  <link rel="stylesheet" href="{% static 'sapa_growth/css/dashboard.css' %}">
+</head>
+<body class="sapa-body">
+  <main class="sapa-shell">
+    {% if messages %}
+    <section class="filters-card flash-stack">
+      {% for message in messages %}
+      <div class="flash-message {% if message.tags %}flash-{{ message.tags }}{% endif %}">{{ message }}</div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <section class="sapa-header access-header">
+      <div>
+        <p class="eyebrow">Secure Access</p>
+        <h1>{{ program_name }}</h1>
+        <p class="access-copy">Use the credentials shared with you to open the dashboard. Credentials are not shown on this page.</p>
+      </div>
+    </section>
+
+    <section class="filters-card access-panel">
+      {% if error_message %}
+      <div class="flash-message flash-error">{{ error_message }}</div>
+      {% endif %}
+
+      <div class="access-grid">
+        <form method="post" action="{% url 'sapa_growth:login' %}" class="access-form">
+          {% csrf_token %}
+          <label>
+            <span>Username</span>
+            <input type="text" name="username" autocomplete="username" required>
+          </label>
+          <label>
+            <span>Password</span>
+            <input type="password" name="password" autocomplete="current-password" required>
+          </label>
+          <button type="submit" class="download-button">Login &amp; Open Report</button>
+        </form>
+
+        <form method="post" action="{% url 'sapa_growth:send-access-email' %}" class="access-form access-form-secondary">
+          {% csrf_token %}
+          <label>
+            <span>Receiver Email</span>
+            <input type="email" name="recipient_email" placeholder="name@company.com" autocomplete="email" required>
+          </label>
+          <p class="detail-meta">This sends the SAPA report access link and credentials only for this dashboard.</p>
+          <button type="submit" class="ghost-button">Send Access Email</button>
+        </form>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

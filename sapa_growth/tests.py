@@ -175,6 +175,29 @@ class SapaGrowthRoutingTests(SimpleTestCase):
     def test_dashboard_route_registered(self):
         self.assertEqual(reverse("sapa_growth:dashboard"), "/sapa-growth/")
         self.assertEqual(resolve("/sapa-growth/").view_name, "sapa_growth:dashboard")
+        self.assertEqual(resolve("/sapa-growth/login/").view_name, "sapa_growth:login")
+        self.assertEqual(resolve("/sapa-growth/send-access-email/").view_name, "sapa_growth:send-access-email")
+
+
+class SapaGrowthAccessViewTests(SimpleTestCase):
+    def test_dashboard_redirects_to_login_when_unauthenticated(self):
+        response = self.client.get("/sapa-growth/")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/sapa-growth/login/")
+
+    def test_login_page_renders(self):
+        response = self.client.get("/sapa-growth/login/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "SAPA Growth Clinic Program")
+
+    def test_send_access_email_route_redirects_and_calls_mailer(self):
+        with patch("sapa_growth.views.send_access_email") as send_email_mock:
+            response = self.client.post(
+                "/sapa-growth/send-access-email/",
+                {"recipient_email": "team@example.com"},
+            )
+        self.assertEqual(response.status_code, 302)
+        send_email_mock.assert_called_once()
 
 
 class SapaGrowthMySQLExtractionTests(SimpleTestCase):

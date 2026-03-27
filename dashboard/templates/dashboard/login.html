@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Campaign Login</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260327d">
 </head>
 <body>
   <main class="dashboard login-page">
@@ -32,8 +32,7 @@
         <button type="submit" class="download-btn login-submit">Login &amp; Open Report</button>
       </form>
 
-      <p class="subtext credential-hint">Credential hint (dev): {{ credential_hint }}</p>
-      <p class="subtext"><a href="/">← Back to menu</a></p>
+      <p class="subtext"><a href="{% url 'menu' %}">← Back to menu</a></p>
     </section>
   </main>
 </body>

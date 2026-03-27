@@ -1,0 +1,41 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reporting Workspace</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260327d">
+</head>
+<body>
+  <main class="dashboard report-home">
+    <section class="card report-home-hero">
+      <div class="report-home-copy">
+        <p class="menu-eyebrow">Reporting Workspace</p>
+        <h1>Reports Home</h1>
+        <p class="subtext">Choose a reporting product to open its dedicated launcher. Each report keeps its own menu, login flow, access sharing, and dashboard experience.</p>
+      </div>
+      <div class="report-home-highlight">
+        <p class="menu-eyebrow">Available Products</p>
+        <strong>3 Reporting Workspaces</strong>
+        <p class="subtext">In-Clinic Sharing, Patient Education, and SAPA Growth Clinic.</p>
+      </div>
+    </section>
+
+    <section class="report-grid">
+      {% for report in report_cards %}
+      <article class="card report-card">
+        <div class="report-card-copy">
+          <p class="menu-eyebrow">Report Launcher</p>
+          <h2>{{ report.label }}</h2>
+          <p class="subtext">{{ report.description }}</p>
+        </div>
+        <div class="report-card-footer">
+          <a class="download-btn report-card-btn" href="{{ report.href }}">View Report</a>
+        </div>
+      </article>
+      {% endfor %}
+    </section>
+  </main>
+</body>
+</html>

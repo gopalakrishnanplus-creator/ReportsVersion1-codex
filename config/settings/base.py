@@ -99,6 +99,7 @@ INSTALLED_APPS = [
     "etl",
     "dashboard",
     "sapa_growth",
+    "pe_reports",
 ]
 
 MIDDLEWARE = [
@@ -166,6 +167,19 @@ MYSQL_SERVER_2 = {
     "WRITE_TIMEOUT": _env_int("MYSQL_SERVER2_WRITE_TIMEOUT", default=60),
     "SSL_MODE": _env("MYSQL_SERVER2_SSL_MODE", default=""),
     "SSL_CA": _env("MYSQL_SERVER2_SSL_CA", default=""),
+}
+
+MYSQL_SERVER_3 = {
+    "HOST": _env("MYSQL_SERVER3_HOST", "MYSQL3_HOST", default="localhost"),
+    "PORT": _env_int("MYSQL_SERVER3_PORT", "MYSQL3_PORT", default=3306),
+    "USER": _env("MYSQL_SERVER3_USER", "MYSQL3_USER", default="root"),
+    "PASSWORD": _env("MYSQL_SERVER3_PASSWORD", "MYSQL3_PASSWORD", default=""),
+    "DATABASE": _env("MYSQL_SERVER3_DB", "MYSQL3_DB", default="patient_portal_live"),
+    "CONNECT_TIMEOUT": _env_int("MYSQL_SERVER3_CONNECT_TIMEOUT", default=10),
+    "READ_TIMEOUT": _env_int("MYSQL_SERVER3_READ_TIMEOUT", default=60),
+    "WRITE_TIMEOUT": _env_int("MYSQL_SERVER3_WRITE_TIMEOUT", default=60),
+    "SSL_MODE": _env("MYSQL_SERVER3_SSL_MODE", default=""),
+    "SSL_CA": _env("MYSQL_SERVER3_SSL_CA", default=""),
 }
 
 SAPA_MYSQL = {
@@ -249,6 +263,55 @@ SAPA_DASHBOARD = {
     "TIMEZONE": _env("SAPA_DASHBOARD_TIMEZONE", default="Asia/Kolkata"),
     "CERTIFICATION_ENABLED": _env_bool("SAPA_CERTIFICATION_ENABLED", default=False),
     "CONDITION_RANKING_ENABLED": _env_bool("SAPA_CONDITION_RANKING_ENABLED", default=False),
+}
+
+PE_MASTER_MYSQL = {
+    "HOST": _env("PE_MASTER_MYSQL_HOST", "MYSQL_SERVER1_HOST", "MYSQL1_HOST", default="localhost"),
+    "PORT": _env_int("PE_MASTER_MYSQL_PORT", "MYSQL_SERVER1_PORT", "MYSQL1_PORT", default=3306),
+    "USER": _env("PE_MASTER_MYSQL_USER", "MYSQL_SERVER1_USER", "MYSQL1_USER", default="root"),
+    "PASSWORD": _env("PE_MASTER_MYSQL_PASSWORD", "MYSQL_SERVER1_PASSWORD", "MYSQL1_PASSWORD", default=""),
+    "DATABASE": _env("PE_MASTER_MYSQL_DB", "MYSQL_SERVER1_DB", "MYSQL1_DB", default="healthcare_forms_2"),
+    "CONNECT_TIMEOUT": _env_int("PE_MASTER_MYSQL_CONNECT_TIMEOUT", default=10),
+    "READ_TIMEOUT": _env_int("PE_MASTER_MYSQL_READ_TIMEOUT", default=60),
+    "WRITE_TIMEOUT": _env_int("PE_MASTER_MYSQL_WRITE_TIMEOUT", default=60),
+    "SSL_MODE": _env("PE_MASTER_MYSQL_SSL_MODE", "MYSQL_SERVER1_SSL_MODE", default=""),
+    "SSL_CA": _env("PE_MASTER_MYSQL_SSL_CA", "MYSQL_SERVER1_SSL_CA", default=""),
+}
+
+PE_PORTAL_MYSQL = {
+    "HOST": _env("PE_PORTAL_MYSQL_HOST", "MYSQL_SERVER3_HOST", "MYSQL3_HOST", default="localhost"),
+    "PORT": _env_int("PE_PORTAL_MYSQL_PORT", "MYSQL_SERVER3_PORT", "MYSQL3_PORT", default=3306),
+    "USER": _env("PE_PORTAL_MYSQL_USER", "MYSQL_SERVER3_USER", "MYSQL3_USER", default="root"),
+    "PASSWORD": _env("PE_PORTAL_MYSQL_PASSWORD", "MYSQL_SERVER3_PASSWORD", "MYSQL3_PASSWORD", default=""),
+    "DATABASE": _env("PE_PORTAL_MYSQL_DB", "MYSQL_SERVER3_DB", "MYSQL3_DB", default="patient_portal_live"),
+    "CONNECT_TIMEOUT": _env_int("PE_PORTAL_MYSQL_CONNECT_TIMEOUT", default=10),
+    "READ_TIMEOUT": _env_int("PE_PORTAL_MYSQL_READ_TIMEOUT", default=60),
+    "WRITE_TIMEOUT": _env_int("PE_PORTAL_MYSQL_WRITE_TIMEOUT", default=60),
+    "SSL_MODE": _env("PE_PORTAL_MYSQL_SSL_MODE", "MYSQL_SERVER3_SSL_MODE", default=""),
+    "SSL_CA": _env("PE_PORTAL_MYSQL_SSL_CA", "MYSQL_SERVER3_SSL_CA", default=""),
+}
+
+PE_REPORTS = {
+    "TIMEZONE": _env("PE_REPORTS_TIMEZONE", default="Asia/Kolkata"),
+    "LOOKBACK_DAYS": _env_int("PE_REPORTS_LOOKBACK_DAYS", default=30),
+    "LOW_ACTIVATION_THRESHOLD": float(_env("PE_REPORTS_LOW_ACTIVATION_THRESHOLD", default="40")),
+    "LOW_PLAY_RATE_THRESHOLD": float(_env("PE_REPORTS_LOW_PLAY_RATE_THRESHOLD", default="40")),
+    "LOW_ENGAGEMENT_50_THRESHOLD": float(_env("PE_REPORTS_LOW_ENGAGEMENT_50_THRESHOLD", default="40")),
+    "LOW_COMPLETION_THRESHOLD": float(_env("PE_REPORTS_LOW_COMPLETION_THRESHOLD", default="40")),
+    "MULTI_STATE_ALERT_COUNT": _env_int("PE_REPORTS_MULTI_STATE_ALERT_COUNT", default=2),
+    "PIPELINE_LOCK_KEY": _env_int("PE_REPORTS_PIPELINE_LOCK_KEY", default=991843),
+    "RUN_ON_DEPLOY": _env_bool("RUN_PE_REPORTS_ETL_ON_DEPLOY", default=False),
+    "CONTINUE_ON_ERROR": _env_bool("RUN_PE_REPORTS_ETL_CONTINUE_ON_ERROR", default=False),
+}
+
+REPORTS_EMAIL = {
+    "SENDGRID_API_KEY": _env("SENDGRID_API_KEY", default=""),
+    "FROM_EMAIL": _env("REPORTS_EMAIL_FROM", default=""),
+    "FROM_NAME": _env("REPORTS_EMAIL_FROM_NAME", default="Inditech Reports"),
+    "REPLY_TO": _env("REPORTS_EMAIL_REPLY_TO", default=""),
+    "TIMEOUT": _env_int("REPORTS_EMAIL_TIMEOUT", default=20),
+    "PUBLIC_BASE_URL": _env("REPORTS_PUBLIC_BASE_URL", default=""),
+    "ACCESS_LOG_PATH": _env("REPORTS_ACCESS_LOG_PATH", default=str(BASE_DIR / "var" / "report_access_email_log.jsonl")),
 }
 
 SOURCE_EXTRACTOR_BACKEND = _env("SOURCE_EXTRACTOR_BACKEND", default="mysql").strip().lower()

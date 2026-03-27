@@ -5,14 +5,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ETL Debug</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260327d">
 </head>
 <body>
   <main class="dashboard debug-page">
     <section class="card">
       <div class="menu-table-head">
         <h1>ETL Debug Snapshot</h1>
-        <p class="subtext"><a href="/">← Back to Menu</a></p>
+        <p class="subtext"><a href="{% url 'menu' %}">← Back to Menu</a></p>
       </div>
 
       {% if debug_snapshot.latest_run %}

@@ -1,0 +1,82 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ campaign_name }} | PE Access Email</title>
+  <link rel="stylesheet" href="{% static 'pe_reports/css/dashboard.css' %}?v=20260327d">
+</head>
+<body class="pe-body">
+  <main class="pe-shell pe-menu-shell">
+    {% if messages %}
+    <section class="panel pe-surface flash-stack">
+      {% for message in messages %}
+      <div class="flash-message {% if message.tags %}flash-{{ message.tags }}{% endif %}">{{ message }}</div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <section class="pe-hero pe-surface">
+      <div>
+        <p class="eyebrow">Campaign Access</p>
+        <h1>{{ campaign_name }}</h1>
+        <p class="lede">Send this campaign’s secure login link and credentials from a dedicated access page that also shows the recent send history.</p>
+      </div>
+      <div class="hero-meta">
+        <div class="hero-stat">
+          <span class="detail-kicker">Brand</span>
+          <strong>{{ brand_name|default:"-" }}</strong>
+        </div>
+        <div class="hero-meta-actions">
+          <a class="cta-button" href="/pe-reports/campaign/{{ campaign_id }}/login/">Open Secure Login</a>
+          <a class="ghost-button" href="{% url 'pe_reports:menu' %}">Back to Campaign Menu</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="access-layout">
+      <article class="panel pe-surface access-pane">
+        <div class="panel-head panel-head-stack">
+          <div>
+            <p class="eyebrow">Send Access</p>
+            <h2>Share This Campaign</h2>
+          </div>
+          <p class="helper-copy">Enter one receiver email and send only this campaign’s login link and credentials.</p>
+        </div>
+        <form method="post" action="/pe-reports/campaign/{{ campaign_id }}/send-access-email/" class="access-form">
+          {% csrf_token %}
+          <label>
+            <span>Receiver Email</span>
+            <input type="email" name="recipient_email" placeholder="name@company.com" autocomplete="email" required>
+          </label>
+          <button type="submit" class="cta-button">Send Access Email</button>
+        </form>
+      </article>
+
+      <article class="panel pe-surface access-pane">
+        <div class="panel-head panel-head-stack">
+          <div>
+            <p class="eyebrow">Sent History</p>
+            <h2>Previous Recipients</h2>
+          </div>
+          <p class="helper-copy">Most recent sends for this PE campaign.</p>
+        </div>
+        <div class="access-history-list">
+          {% for row in history_rows %}
+          <div class="access-history-row">
+            <div>
+              <strong>{{ row.recipient_email }}</strong>
+              <p class="subtext">{{ row.sent_at }}</p>
+            </div>
+            <span class="info-pill">Sent</span>
+          </div>
+          {% empty %}
+          <p class="empty-copy">No access emails have been logged for this campaign yet.</p>
+          {% endfor %}
+        </div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

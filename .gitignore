@@ -1,2 +1,6 @@
 # Deployment helper is maintained out-of-repo to avoid recurring PR merge conflicts.
 deploy.sh
+.venv/
+__pycache__/
+*.pyc
+var/

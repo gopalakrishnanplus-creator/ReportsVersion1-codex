@@ -4,12 +4,14 @@ import json
 from datetime import datetime
 from typing import Any
 
+from django.contrib import messages
 from django.db import connection
 from django.db.utils import OperationalError, ProgrammingError
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 
 from etl.utils.specs import SOURCE_TABLE_SPECS
+from reporting.access import absolute_url, access_email_history, authenticate_session, build_report_access, send_access_email, validate_credentials
 
 
 def _fetch_dicts(sql: str, params=None):
@@ -73,14 +75,6 @@ def _format_schedule_date(value: Any) -> str | None:
         except ValueError:
             continue
     return txt
-
-
-def _campaign_credentials(brand_campaign_id: str) -> dict[str, str]:
-    suffix = brand_campaign_id.replace("-", "")
-    return {
-        "username": f"brand_{suffix[:6]}",
-        "password": f"report_{suffix[-4:]}",
-    }
 
 
 def _normalize_campaign_id(value: Any) -> str:
@@ -305,8 +299,36 @@ def _build_debug_snapshot() -> dict[str, Any]:
     return snapshot
 
 def menu_page(request: HttpRequest) -> HttpResponse:
-    campaigns = _campaign_list()
+    campaigns = []
+    for row in _campaign_list():
+        item = dict(row)
+        normalized_campaign_id = _normalize_campaign_id(item.get("brand_campaign_id"))
+        item["login_href"] = f"/campaign/{normalized_campaign_id}/login/"
+        item["access_href"] = f"/campaign/{normalized_campaign_id}/access/"
+        item["email_href"] = f"/campaign/{normalized_campaign_id}/send-access-email/"
+        campaigns.append(item)
     return render(request, "dashboard/menu.html", {"campaigns": campaigns})
+
+
+def reports_home(request: HttpRequest) -> HttpResponse:
+    report_cards = [
+        {
+            "label": "In-Clinic Sharing",
+            "description": "Campaign menu, secure login flow, access email history, and the legacy collateral dashboard.",
+            "href": "/inclinic/",
+        },
+        {
+            "label": "Patient Education",
+            "description": "Campaign launcher, PE login flow, filter-aware dashboards, and campaign access email management.",
+            "href": "/pe-reports/",
+        },
+        {
+            "label": "SAPA Growth Clinic",
+            "description": "Program access page for the SAPA dashboard, including secure login and email-based access sharing.",
+            "href": "/sapa-growth/login/",
+        },
+    ]
+    return render(request, "dashboard/home.html", {"report_cards": report_cards})
 
 
 def etl_debug_page(request: HttpRequest) -> HttpResponse:
@@ -321,12 +343,16 @@ def campaign_login(request: HttpRequest, brand_campaign_id: str) -> HttpResponse
     if not campaign:
         return redirect("menu")
 
+    access = build_report_access("inclinic", normalized_campaign_id)
+    if request.session.get(access.session_key) or request.session.get(f"auth_{normalized_campaign_id}"):
+        return redirect("campaign-overview-specific", brand_campaign_id=normalized_campaign_id)
+
     error_message = None
     if request.method == "POST":
         username = (request.POST.get("username") or "").strip()
         password = (request.POST.get("password") or "").strip()
-        expected = _campaign_credentials(normalized_campaign_id)
-        if username == expected["username"] and password == expected["password"]:
+        if validate_credentials("inclinic", normalized_campaign_id, username, password):
+            authenticate_session(request, "inclinic", normalized_campaign_id)
             request.session[f"auth_{normalized_campaign_id}"] = True
             return redirect("campaign-overview-specific", brand_campaign_id=normalized_campaign_id)
         error_message = "Invalid brand credentials"
@@ -337,9 +363,56 @@ def campaign_login(request: HttpRequest, brand_campaign_id: str) -> HttpResponse
         {
             "campaign": campaign,
             "error_message": error_message,
-            "credential_hint": f"Username: brand_{normalized_campaign_id.replace('-', '')[:6]} / Password: report_{normalized_campaign_id.replace('-', '')[-4:]}",
         },
     )
+
+
+def campaign_access_page(request: HttpRequest, brand_campaign_id: str) -> HttpResponse:
+    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
+    campaigns = {_normalize_campaign_id(c["brand_campaign_id"]): c for c in _campaign_list()}
+    campaign = campaigns.get(normalized_campaign_id)
+    if not campaign:
+        return redirect("menu")
+    return render(
+        request,
+        "dashboard/access.html",
+        {
+            "campaign": campaign,
+            "history_rows": access_email_history("inclinic", normalized_campaign_id),
+        },
+    )
+
+
+def send_access_email_view(request: HttpRequest, brand_campaign_id: str) -> HttpResponse:
+    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
+    campaigns = {_normalize_campaign_id(c["brand_campaign_id"]): c for c in _campaign_list()}
+    campaign = campaigns.get(normalized_campaign_id)
+    if request.method != "POST":
+        return redirect("campaign-access", brand_campaign_id=normalized_campaign_id)
+    if not campaign:
+        messages.error(request, "That campaign is not available for In-Clinic access.")
+        return redirect("menu")
+
+    recipient_email = request.POST.get("recipient_email", "")
+    access = build_report_access("inclinic", normalized_campaign_id)
+    try:
+        send_access_email(
+            report_key="inclinic",
+            recipient_email=recipient_email,
+            access_url=absolute_url(request, f"/campaign/{normalized_campaign_id}/login/"),
+            report_name=str(campaign.get("campaign_name") or normalized_campaign_id),
+            scope_label="Campaign",
+            scope_id=normalized_campaign_id,
+            username=access.username,
+            password=access.password,
+            brand_name=str(campaign.get("campaign_name") or ""),
+        )
+    except Exception as exc:
+        messages.error(request, f"In-Clinic access email could not be sent: {exc}")
+        return redirect("campaign-access", brand_campaign_id=normalized_campaign_id)
+
+    messages.success(request, f"In-Clinic access email sent to {(recipient_email or '').strip()}.")
+    return redirect("campaign-access", brand_campaign_id=normalized_campaign_id)
 
 
 def _build_report_context(selected_campaign: str, week_filter: int | None = None) -> dict[str, Any]:
@@ -927,7 +1000,8 @@ def campaign_overview(request: HttpRequest, brand_campaign_id: str | None = None
         return redirect("menu")
 
     normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
-    if not request.session.get(f"auth_{normalized_campaign_id}"):
+    access = build_report_access("inclinic", normalized_campaign_id)
+    if not request.session.get(access.session_key) and not request.session.get(f"auth_{normalized_campaign_id}"):
         return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
 
     week = request.GET.get("week")
@@ -939,7 +1013,8 @@ def campaign_overview(request: HttpRequest, brand_campaign_id: str | None = None
 
 def export_report(request: HttpRequest, brand_campaign_id: str):
     normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
-    if not request.session.get(f"auth_{normalized_campaign_id}"):
+    access = build_report_access("inclinic", normalized_campaign_id)
+    if not request.session.get(access.session_key) and not request.session.get(f"auth_{normalized_campaign_id}"):
         return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
 
     week = request.GET.get("week")
@@ -947,7 +1022,4 @@ def export_report(request: HttpRequest, brand_campaign_id: str):
     context = _build_report_context(normalized_campaign_id, week_filter)
     context["export_mode"] = True
     return render(request, "dashboard/overview.html", context)
-
-
-
 

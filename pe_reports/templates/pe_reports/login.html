@@ -1,0 +1,59 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ campaign_name }} | PE Login</title>
+  <link rel="stylesheet" href="{% static 'pe_reports/css/dashboard.css' %}?v=20260327d">
+</head>
+<body class="pe-body">
+  <main class="pe-shell pe-menu-shell">
+    {% if messages %}
+    <section class="panel pe-surface flash-stack">
+      {% for message in messages %}
+      <div class="flash-message {% if message.tags %}flash-{{ message.tags }}{% endif %}">{{ message }}</div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <section class="panel pe-surface access-card">
+      <div class="panel-head panel-head-stack">
+        <div>
+          <p class="eyebrow">Secure Access</p>
+          <h1>Patient Education Login</h1>
+          <p class="subtext">{{ campaign_name }}{% if brand_name %} · {{ brand_name }}{% endif %}</p>
+        </div>
+        <a class="table-link" href="{% url 'pe_reports:menu' %}">Back to Campaign Menu</a>
+      </div>
+
+      {% if error_message %}
+      <div class="flash-message flash-error">{{ error_message }}</div>
+      {% endif %}
+
+      <div class="access-grid">
+        <div class="access-copy">
+          <p class="lede">Use the credentials shared for this campaign to open the report. Credentials are not shown on this page.</p>
+          <div class="hero-stat">
+            <span class="detail-kicker">Campaign ID</span>
+            <strong>{{ campaign_id }}</strong>
+          </div>
+        </div>
+
+        <form method="post" class="access-form">
+          {% csrf_token %}
+          <label>
+            <span>Username</span>
+            <input id="username" type="text" name="username" autocomplete="username" required>
+          </label>
+          <label>
+            <span>Password</span>
+            <input id="password" type="password" name="password" autocomplete="current-password" required>
+          </label>
+          <button type="submit" class="cta-button">Login &amp; Open Report</button>
+        </form>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
