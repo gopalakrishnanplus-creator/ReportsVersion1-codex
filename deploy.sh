@@ -7,12 +7,17 @@ PYTHON="$VENV_DIR/bin/python"
 PIP="$VENV_DIR/bin/pip"
 DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-config.settings.prod}
 ENV_FILE=${ENV_FILE:-/var/www/secrets/.env}
+
 RUN_ETL_ON_DEPLOY=${RUN_ETL_ON_DEPLOY:-1}
 RUN_ETL_CONTINUE_ON_ERROR=${RUN_ETL_CONTINUE_ON_ERROR:-1}
+
 RUN_SAPA_GROWTH_ETL_ON_DEPLOY=${RUN_SAPA_GROWTH_ETL_ON_DEPLOY:-1}
 RUN_SAPA_GROWTH_ETL_CONTINUE_ON_ERROR=${RUN_SAPA_GROWTH_ETL_CONTINUE_ON_ERROR:-1}
-GUNICORN_SERVICE=${GUNICORN_SERVICE:-gunicorn}
 
+RUN_PE_REPORTS_ETL_ON_DEPLOY=${RUN_PE_REPORTS_ETL_ON_DEPLOY:-1}
+RUN_PE_REPORTS_ETL_CONTINUE_ON_ERROR=${RUN_PE_REPORTS_ETL_CONTINUE_ON_ERROR:-1}
+
+GUNICORN_SERVICE=${GUNICORN_SERVICE:-gunicorn}
 
 cd "$PROJECT_DIR"
 
@@ -51,6 +56,7 @@ echo "         POSTGRES_HOST=${POSTGRES_HOST:-${DB_HOST:-localhost}}"
 echo "         POSTGRES_PORT=${POSTGRES_PORT:-${DB_PORT:-5432}}"
 echo "         RUN_ETL_ON_DEPLOY=$RUN_ETL_ON_DEPLOY"
 echo "         RUN_SAPA_GROWTH_ETL_ON_DEPLOY=$RUN_SAPA_GROWTH_ETL_ON_DEPLOY"
+echo "         RUN_PE_REPORTS_ETL_ON_DEPLOY=$RUN_PE_REPORTS_ETL_ON_DEPLOY"
 
 echo "[deploy] Running Django migrations with $DJANGO_SETTINGS_MODULE..."
 "$PYTHON" manage.py migrate --noinput --fake-initial
@@ -81,6 +87,20 @@ if [ "$RUN_SAPA_GROWTH_ETL_ON_DEPLOY" = "1" ]; then
   fi
 else
   echo "[deploy] Skipping SAPA Growth ETL (RUN_SAPA_GROWTH_ETL_ON_DEPLOY=$RUN_SAPA_GROWTH_ETL_ON_DEPLOY)"
+fi
+
+if [ "$RUN_PE_REPORTS_ETL_ON_DEPLOY" = "1" ]; then
+  echo "[deploy] Running PE Reports ETL..."
+  if ! "$PYTHON" manage.py run_pe_reports_etl; then
+    if [ "$RUN_PE_REPORTS_ETL_CONTINUE_ON_ERROR" = "1" ]; then
+      echo "[deploy] WARNING: run_pe_reports_etl failed, continuing because RUN_PE_REPORTS_ETL_CONTINUE_ON_ERROR=1"
+    else
+      echo "[deploy] ERROR: run_pe_reports_etl failed. Set RUN_PE_REPORTS_ETL_CONTINUE_ON_ERROR=1 to continue deployment anyway."
+      exit 1
+    fi
+  fi
+else
+  echo "[deploy] Skipping PE Reports ETL (RUN_PE_REPORTS_ETL_ON_DEPLOY=$RUN_PE_REPORTS_ETL_ON_DEPLOY)"
 fi
 
 echo "[deploy] Collecting static files..."
