@@ -6,12 +6,16 @@ from unittest.mock import patch
 from django.test import SimpleTestCase
 from django.urls import resolve
 
+from reporting.campaign_performance import CampaignPerformanceNotFound
+
 
 class UnifiedReportingApiRoutingTests(SimpleTestCase):
     def test_routes_registered(self):
         self.assertEqual(resolve("/reporting/api/red_flag_alert/").view_name, "reporting-api-red-flag-alert")
         self.assertEqual(resolve("/reporting/api/in_clinic/").view_name, "reporting-api-in-clinic")
         self.assertEqual(resolve("/reporting/api/patient_education/").view_name, "reporting-api-patient-education")
+        self.assertEqual(resolve("/reporting/api/campaign-performance/").view_name, "reporting-api-campaign-performance")
+        self.assertEqual(resolve("/reporting/api/campaign-performance/demo/").view_name, "reporting-api-campaign-performance-specific")
 
 
 class UnifiedReportingApiViewTests(SimpleTestCase):
@@ -81,3 +85,52 @@ class UnifiedReportingApiViewTests(SimpleTestCase):
         self.assertEqual(payload["count"], 0)
         self.assertEqual(payload["results"], [])
         self.assertIn("detail", payload)
+
+    @patch(
+        "reporting.api_views.build_campaign_performance_payload",
+        return_value={
+            "campaign": {
+                "campaign_id": "demo",
+                "campaign_name": "Demo Campaign",
+                "brand_name": "Brand A",
+                "identifiers": {"brand_campaign_id": "demo", "resolved_campaign_id": "camp-42", "pe_campaign_id": "camp-42"},
+            },
+            "system_count": 2,
+            "available_systems": [
+                {"key": "in_clinic", "label": "InClinic (In-Clinic Sharing)"},
+                {"key": "patient_education", "label": "PE (Patient Education)"},
+            ],
+            "sections": [
+                {"key": "in_clinic", "label": "InClinic (In-Clinic Sharing)", "metrics": [], "meta": [], "trend": None},
+                {"key": "adoption_by_clinics", "label": "Adoption by Clinics", "metrics": [], "meta": [], "trend": None, "breakdown": []},
+            ],
+            "generated_at": "2026-04-20T10:00:00+00:00",
+        },
+    )
+    def test_campaign_performance_returns_dynamic_sections(self, _mock_builder):
+        response = self.client.get("/reporting/api/campaign-performance/demo/")
+        payload = json.loads(response.content)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["campaign"]["campaign_name"], "Demo Campaign")
+        self.assertEqual(payload["system_count"], 2)
+        self.assertEqual(payload["available_systems"][0]["key"], "in_clinic")
+        self.assertEqual(payload["sections"][-1]["key"], "adoption_by_clinics")
+        self.assertEqual(payload["requested_campaign_id"], "demo")
+
+    def test_campaign_performance_requires_campaign_id(self):
+        response = self.client.get("/reporting/api/campaign-performance/")
+        payload = json.loads(response.content)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(payload["system_count"], 0)
+        self.assertIn("detail", payload)
+
+    @patch("reporting.api_views.build_campaign_performance_payload", side_effect=CampaignPerformanceNotFound("missing"))
+    def test_campaign_performance_returns_not_found_envelope(self, _mock_builder):
+        response = self.client.get("/reporting/api/campaign-performance/missing/")
+        payload = json.loads(response.content)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(payload["requested_campaign_id"], "missing")
+        self.assertEqual(payload["sections"], [])

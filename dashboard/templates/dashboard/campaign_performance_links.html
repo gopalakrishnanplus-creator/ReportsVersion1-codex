@@ -1,0 +1,96 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Campaign Performance Links</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/campaign_performance_links.css' %}?v=20260420a">
+</head>
+<body>
+  <main class="link-library-shell">
+    <section class="library-hero library-card">
+      <div>
+        <p class="eyebrow">Campaign Link Library</p>
+        <h1>Campaign Performance Embed Links</h1>
+        <p class="subtext">Copy the performance page URL or API URL for any configured campaign, then place those links inside your main Brand Manager system.</p>
+      </div>
+      <a class="hero-link" href="{% url 'reports-home' %}">Back to Reports Home</a>
+    </section>
+
+    <section class="library-card">
+      <div class="section-head">
+        <div>
+          <h2>Available Campaign Links</h2>
+          <p class="subtext">This list is driven from the main campaign database and shows the systems selected for each campaign.</p>
+        </div>
+      </div>
+
+      {% if link_rows %}
+      <div class="table-wrap">
+        <table class="link-table">
+          <thead>
+            <tr>
+              <th>Campaign</th>
+              <th>Selected Systems</th>
+              <th>Performance Page URL</th>
+              <th>API URL</th>
+              <th>Legacy Brand Route</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in link_rows %}
+            <tr>
+              <td data-label="Campaign">
+                <strong>{{ row.campaign_name }}</strong>
+                <div class="subtle-copy">{{ row.campaign_id }}</div>
+                {% if row.brand_manager_login_link %}
+                <div class="subtle-copy">Brand Manager Link Present</div>
+                {% endif %}
+              </td>
+              <td data-label="Selected Systems">
+                <div class="system-chip-row">
+                  {% for system in row.selected_systems %}
+                  <span class="system-chip">{{ system }}</span>
+                  {% endfor %}
+                </div>
+              </td>
+              <td data-label="Performance Page URL">
+                <div class="copy-stack">
+                  <input class="copy-input" type="text" readonly value="{{ row.performance_page_url }}">
+                  <button class="copy-btn" type="button" data-copy="{{ row.performance_page_url }}">Copy Page URL</button>
+                </div>
+              </td>
+              <td data-label="API URL">
+                <div class="copy-stack">
+                  <input class="copy-input" type="text" readonly value="{{ row.performance_api_url }}">
+                  <button class="copy-btn" type="button" data-copy="{{ row.performance_api_url }}">Copy API URL</button>
+                </div>
+              </td>
+              <td data-label="Legacy Brand Route">
+                {% if row.legacy_brand_route_url %}
+                <div class="copy-stack">
+                  <input class="copy-input" type="text" readonly value="{{ row.legacy_brand_route_url }}">
+                  <button class="copy-btn copy-btn-secondary" type="button" data-copy="{{ row.legacy_brand_route_url }}">Copy Legacy URL</button>
+                </div>
+                {% else %}
+                <span class="subtle-copy">Not mapped</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <h3>No campaign links available yet</h3>
+        <p class="subtext">Once the campaign tables are available in this environment, the copyable link list will appear here.</p>
+      </div>
+      {% endif %}
+    </section>
+  </main>
+
+  <script src="{% static 'dashboard/js/campaign_performance_links.js' %}"></script>
+</body>
+</html>

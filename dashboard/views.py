@@ -148,6 +148,85 @@ def _campaign_list() -> list[dict[str, Any]]:
         return []
 
 
+def _campaign_performance_link_rows(request: HttpRequest) -> list[dict[str, Any]]:
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass('bronze.campaign_campaign')")
+            campaign_table_exists = cursor.fetchone()[0] is not None
+            cursor.execute("SELECT to_regclass('silver.map_brand_campaign_to_campaign')")
+            mapping_table_exists = cursor.fetchone()[0] is not None
+        if not campaign_table_exists:
+            return []
+
+        mapping_join = ""
+        mapping_select = "NULL::text AS brand_campaign_id"
+        if mapping_table_exists:
+            mapping_join = """
+                LEFT JOIN (
+                    SELECT campaign_id_resolved, MIN(brand_campaign_id) AS brand_campaign_id
+                    FROM silver.map_brand_campaign_to_campaign
+                    GROUP BY campaign_id_resolved
+                ) mapped
+                  ON mapped.campaign_id_resolved = cc.id::text
+            """
+            mapping_select = "NULLIF(btrim(mapped.brand_campaign_id), '') AS brand_campaign_id"
+
+        rows = _fetch_dicts(
+            f"""
+            SELECT
+              cc.id::text AS campaign_id,
+              COALESCE(NULLIF(btrim(cc.name), ''), cc.id::text) AS campaign_name,
+              CASE WHEN lower(COALESCE(cc.system_rfa, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_rfa,
+              CASE WHEN lower(COALESCE(cc.system_ic, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_ic,
+              CASE WHEN lower(COALESCE(cc.system_pe, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_pe,
+              CASE
+                WHEN COALESCE(NULLIF(btrim(cc.banner_target_url), ''), NULLIF(btrim(cc.doctor_recruitment_link), ''), NULLIF(btrim(cc.add_to_campaign_message), '')) IS NOT NULL
+                THEN TRUE
+                ELSE FALSE
+              END AS system_entry_navigation,
+              NULLIF(btrim(cc.brand_manager_login_link), '') AS brand_manager_login_link,
+              {mapping_select}
+            FROM bronze.campaign_campaign cc
+            {mapping_join}
+            WHERE
+              lower(COALESCE(cc.system_rfa, '')) IN ('1', 'true', 't', 'yes')
+              OR lower(COALESCE(cc.system_ic, '')) IN ('1', 'true', 't', 'yes')
+              OR lower(COALESCE(cc.system_pe, '')) IN ('1', 'true', 't', 'yes')
+              OR COALESCE(NULLIF(btrim(cc.banner_target_url), ''), NULLIF(btrim(cc.doctor_recruitment_link), ''), NULLIF(btrim(cc.add_to_campaign_message), '')) IS NOT NULL
+            ORDER BY COALESCE(NULLIF(btrim(cc.name), ''), cc.id::text)
+            """
+        )
+    except (ProgrammingError, OperationalError):
+        return []
+
+    output = []
+    for row in rows:
+        systems = []
+        if row.get("system_rfa"):
+            systems.append("RFA")
+        if row.get("system_ic"):
+            systems.append("InClinic")
+        if row.get("system_pe"):
+            systems.append("PE")
+        if row.get("system_entry_navigation"):
+            systems.append("Entry Point / Navigation")
+        campaign_id = _normalize_campaign_id(row.get("campaign_id"))
+        output.append(
+            {
+                "campaign_id": campaign_id,
+                "campaign_name": row.get("campaign_name") or campaign_id,
+                "brand_campaign_id": row.get("brand_campaign_id") or "",
+                "selected_systems": systems,
+                "selected_systems_label": ", ".join(systems) if systems else "-",
+                "performance_page_url": absolute_url(request, f"/campaign-performance/{campaign_id}/"),
+                "performance_api_url": absolute_url(request, f"/reporting/api/campaign-performance/{campaign_id}/"),
+                "legacy_brand_route_url": absolute_url(request, f"/campaign/{row.get('brand_campaign_id')}/performance/") if row.get("brand_campaign_id") else "",
+                "brand_manager_login_link": row.get("brand_manager_login_link") or "",
+            }
+        )
+    return output
+
+
 
 def _table_exists(schema: str, table: str) -> bool:
     with connection.cursor() as cursor:
@@ -327,6 +406,11 @@ def reports_home(request: HttpRequest) -> HttpResponse:
             "description": "Program launcher with separate secure login and access email management for the SAPA dashboard.",
             "href": "/sapa-growth/menu/",
         },
+        {
+            "label": "Campaign Performance Links",
+            "description": "Copy campaign-performance page and API URLs so you can embed them into your main Brand Manager system.",
+            "href": "/campaign-performance/links/",
+        },
     ]
     return render(request, "dashboard/home.html", {"report_cards": report_cards})
 
@@ -334,6 +418,30 @@ def reports_home(request: HttpRequest) -> HttpResponse:
 def etl_debug_page(request: HttpRequest) -> HttpResponse:
     debug_snapshot = _build_debug_snapshot()
     return render(request, "dashboard/debug.html", {"debug_snapshot": debug_snapshot})
+
+
+def campaign_performance_links_page(request: HttpRequest) -> HttpResponse:
+    return render(
+        request,
+        "dashboard/campaign_performance_links.html",
+        {"link_rows": _campaign_performance_link_rows(request)},
+    )
+
+
+def campaign_performance_page(request: HttpRequest, campaign_id: str) -> HttpResponse:
+    normalized_campaign_id = _normalize_campaign_id(campaign_id)
+    campaigns = {_normalize_campaign_id(c["brand_campaign_id"]): c for c in _campaign_list()}
+    campaign = campaigns.get(normalized_campaign_id, {"brand_campaign_id": normalized_campaign_id, "campaign_name": normalized_campaign_id})
+    return render(
+        request,
+        "dashboard/campaign_performance.html",
+        {
+            "campaign": campaign,
+            "campaign_id": normalized_campaign_id,
+            "campaign_name": campaign.get("campaign_name") or normalized_campaign_id,
+            "performance_api_url": f"/reporting/api/campaign-performance/{normalized_campaign_id}/",
+        },
+    )
 
 
 def campaign_login(request: HttpRequest, brand_campaign_id: str) -> HttpResponse:

@@ -1,0 +1,58 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ campaign_name }} | Campaign Performance</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/campaign_performance.css' %}?v=20260420a">
+</head>
+<body>
+  <main class="campaign-performance-shell">
+    <section class="hero-card card">
+      <div class="hero-copy">
+        <p class="eyebrow">Campaign Performance</p>
+        <h1 id="page-title">{{ campaign_name }}</h1>
+        <p id="page-subtitle">Unified campaign reporting across all available systems.</p>
+      </div>
+      <div class="hero-actions">
+        <a class="hero-link" href="{% url 'campaign-performance-links' %}">Open Link Library</a>
+        <a class="hero-link hero-link-solid" href="{% url 'reports-home' %}">Reports Home</a>
+      </div>
+    </section>
+
+    <section class="summary-card card">
+      <div class="summary-meta">
+        <div>
+          <span class="summary-label">Campaign ID</span>
+          <strong id="campaign-id-label">{{ campaign_id }}</strong>
+        </div>
+        <div>
+          <span class="summary-label">Brand</span>
+          <strong id="brand-name-label">{{ campaign.brand_name|default:"Loading..." }}</strong>
+        </div>
+        <div>
+          <span class="summary-label">Systems Live</span>
+          <strong id="system-count-label">-</strong>
+        </div>
+      </div>
+      <div id="system-pill-row" class="system-pill-row" aria-label="Available systems"></div>
+    </section>
+
+    <section id="loading-state" class="state-card card">
+      <h2>Loading campaign performance</h2>
+      <p>Pulling metrics from the systems linked to this campaign.</p>
+    </section>
+
+    <section id="error-state" class="state-card card hidden" aria-live="polite"></section>
+
+    <section id="empty-state" class="state-card card hidden" aria-live="polite"></section>
+
+    <section id="report-sections" class="report-sections hidden" aria-live="polite"></section>
+  </main>
+
+  {{ campaign_id|json_script:"campaign-performance-id" }}
+  {{ performance_api_url|json_script:"campaign-performance-api-url" }}
+  <script src="{% static 'dashboard/js/campaign_performance.js' %}"></script>
+</body>
+</html>

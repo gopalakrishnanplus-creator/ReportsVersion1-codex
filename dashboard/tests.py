@@ -13,6 +13,9 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/campaign/demo/login/").view_name, "campaign-login")
         self.assertEqual(resolve("/campaign/demo/access/").view_name, "campaign-access")
         self.assertEqual(resolve("/campaign/demo/send-access-email/").view_name, "campaign-send-access-email")
+        self.assertEqual(resolve("/campaign-performance/links/").view_name, "campaign-performance-links")
+        self.assertEqual(resolve("/campaign-performance/demo/").view_name, "campaign-performance-page")
+        self.assertEqual(resolve("/campaign/demo/performance/").view_name, "campaign-performance-page-legacy")
 
 
 class DashboardAccessViewTests(SimpleTestCase):
@@ -53,3 +56,43 @@ class DashboardAccessViewTests(SimpleTestCase):
             response = self.client.get("/campaign/demo/access/")
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Previous Recipients")
+
+    def test_menu_page_keeps_existing_actions_only(self):
+        with patch(
+            "dashboard.views._campaign_list",
+            return_value=[{"brand_campaign_id": "demo", "campaign_name": "Demo Campaign"}],
+        ):
+            response = self.client.get("/inclinic/")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "/campaign/demo/performance/")
+
+    def test_campaign_performance_page_renders_bootstrap_data(self):
+        with patch(
+            "dashboard.views._campaign_list",
+            return_value=[{"brand_campaign_id": "demo", "campaign_name": "Demo Campaign"}],
+        ):
+            response = self.client.get("/campaign-performance/demo/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Campaign Performance")
+        self.assertContains(response, "/reporting/api/campaign-performance/demo/")
+
+    def test_campaign_performance_link_library_renders_copy_targets(self):
+        with patch(
+            "dashboard.views._campaign_performance_link_rows",
+            return_value=[
+                {
+                    "campaign_id": "camp-1",
+                    "campaign_name": "Campaign One",
+                    "selected_systems": ["RFA", "InClinic"],
+                    "performance_page_url": "https://reports.test/campaign-performance/camp-1/",
+                    "performance_api_url": "https://reports.test/reporting/api/campaign-performance/camp-1/",
+                    "legacy_brand_route_url": "https://reports.test/campaign/brand-1/performance/",
+                    "brand_manager_login_link": "",
+                }
+            ],
+        ):
+            response = self.client.get("/campaign-performance/links/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Campaign Performance Embed Links")
+        self.assertContains(response, "Copy Page URL")
+        self.assertContains(response, "https://reports.test/reporting/api/campaign-performance/camp-1/")
