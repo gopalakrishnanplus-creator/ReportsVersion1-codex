@@ -12,6 +12,7 @@ from django.shortcuts import redirect, render
 
 from etl.utils.specs import SOURCE_TABLE_SPECS
 from reporting.access import absolute_url, access_email_history, authenticate_session, build_report_access, send_access_email, validate_credentials
+from reporting.campaign_performance import CampaignPerformanceNotFound, _resolve_campaign_reference
 
 
 def _fetch_dicts(sql: str, params=None):
@@ -203,16 +204,56 @@ def _campaign_performance_link_rows(request: HttpRequest) -> list[dict[str, Any]
         if row.get("system_pe"):
             systems.append("PE")
         campaign_id = _normalize_campaign_id(row.get("campaign_id"))
+        brand_campaign_id = str(row.get("brand_campaign_id") or "").strip()
+        in_clinic_report_url = absolute_url(request, f"/campaign/{brand_campaign_id}/") if row.get("system_ic") and brand_campaign_id else ""
+        pe_report_url = ""
+        if (row.get("system_ic") and not in_clinic_report_url) or row.get("system_pe"):
+            try:
+                reference = _resolve_campaign_reference(campaign_id)
+            except CampaignPerformanceNotFound:
+                reference = None
+            if row.get("system_ic") and not in_clinic_report_url and reference and reference.brand_campaign_id:
+                in_clinic_report_url = absolute_url(request, f"/campaign/{reference.brand_campaign_id}/")
+            if row.get("system_pe") and reference and reference.pe_campaign_id:
+                pe_report_url = absolute_url(request, f"/pe-reports/campaign/{reference.pe_campaign_id}/")
+
+        system_report_links = []
+        if row.get("system_ic"):
+            system_report_links.append(
+                {
+                    "label": "InClinic Report",
+                    "url": in_clinic_report_url,
+                    "status": "Not mapped" if not in_clinic_report_url else "",
+                }
+            )
+        if row.get("system_pe"):
+            system_report_links.append(
+                {
+                    "label": "PE Report",
+                    "url": pe_report_url,
+                    "status": "Not mapped" if not pe_report_url else "",
+                }
+            )
+        if row.get("system_rfa"):
+            system_report_links.append(
+                {
+                    "label": "RFA Report",
+                    "url": "",
+                    "status": "Not available yet",
+                }
+            )
+
         output.append(
             {
                 "campaign_id": campaign_id,
                 "campaign_name": row.get("campaign_name") or campaign_id,
-                "brand_campaign_id": row.get("brand_campaign_id") or "",
+                "brand_campaign_id": brand_campaign_id,
                 "selected_systems": systems,
                 "selected_systems_label": ", ".join(systems) if systems else "-",
                 "performance_page_url": absolute_url(request, f"/campaign-performance/{campaign_id}/"),
                 "performance_api_url": absolute_url(request, f"/reporting/api/campaign-performance/{campaign_id}/"),
-                "legacy_brand_route_url": absolute_url(request, f"/campaign/{row.get('brand_campaign_id')}/performance/") if row.get("brand_campaign_id") else "",
+                "legacy_brand_route_url": absolute_url(request, f"/campaign/{brand_campaign_id}/performance/") if brand_campaign_id else "",
+                "system_report_links": system_report_links,
                 "brand_manager_login_link": row.get("brand_manager_login_link") or "",
             }
         )

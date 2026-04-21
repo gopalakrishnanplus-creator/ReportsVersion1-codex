@@ -7,6 +7,7 @@ from django.test import SimpleTestCase
 from reporting.campaign_performance import (
     CampaignConfig,
     CampaignReference,
+    _build_in_clinic_summary_section,
     _configured_system_keys,
     build_campaign_performance_page_payload,
     build_campaign_performance_payload,
@@ -78,6 +79,37 @@ class CampaignPerformanceSelectionTests(SimpleTestCase):
         self.assertEqual(payload["system_count"], 1)
         self.assertEqual([item["key"] for item in payload["available_systems"]], ["in_clinic"])
         self.assertEqual(payload["sections"][-1]["key"], "adoption_by_clinics")
+
+    @patch(
+        "reporting.campaign_performance._in_clinic_summary_counts",
+        return_value={
+            "shares": 5,
+            "link_opens": 4,
+            "pdf_reads": 3,
+            "video_views": 2,
+            "video_completions": 1,
+            "pdf_downloads": 4,
+            "clinics_added": 5,
+            "active_records": 4,
+            "clinics_with_activity": 3,
+        },
+    )
+    def test_in_clinic_summary_section_exposes_main_report_path(self, _counts_mock):
+        section, adoption_row = _build_in_clinic_summary_section(
+            _reference(
+                CampaignConfig(
+                    campaign_id="camp-1",
+                    campaign_name="Campaign One",
+                    system_rfa=False,
+                    system_ic=True,
+                    system_pe=False,
+                    has_entry_navigation=False,
+                )
+            )
+        )
+
+        self.assertEqual(section["system_report_path"], "/campaign/brand-1/")
+        self.assertEqual(adoption_row["label"], "In Clinic")
 
     @patch(
         "reporting.campaign_performance._build_in_clinic_section",
