@@ -186,6 +186,27 @@ def _metric(
     }
 
 
+def _campaign_identity(reference: CampaignReference) -> dict[str, Any]:
+    config = reference.campaign_config
+    campaign_name = (
+        (config.campaign_name if config else "")
+        or reference.brand_campaign_name
+        or reference.pe_campaign_name
+        or reference.requested_id
+    )
+    return {
+        "requested_id": reference.requested_id,
+        "campaign_id": (config.campaign_id if config else "") or reference.resolved_campaign_id or reference.brand_campaign_id or reference.pe_campaign_id or reference.requested_id,
+        "campaign_name": campaign_name,
+        "brand_name": reference.brand_name,
+        "identifiers": {
+            "brand_campaign_id": reference.brand_campaign_id,
+            "resolved_campaign_id": reference.resolved_campaign_id or (config.campaign_id if config else None),
+            "pe_campaign_id": reference.pe_campaign_id,
+        },
+    }
+
+
 def _series(key: str, label: str, values: list[Any], color: str) -> dict[str, Any]:
     return {
         "key": key,
@@ -757,6 +778,272 @@ def _rfa_detail_rows(reference: CampaignReference) -> list[dict[str, Any]]:
     )
 
 
+def _summary_card_section(
+    *,
+    key: str,
+    subtitle: str,
+    reference: CampaignReference,
+    metrics: list[dict[str, Any]],
+    extra_meta: list[dict[str, str] | None] | None = None,
+    data_status: str = "ready",
+) -> dict[str, Any]:
+    meta_items = _base_meta(reference)
+    meta_items.extend(item for item in (extra_meta or []) if item)
+    return {
+        "key": key,
+        "type": "system",
+        "label": SYSTEM_LABELS[key],
+        "subtitle": subtitle,
+        "metrics": metrics,
+        "meta": meta_items,
+        "data_status": data_status,
+    }
+
+
+def _in_clinic_summary_counts(reference: CampaignReference) -> dict[str, int]:
+    if not reference.brand_campaign_id:
+        return {
+            "shares": 0,
+            "link_opens": 0,
+            "pdf_reads": 0,
+            "video_views": 0,
+            "video_completions": 0,
+            "pdf_downloads": 0,
+            "clinics_added": 0,
+            "active_records": 0,
+            "clinics_with_activity": 0,
+        }
+
+    base_counts = _fetch_one(
+        """
+        SELECT
+            COUNT(DISTINCT base.doctor_identity_key) AS clinics_added,
+            COUNT(DISTINCT action.doctor_identity_key) FILTER (
+                WHERE COALESCE(NULLIF(action.reached_first_ts, ''), NULLIF(action.opened_first_ts, ''), NULLIF(action.video_gt_50_first_ts, ''), NULLIF(action.pdf_download_first_ts, '')) IS NOT NULL
+            ) AS active_records,
+            COUNT(DISTINCT action.doctor_identity_key) FILTER (
+                WHERE COALESCE(NULLIF(action.reached_first_ts, ''), NULLIF(action.opened_first_ts, ''), NULLIF(action.video_gt_50_first_ts, ''), NULLIF(action.pdf_download_first_ts, '')) IS NOT NULL
+            ) AS clinics_with_activity,
+            COUNT(DISTINCT action.doctor_identity_key) FILTER (
+                WHERE NULLIF(action.reached_first_ts, '') IS NOT NULL
+            ) AS shares,
+            COUNT(DISTINCT action.doctor_identity_key) FILTER (
+                WHERE NULLIF(action.opened_first_ts, '') IS NOT NULL
+            ) AS link_opens,
+            COUNT(DISTINCT action.doctor_identity_key) FILTER (
+                WHERE NULLIF(action.video_gt_50_first_ts, '') IS NOT NULL
+            ) AS video_views,
+            COUNT(DISTINCT action.doctor_identity_key) FILTER (
+                WHERE NULLIF(action.pdf_download_first_ts, '') IS NOT NULL
+            ) AS pdf_downloads
+        FROM silver.bridge_brand_campaign_doctor_base base
+        LEFT JOIN silver.doctor_action_first_seen action
+          ON action.brand_campaign_id = base.brand_campaign_id
+         AND action.doctor_identity_key = base.doctor_identity_key
+        WHERE base.brand_campaign_id = %s
+    """,
+        [reference.brand_campaign_id],
+    )
+    completion_counts = _fetch_one(
+        """
+        SELECT
+            COUNT(DISTINCT tx.doctor_identity_key) FILTER (
+                WHERE (
+                    COALESCE(NULLIF(btrim(tx.pdf_completed), ''), '0') = '1'
+                    OR (
+                        tx.pdf_last_page_num IS NOT NULL
+                        AND tx.pdf_total_pages_num IS NOT NULL
+                        AND tx.pdf_total_pages_num::numeric > 0
+                        AND tx.pdf_last_page_num::numeric >= tx.pdf_total_pages_num::numeric
+                    )
+                )
+            ) AS pdf_reads,
+            COUNT(DISTINCT tx.doctor_identity_key) FILTER (
+                WHERE (
+                    COALESCE(NULLIF(btrim(tx.video_completed), ''), '0') = '1'
+                    OR COALESCE(NULLIF(btrim(tx.video_100_at_ts), ''), '') <> ''
+                    OR COALESCE(tx.last_video_percentage_num::numeric, 0) >= 100
+                    OR COALESCE(tx.video_watch_percentage_num::numeric, 0) >= 100
+                )
+            ) AS video_completions
+        FROM silver.fact_collateral_transaction tx
+        WHERE tx.brand_campaign_id = %s
+    """,
+        [reference.brand_campaign_id],
+    )
+    return {
+        "shares": _to_int(base_counts.get("shares")),
+        "link_opens": _to_int(base_counts.get("link_opens")),
+        "pdf_reads": _to_int(completion_counts.get("pdf_reads")),
+        "video_views": _to_int(base_counts.get("video_views")),
+        "video_completions": _to_int(completion_counts.get("video_completions")),
+        "pdf_downloads": _to_int(base_counts.get("pdf_downloads")),
+        "clinics_added": _to_int(base_counts.get("clinics_added")),
+        "active_records": _to_int(base_counts.get("active_records")),
+        "clinics_with_activity": _to_int(base_counts.get("clinics_with_activity")),
+    }
+
+
+def _build_in_clinic_summary_section(reference: CampaignReference) -> tuple[dict[str, Any], dict[str, Any]]:
+    counts = _in_clinic_summary_counts(reference)
+    metrics = [
+        _metric("shares", "Shares", counts["shares"]),
+        _metric("link_opens", "Link Opens", counts["link_opens"]),
+        _metric("pdf_reads", "PDF Reads", counts["pdf_reads"]),
+        _metric("video_views", "Video Views", counts["video_views"]),
+        _metric("video_completions", "Video Completions", counts["video_completions"]),
+        _metric("pdf_downloads", "PDF Downloads", counts["pdf_downloads"]),
+    ]
+    section = _summary_card_section(
+        key="in_clinic",
+        subtitle="Cumulative unique-doctor summary for the campaign's In-Clinic sharing journey.",
+        reference=reference,
+        metrics=metrics,
+        extra_meta=[
+            _meta("Counting method", "Cumulative unique doctor records, aligned to the InClinic reporting model."),
+            _meta("Data status", "Ready" if any(counts.values()) else "Configured in campaign DB; no in-clinic activity yet."),
+        ],
+        data_status="ready" if any(counts.values()) else "no_data",
+    )
+    adoption_row = {
+        "system_key": "in_clinic",
+        "label": "In Clinic",
+        "clinics_added": counts["clinics_added"],
+        "active_records": counts["active_records"] or counts["clinics_added"],
+        "clinics_with_activity": counts["clinics_with_activity"],
+    }
+    return section, adoption_row
+
+
+def _build_patient_education_summary_section(reference: CampaignReference) -> tuple[dict[str, Any], dict[str, Any]]:
+    doctor_rows = (
+        _query_schema_rows(
+            reference.pe_schema,
+            "rpt_doctor_activity_current",
+            [
+                "shares_played_cumulative",
+                "shares_viewed_100_cumulative",
+                "bundle_shares_cumulative",
+                "unique_recipient_references_cumulative",
+                "banner_clicks_cumulative",
+                "banner_clicks",
+                "clinic_name",
+                "doctor_display_name",
+                "doctor_id",
+                "city",
+                "district",
+                "state",
+            ],
+        )
+        if reference.pe_schema and _table_exists(reference.pe_schema, "rpt_doctor_activity_current")
+        else []
+    )
+    clinic_rows = _aggregate_pe_clinic_rows(doctor_rows)
+    metrics = [
+        _metric("video_views", "Video Views", sum(_to_int(row.get("video_views")) for row in clinic_rows)),
+        _metric("video_completions", "Video Completions", sum(_to_int(row.get("video_completions")) for row in clinic_rows)),
+        _metric("cluster_shares", "Cluster Shares", sum(_to_int(row.get("cluster_shares")) for row in clinic_rows)),
+        _metric("patient_scans", "Patient Scans", sum(_to_int(row.get("patient_scans")) for row in clinic_rows)),
+        _metric("banner_clicks", "Banner Clicks", sum(_to_int(row.get("banner_clicks")) for row in clinic_rows)),
+    ]
+    section = _summary_card_section(
+        key="patient_education",
+        subtitle="Cumulative Patient Education summary for brand-manager overview cards.",
+        reference=reference,
+        metrics=metrics,
+        extra_meta=[
+            _meta("Counting method", "Cumulative PE activity totals from the campaign doctor activity feed."),
+            _meta("Data status", "Ready" if any(_to_int(metric.get("value")) for metric in metrics) else "Configured in campaign DB; no PE activity yet."),
+        ],
+        data_status="ready" if any(_to_int(metric.get("value")) for metric in metrics) else "no_data",
+    )
+    clinics_with_activity = sum(
+        1
+        for row in clinic_rows
+        if any(_to_int(row.get(key)) > 0 for key in ("video_views", "video_completions", "cluster_shares", "patient_scans", "banner_clicks"))
+    )
+    adoption_row = {
+        "system_key": "patient_education",
+        "label": "Patient Education",
+        "clinics_added": len(clinic_rows),
+        "active_records": len(clinic_rows),
+        "clinics_with_activity": clinics_with_activity,
+    }
+    return section, adoption_row
+
+
+def _build_rfa_summary_section(reference: CampaignReference) -> tuple[dict[str, Any], dict[str, Any]]:
+    detail_rows = _rfa_detail_rows(reference)
+    metrics = [
+        _metric("form_fills", "Form fills", sum(_to_int(row.get("form_fills")) for row in detail_rows)),
+        _metric("red_flags_total", "Red flags", sum(_to_int(row.get("red_flags_total")) for row in detail_rows)),
+        _metric("patient_video_views", "Patient video views", sum(_to_int(row.get("patient_video_views")) for row in detail_rows)),
+        _metric("reports_emailed_to_doctors", "Reports emailed", sum(_to_int(row.get("reports_emailed_to_doctors")) for row in detail_rows)),
+        _metric("form_shares", "Form shares", sum(_to_int(row.get("form_shares")) for row in detail_rows)),
+        _metric("patient_scans", "Patient scans", sum(_to_int(row.get("patient_scans")) for row in detail_rows)),
+        _metric("follow_ups_scheduled", "Follow-ups", sum(_to_int(row.get("follow_ups_scheduled")) for row in detail_rows)),
+        _metric("reminders_sent", "Reminders sent", sum(_to_int(row.get("reminders_sent")) for row in detail_rows)),
+    ]
+    section = _summary_card_section(
+        key="rfa",
+        subtitle="Cumulative RFA summary for brand-manager overview cards.",
+        reference=reference,
+        metrics=metrics,
+        extra_meta=[
+            _meta(
+                "Counting method",
+                "Cumulative RFA activity totals from screening, red-flag, scan, and follow-up feeds.",
+            ),
+            _meta(
+                "Data status",
+                "Ready" if any(_to_int(metric.get("value")) for metric in metrics) else "Configured in campaign DB; no attributable RFA activity yet.",
+            ),
+        ],
+        data_status="ready" if any(_to_int(metric.get("value")) for metric in metrics) else "no_data",
+    )
+    clinics_with_activity = sum(
+        1
+        for row in detail_rows
+        if any(
+            _to_int(row.get(key)) > 0
+            for key in (
+                "form_fills",
+                "red_flags_total",
+                "patient_video_views",
+                "reports_emailed_to_doctors",
+                "form_shares",
+                "patient_scans",
+                "follow_ups_scheduled",
+                "reminders_sent",
+            )
+        )
+    )
+    adoption_row = {
+        "system_key": "rfa",
+        "label": "Red Flag Alert",
+        "clinics_added": len(detail_rows),
+        "active_records": len(detail_rows),
+        "clinics_with_activity": clinics_with_activity,
+    }
+    return section, adoption_row
+
+
+def _build_adoption_summary_section(adoption_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "key": "adoption_by_clinics",
+        "type": "adoption",
+        "label": "Adoption by Clinics",
+        "subtitle": "RFA and patient education doctor counts are approximated from unique clinic activity because those live feeds do not currently expose doctor-level identifiers.",
+        "columns": [
+            _table_column("label", "System"),
+            _table_column("clinics_added", "Clinics added", "right"),
+            _table_column("active_records", "Doctors / active records", "right"),
+            _table_column("clinics_with_activity", "Clinics with activity", "right"),
+        ],
+        "rows": adoption_rows,
+    }
+
+
 def _build_in_clinic_section(reference: CampaignReference) -> dict[str, Any]:
     subtitle = "Shares, opens, and content consumption from the campaign's in-clinic collateral journey."
     zero_metrics = [
@@ -1322,7 +1609,7 @@ def _build_adoption_section(system_sections: list[dict[str, Any]]) -> dict[str, 
     }
 
 
-def build_campaign_performance_payload(campaign_id: str) -> dict[str, Any]:
+def build_campaign_performance_page_payload(campaign_id: str) -> dict[str, Any]:
     reference = _resolve_campaign_reference(campaign_id)
     configured_keys = _configured_system_keys(reference)
     builders = {
@@ -1333,25 +1620,36 @@ def build_campaign_performance_payload(campaign_id: str) -> dict[str, Any]:
     system_sections = [builders[key](reference) for key in SYSTEM_ORDER if key in configured_keys]
     adoption_section = _build_adoption_section(system_sections)
     configured_systems = [{"key": section["key"], "label": section["label"]} for section in system_sections]
-    config = reference.campaign_config
-    campaign_name = (
-        (config.campaign_name if config else "")
-        or reference.brand_campaign_name
-        or reference.pe_campaign_name
-        or reference.requested_id
-    )
     return {
-        "campaign": {
-            "requested_id": reference.requested_id,
-            "campaign_id": (config.campaign_id if config else "") or reference.resolved_campaign_id or reference.brand_campaign_id or reference.pe_campaign_id or reference.requested_id,
-            "campaign_name": campaign_name,
-            "brand_name": reference.brand_name,
-            "identifiers": {
-                "brand_campaign_id": reference.brand_campaign_id,
-                "resolved_campaign_id": reference.resolved_campaign_id or (config.campaign_id if config else None),
-                "pe_campaign_id": reference.pe_campaign_id,
-            },
-        },
+        "campaign": _campaign_identity(reference),
+        "system_count": len(configured_systems),
+        "configured_systems": configured_systems,
+        "available_systems": configured_systems,
+        "sections": [*system_sections, adoption_section],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def build_campaign_performance_payload(campaign_id: str) -> dict[str, Any]:
+    reference = _resolve_campaign_reference(campaign_id)
+    configured_keys = _configured_system_keys(reference)
+    summary_builders = {
+        "rfa": _build_rfa_summary_section,
+        "in_clinic": _build_in_clinic_summary_section,
+        "patient_education": _build_patient_education_summary_section,
+    }
+    system_sections: list[dict[str, Any]] = []
+    adoption_rows: list[dict[str, Any]] = []
+    for key in SYSTEM_ORDER:
+        if key not in configured_keys:
+            continue
+        section, adoption_row = summary_builders[key](reference)
+        system_sections.append(section)
+        adoption_rows.append(adoption_row)
+    adoption_section = _build_adoption_summary_section(adoption_rows)
+    configured_systems = [{"key": section["key"], "label": section["label"]} for section in system_sections]
+    return {
+        "campaign": _campaign_identity(reference),
         "system_count": len(configured_systems),
         "configured_systems": configured_systems,
         "available_systems": configured_systems,

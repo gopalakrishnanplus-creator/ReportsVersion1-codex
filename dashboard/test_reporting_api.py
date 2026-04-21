@@ -16,6 +16,7 @@ class UnifiedReportingApiRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/reporting/api/patient_education/").view_name, "reporting-api-patient-education")
         self.assertEqual(resolve("/reporting/api/campaign-performance/").view_name, "reporting-api-campaign-performance")
         self.assertEqual(resolve("/reporting/api/campaign-performance/demo/").view_name, "reporting-api-campaign-performance-specific")
+        self.assertEqual(resolve("/reporting/api/campaign-performance-page/demo/").view_name, "reporting-api-campaign-performance-page")
 
 
 class UnifiedReportingApiViewTests(SimpleTestCase):
@@ -116,6 +117,35 @@ class UnifiedReportingApiViewTests(SimpleTestCase):
         self.assertEqual(payload["system_count"], 2)
         self.assertEqual(payload["available_systems"][0]["key"], "in_clinic")
         self.assertEqual(payload["sections"][-1]["key"], "adoption_by_clinics")
+        self.assertEqual(payload["requested_campaign_id"], "demo")
+
+    @patch(
+        "reporting.api_views.build_campaign_performance_page_payload",
+        return_value={
+            "campaign": {
+                "campaign_id": "demo",
+                "campaign_name": "Demo Campaign",
+                "brand_name": "Brand A",
+                "identifiers": {"brand_campaign_id": "demo", "resolved_campaign_id": "camp-42", "pe_campaign_id": "camp-42"},
+            },
+            "system_count": 1,
+            "available_systems": [
+                {"key": "in_clinic", "label": "InClinic (In-Clinic Sharing)"},
+            ],
+            "sections": [
+                {"key": "in_clinic", "label": "InClinic (In-Clinic Sharing)", "metrics": [], "meta": [], "trend": None, "bar_chart": None, "table": None},
+                {"key": "adoption_by_clinics", "label": "Adoption by Clinics", "metrics": [], "meta": [], "trend": None, "bar_chart": None, "table": None, "breakdown": []},
+            ],
+            "generated_at": "2026-04-21T10:00:00+00:00",
+        },
+    )
+    def test_campaign_performance_page_api_uses_page_payload_builder(self, _mock_builder):
+        response = self.client.get("/reporting/api/campaign-performance-page/demo/")
+        payload = json.loads(response.content)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["campaign"]["campaign_name"], "Demo Campaign")
+        self.assertEqual(payload["available_systems"][0]["key"], "in_clinic")
         self.assertEqual(payload["requested_campaign_id"], "demo")
 
     def test_campaign_performance_requires_campaign_id(self):

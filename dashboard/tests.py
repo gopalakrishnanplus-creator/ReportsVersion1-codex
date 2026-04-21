@@ -76,7 +76,7 @@ class DashboardAccessViewTests(SimpleTestCase):
             response = self.client.get("/campaign-performance/demo/")
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Campaign Performance")
-        self.assertContains(response, "/reporting/api/campaign-performance/demo/")
+        self.assertContains(response, "/reporting/api/campaign-performance-page/demo/")
 
     def test_campaign_performance_link_library_renders_copy_targets(self):
         with patch(

@@ -431,7 +431,7 @@ def campaign_performance_page(request: HttpRequest, campaign_id: str) -> HttpRes
             "campaign": campaign,
             "campaign_id": normalized_campaign_id,
             "campaign_name": campaign.get("campaign_name") or normalized_campaign_id,
-            "performance_api_url": f"/reporting/api/campaign-performance/{normalized_campaign_id}/",
+            "performance_api_url": f"/reporting/api/campaign-performance-page/{normalized_campaign_id}/",
         },
     )
 
