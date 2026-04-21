@@ -207,6 +207,16 @@ def _campaign_identity(reference: CampaignReference) -> dict[str, Any]:
     }
 
 
+def _system_report_path(system_key: str, reference: CampaignReference) -> str | None:
+    if system_key == "in_clinic":
+        brand_campaign_id = str(reference.brand_campaign_id or "").strip()
+        return f"/campaign/{brand_campaign_id}/" if brand_campaign_id else None
+    if system_key == "patient_education":
+        pe_campaign_id = str(reference.pe_campaign_id or "").strip()
+        return f"/pe-reports/campaign/{pe_campaign_id}/" if pe_campaign_id else None
+    return None
+
+
 def _series(key: str, label: str, values: list[Any], color: str) -> dict[str, Any]:
     return {
         "key": key,
@@ -785,6 +795,7 @@ def _summary_card_section(
     reference: CampaignReference,
     metrics: list[dict[str, Any]],
     extra_meta: list[dict[str, str] | None] | None = None,
+    system_report_path: str | None = None,
     data_status: str = "ready",
 ) -> dict[str, Any]:
     meta_items = _base_meta(reference)
@@ -796,6 +807,7 @@ def _summary_card_section(
         "subtitle": subtitle,
         "metrics": metrics,
         "meta": meta_items,
+        "system_report_path": system_report_path,
         "data_status": data_status,
     }
 
@@ -899,6 +911,7 @@ def _build_in_clinic_summary_section(reference: CampaignReference) -> tuple[dict
         subtitle="Cumulative unique-doctor summary for the campaign's In-Clinic sharing journey.",
         reference=reference,
         metrics=metrics,
+        system_report_path=_system_report_path("in_clinic", reference),
         extra_meta=[
             _meta("Counting method", "Cumulative unique doctor records, aligned to the InClinic reporting model."),
             _meta("Data status", "Ready" if any(counts.values()) else "Configured in campaign DB; no in-clinic activity yet."),
@@ -951,6 +964,7 @@ def _build_patient_education_summary_section(reference: CampaignReference) -> tu
         subtitle="Cumulative Patient Education summary for brand-manager overview cards.",
         reference=reference,
         metrics=metrics,
+        system_report_path=_system_report_path("patient_education", reference),
         extra_meta=[
             _meta("Counting method", "Cumulative PE activity totals from the campaign doctor activity feed."),
             _meta("Data status", "Ready" if any(_to_int(metric.get("value")) for metric in metrics) else "Configured in campaign DB; no PE activity yet."),
@@ -989,6 +1003,7 @@ def _build_rfa_summary_section(reference: CampaignReference) -> tuple[dict[str, 
         subtitle="Cumulative RFA summary for brand-manager overview cards.",
         reference=reference,
         metrics=metrics,
+        system_report_path=_system_report_path("rfa", reference),
         extra_meta=[
             _meta(
                 "Counting method",
@@ -1647,7 +1662,14 @@ def build_campaign_performance_payload(campaign_id: str) -> dict[str, Any]:
         system_sections.append(section)
         adoption_rows.append(adoption_row)
     adoption_section = _build_adoption_summary_section(adoption_rows)
-    configured_systems = [{"key": section["key"], "label": section["label"]} for section in system_sections]
+    configured_systems = [
+        {
+            "key": section["key"],
+            "label": section["label"],
+            "system_report_path": section.get("system_report_path"),
+        }
+        for section in system_sections
+    ]
     return {
         "campaign": _campaign_identity(reference),
         "system_count": len(configured_systems),

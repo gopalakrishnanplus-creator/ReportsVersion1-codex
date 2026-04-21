@@ -102,8 +102,8 @@ class UnifiedReportingApiViewTests(SimpleTestCase):
                 {"key": "patient_education", "label": "PE (Patient Education)"},
             ],
             "sections": [
-                {"key": "in_clinic", "label": "InClinic (In-Clinic Sharing)", "metrics": [], "meta": [], "trend": None},
-                {"key": "adoption_by_clinics", "label": "Adoption by Clinics", "metrics": [], "meta": [], "trend": None, "breakdown": []},
+                {"key": "in_clinic", "type": "system", "label": "InClinic (In-Clinic Sharing)", "metrics": [], "meta": [], "trend": None},
+                {"key": "adoption_by_clinics", "type": "adoption", "label": "Adoption by Clinics", "metrics": [], "meta": [], "trend": None, "breakdown": []},
             ],
             "generated_at": "2026-04-20T10:00:00+00:00",
         },
@@ -116,6 +116,11 @@ class UnifiedReportingApiViewTests(SimpleTestCase):
         self.assertEqual(payload["campaign"]["campaign_name"], "Demo Campaign")
         self.assertEqual(payload["system_count"], 2)
         self.assertEqual(payload["available_systems"][0]["key"], "in_clinic")
+        self.assertEqual(payload["available_systems"][0]["system_report_url"], "http://testserver/campaign/demo/")
+        self.assertEqual(payload["available_systems"][1]["system_report_url"], "http://testserver/pe-reports/campaign/camp-42/")
+        self.assertEqual(payload["sections"][0]["system_report_url"], "http://testserver/campaign/demo/")
+        self.assertEqual(payload["campaign"]["system_report_links"]["in_clinic"], "http://testserver/campaign/demo/")
+        self.assertEqual(payload["campaign"]["system_report_links"]["patient_education"], "http://testserver/pe-reports/campaign/camp-42/")
         self.assertEqual(payload["sections"][-1]["key"], "adoption_by_clinics")
         self.assertEqual(payload["requested_campaign_id"], "demo")
 

@@ -88,6 +88,10 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "selected_systems": ["RFA", "InClinic"],
                     "performance_page_url": "https://reports.test/campaign-performance/camp-1/",
                     "performance_api_url": "https://reports.test/reporting/api/campaign-performance/camp-1/",
+                    "system_report_links": [
+                        {"label": "InClinic Report", "url": "https://reports.test/campaign/brand-1/", "status": ""},
+                        {"label": "RFA Report", "url": "", "status": "Not available yet"},
+                    ],
                     "legacy_brand_route_url": "https://reports.test/campaign/brand-1/performance/",
                     "brand_manager_login_link": "",
                 }
@@ -98,6 +102,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Campaign Performance Embed Links")
         self.assertContains(response, "Copy Page URL")
         self.assertContains(response, "https://reports.test/reporting/api/campaign-performance/camp-1/")
+        self.assertContains(response, "Copy InClinic Report")
+        self.assertContains(response, "RFA Report: Not available yet")
 
     def test_campaign_performance_link_rows_ignore_navigation_metadata_for_selected_systems(self):
         request = RequestFactory().get("/campaign-performance/links/")
@@ -124,7 +130,15 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "brand_campaign_id": "",
                 }
             ],
+        ), patch(
+            "dashboard.views._resolve_campaign_reference",
+            return_value=type(
+                "Ref",
+                (),
+                {"brand_campaign_id": "brand-9", "pe_campaign_id": None},
+            )(),
         ):
             rows = dashboard.views._campaign_performance_link_rows(request)
 
         self.assertEqual(rows[0]["selected_systems"], ["InClinic"])
+        self.assertEqual(rows[0]["system_report_links"][0]["url"], "http://testserver/campaign/brand-9/")
