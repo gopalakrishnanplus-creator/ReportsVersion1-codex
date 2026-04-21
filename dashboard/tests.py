@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase
+from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
+
+import dashboard.views
 
 
 class DashboardRoutingTests(SimpleTestCase):
@@ -96,3 +98,33 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Campaign Performance Embed Links")
         self.assertContains(response, "Copy Page URL")
         self.assertContains(response, "https://reports.test/reporting/api/campaign-performance/camp-1/")
+
+    def test_campaign_performance_link_rows_ignore_navigation_metadata_for_selected_systems(self):
+        request = RequestFactory().get("/campaign-performance/links/")
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [("bronze.campaign_campaign",), ("silver.map_brand_campaign_to_campaign",)]
+        cursor_context = MagicMock()
+        cursor_context.__enter__.return_value = cursor
+        cursor_context.__exit__.return_value = False
+
+        fake_connection = MagicMock()
+        fake_connection.cursor.return_value = cursor_context
+
+        with patch.object(dashboard.views, "connection", fake_connection), patch(
+            "dashboard.views._fetch_dicts",
+            return_value=[
+                {
+                    "campaign_id": "camp-9",
+                    "campaign_name": "Apex Demo",
+                    "system_rfa": False,
+                    "system_ic": True,
+                    "system_pe": False,
+                    "system_entry_navigation": True,
+                    "brand_manager_login_link": "",
+                    "brand_campaign_id": "",
+                }
+            ],
+        ):
+            rows = dashboard.views._campaign_performance_link_rows(request)
+
+        self.assertEqual(rows[0]["selected_systems"], ["InClinic"])

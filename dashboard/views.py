@@ -179,11 +179,6 @@ def _campaign_performance_link_rows(request: HttpRequest) -> list[dict[str, Any]
               CASE WHEN lower(COALESCE(cc.system_rfa, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_rfa,
               CASE WHEN lower(COALESCE(cc.system_ic, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_ic,
               CASE WHEN lower(COALESCE(cc.system_pe, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_pe,
-              CASE
-                WHEN COALESCE(NULLIF(btrim(cc.banner_target_url), ''), NULLIF(btrim(cc.doctor_recruitment_link), ''), NULLIF(btrim(cc.add_to_campaign_message), '')) IS NOT NULL
-                THEN TRUE
-                ELSE FALSE
-              END AS system_entry_navigation,
               NULLIF(btrim(cc.brand_manager_login_link), '') AS brand_manager_login_link,
               {mapping_select}
             FROM bronze.campaign_campaign cc
@@ -192,7 +187,6 @@ def _campaign_performance_link_rows(request: HttpRequest) -> list[dict[str, Any]
               lower(COALESCE(cc.system_rfa, '')) IN ('1', 'true', 't', 'yes')
               OR lower(COALESCE(cc.system_ic, '')) IN ('1', 'true', 't', 'yes')
               OR lower(COALESCE(cc.system_pe, '')) IN ('1', 'true', 't', 'yes')
-              OR COALESCE(NULLIF(btrim(cc.banner_target_url), ''), NULLIF(btrim(cc.doctor_recruitment_link), ''), NULLIF(btrim(cc.add_to_campaign_message), '')) IS NOT NULL
             ORDER BY COALESCE(NULLIF(btrim(cc.name), ''), cc.id::text)
             """
         )
@@ -208,8 +202,6 @@ def _campaign_performance_link_rows(request: HttpRequest) -> list[dict[str, Any]
             systems.append("InClinic")
         if row.get("system_pe"):
             systems.append("PE")
-        if row.get("system_entry_navigation"):
-            systems.append("Entry Point / Navigation")
         campaign_id = _normalize_campaign_id(row.get("campaign_id"))
         output.append(
             {

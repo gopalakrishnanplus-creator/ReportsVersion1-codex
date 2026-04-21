@@ -35,43 +35,73 @@
     }
   }
 
-  function buildLinePath(values, width, height, padding, maxValue) {
-    const usableWidth = width - padding * 2;
-    const usableHeight = height - padding * 2;
+  function toNumber(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function formatNumber(value) {
+    const number = toNumber(value);
+    return Number.isInteger(number) ? number.toLocaleString() : number.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  }
+
+  function formatCellValue(value) {
+    if (value === null || value === undefined || value === "") {
+      return "—";
+    }
+    if (typeof value === "number") {
+      return formatNumber(value);
+    }
+    return String(value);
+  }
+
+  function computePoints(values, width, height, padding, maxValue) {
+    const usableWidth = width - padding.left - padding.right;
+    const usableHeight = height - padding.top - padding.bottom;
     if (!values.length) {
-      return "";
+      return [];
     }
     if (values.length === 1) {
-      const x = padding + usableWidth / 2;
-      const y = padding + usableHeight - (values[0] / maxValue) * usableHeight;
-      return `M ${x} ${y}`;
+      return [
+        {
+          x: padding.left + usableWidth / 2,
+          y: padding.top + usableHeight - (toNumber(values[0]) / maxValue) * usableHeight,
+          value: toNumber(values[0]),
+        },
+      ];
     }
-    return values
-      .map((value, index) => {
-        const x = padding + (usableWidth / (values.length - 1)) * index;
-        const y = padding + usableHeight - (value / maxValue) * usableHeight;
-        return `${index === 0 ? "M" : "L"} ${x} ${y}`;
-      })
+    return values.map((value, index) => ({
+      x: padding.left + (usableWidth / (values.length - 1)) * index,
+      y: padding.top + usableHeight - (toNumber(value) / maxValue) * usableHeight,
+      value: toNumber(value),
+    }));
+  }
+
+  function buildLinePath(points) {
+    if (!points.length) {
+      return "";
+    }
+    return points
+      .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
       .join(" ");
   }
 
-  function buildDots(values, width, height, padding, maxValue, color) {
-    const usableWidth = width - padding * 2;
-    const usableHeight = height - padding * 2;
-    if (!values.length) {
+  function buildAreaPath(points, height, padding) {
+    if (!points.length) {
       return "";
     }
-    if (values.length === 1) {
-      const x = padding + usableWidth / 2;
-      const y = padding + usableHeight - (values[0] / maxValue) * usableHeight;
-      return `<circle class="chart-dot" cx="${x}" cy="${y}" r="4" fill="${color}"></circle>`;
-    }
-    return values
-      .map((value, index) => {
-        const x = padding + (usableWidth / (values.length - 1)) * index;
-        const y = padding + usableHeight - (value / maxValue) * usableHeight;
-        return `<circle class="chart-dot" cx="${x}" cy="${y}" r="4" fill="${color}"></circle>`;
-      })
+    const baseY = height - padding.bottom;
+    const start = points[0];
+    const end = points[points.length - 1];
+    return `${buildLinePath(points)} L ${end.x} ${baseY} L ${start.x} ${baseY} Z`;
+  }
+
+  function buildDots(points, color) {
+    return points
+      .map(
+        (point) =>
+          `<circle class="chart-dot" cx="${point.x}" cy="${point.y}" r="4.5" fill="${escapeHtml(color)}"></circle>`,
+      )
       .join("");
   }
 
@@ -79,50 +109,154 @@
     if (!trend || !Array.isArray(trend.categories) || !trend.categories.length) {
       return "";
     }
-    const width = 640;
-    const height = 240;
-    const padding = 28;
-    const values = (trend.series || []).flatMap((series) => series.values || []);
+
+    const width = 760;
+    const height = 300;
+    const padding = { top: 24, right: 18, bottom: 52, left: 48 };
+    const seriesList = (trend.series || []).filter((series) => Array.isArray(series.values));
+    const values = seriesList.flatMap((series) => series.values.map(toNumber));
     const maxValue = Math.max(...values, 1);
-    const gridLines = [0.25, 0.5, 0.75, 1]
+    const usableHeight = height - padding.top - padding.bottom;
+    const gridRatios = [0, 0.25, 0.5, 0.75, 1];
+    const defs = [];
+    const areas = [];
+    const lines = [];
+    const dots = [];
+    const legend = [];
+    const latestBadges = [];
+
+    seriesList.forEach((series, index) => {
+      const gradientId = `chart-fill-${escapeHtml(series.key || `series-${index}`)}`;
+      const color = series.color || "#0f766e";
+      const points = computePoints(series.values || [], width, height, padding, maxValue);
+      const areaPath = buildAreaPath(points, height, padding);
+      const linePath = buildLinePath(points);
+      const latestValue = points.length ? points[points.length - 1].value : 0;
+      defs.push(`
+        <linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${escapeHtml(color)}" stop-opacity="0.28"></stop>
+          <stop offset="100%" stop-color="${escapeHtml(color)}" stop-opacity="0.02"></stop>
+        </linearGradient>
+      `);
+      if (areaPath) {
+        areas.push(`<path class="chart-area" d="${areaPath}" fill="url(#${gradientId})"></path>`);
+      }
+      if (linePath) {
+        lines.push(`<path class="chart-line" d="${linePath}" stroke="${escapeHtml(color)}"></path>`);
+        dots.push(buildDots(points, color));
+      }
+      legend.push(
+        `<span class="legend-item"><span class="legend-swatch" style="background:${escapeHtml(color)}"></span>${escapeHtml(series.label || "")}</span>`,
+      );
+      latestBadges.push(
+        `<span class="trend-pill"><span class="trend-pill-dot" style="background:${escapeHtml(color)}"></span>${escapeHtml(series.label || "")}: ${escapeHtml(formatNumber(latestValue))}</span>`,
+      );
+    });
+
+    const horizontalGuides = gridRatios
       .map((ratio) => {
-        const y = padding + (height - padding * 2) * (1 - ratio);
-        return `<line class="chart-grid-line" x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}"></line>`;
+        const y = padding.top + usableHeight * (1 - ratio);
+        return `
+          <g>
+            <line class="chart-grid-line" x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}"></line>
+            <text class="chart-y-label" x="${padding.left - 10}" y="${y + 4}" text-anchor="end">${formatNumber(maxValue * ratio)}</text>
+          </g>
+        `;
       })
       .join("");
-    const lineMarkup = (trend.series || [])
-      .map((series) => {
-        const path = buildLinePath(series.values || [], width, height, padding, maxValue);
-        const dots = buildDots(series.values || [], width, height, padding, maxValue, series.color || "#0f766e");
-        return `<path class="chart-line" d="${path}" stroke="${series.color || "#0f766e"}"></path>${dots}`;
-      })
-      .join("");
-    const axisLabels = [
-      trend.categories[0] || "",
-      trend.categories[Math.floor(trend.categories.length / 2)] || "",
-      trend.categories[trend.categories.length - 1] || "",
-    ];
-    const legend = (trend.series || [])
-      .map(
-        (series) =>
-          `<span class="legend-item"><span class="legend-swatch" style="background:${escapeHtml(series.color || "#0f766e")}"></span>${escapeHtml(series.label || "")}</span>`,
-      )
+
+    const categoryLabels = trend.categories
+      .map((label) => `<span>${escapeHtml(label)}</span>`)
       .join("");
 
     return `
-      <div class="panel">
-        <h3>${escapeHtml(trend.label || "Trend")}</h3>
-        <p>Trend over the most recent reporting buckets returned by the API.</p>
-        <div class="chart-shell">
-          <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(trend.label || "Trend chart")}">
-            ${gridLines}
-            ${lineMarkup}
-          </svg>
-          <div class="chart-axis">
-            ${axisLabels.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
+      <div class="panel panel-chart">
+        <div class="panel-head">
+          <div>
+            <h3>${escapeHtml(trend.label || "Trend")}</h3>
+            <p>Recent reporting buckets for this campaign.</p>
           </div>
         </div>
-        <div class="legend-row">${legend}</div>
+        <div class="trend-pill-row">${latestBadges.join("")}</div>
+        <div class="chart-shell">
+          <svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(trend.label || "Trend chart")}">
+            <defs>${defs.join("")}</defs>
+            ${horizontalGuides}
+            ${areas.join("")}
+            ${lines.join("")}
+            ${dots.join("")}
+          </svg>
+          <div class="chart-axis chart-axis-wide">${categoryLabels}</div>
+        </div>
+        <div class="legend-row">${legend.join("")}</div>
+      </div>
+    `;
+  }
+
+  function renderBarChart(chart) {
+    if (!chart || !Array.isArray(chart.bars) || !chart.bars.length) {
+      return "";
+    }
+    const maxValue = Math.max(...chart.bars.map((bar) => toNumber(bar.value)), 1);
+    const rows = chart.bars
+      .map((bar) => {
+        const width = Math.max(4, (toNumber(bar.value) / maxValue) * 100);
+        return `
+          <div class="comparison-row">
+            <div class="comparison-topline">
+              <strong>${escapeHtml(bar.label || "")}</strong>
+              <span>${escapeHtml(bar.display_value || formatNumber(bar.value))}</span>
+            </div>
+            <div class="comparison-track" aria-hidden="true">
+              <div class="comparison-fill" style="width:${width}%;background:${escapeHtml(bar.color || "#0f766e")}"></div>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+    return `
+      <div class="panel">
+        <h3>${escapeHtml(chart.label || "Comparison")}</h3>
+        <p>${escapeHtml(chart.description || "")}</p>
+        <div class="comparison-list">${rows}</div>
+      </div>
+    `;
+  }
+
+  function renderTable(table) {
+    if (!table) {
+      return "";
+    }
+    const columns = Array.isArray(table.columns) ? table.columns : [];
+    const rows = Array.isArray(table.rows) ? table.rows : [];
+    const head = columns.map((column) => `<th class="align-${escapeHtml(column.align || "left")}">${escapeHtml(column.label || "")}</th>`).join("");
+    const body = rows.length
+      ? rows
+          .map((row) => {
+            const cells = columns
+              .map((column) => {
+                const raw = row ? row[column.key] : "";
+                return `<td class="align-${escapeHtml(column.align || "left")}">${escapeHtml(formatCellValue(raw))}</td>`;
+              })
+              .join("");
+            return `<tr>${cells}</tr>`;
+          })
+          .join("")
+      : `<tr><td colspan="${Math.max(columns.length, 1)}" class="table-empty">${escapeHtml(table.empty_message || "No rows available.")}</td></tr>`;
+    return `
+      <div class="panel panel-table">
+        <div class="panel-head">
+          <div>
+            <h3>${escapeHtml(table.label || "Detail Table")}</h3>
+            <p>${escapeHtml(table.description || "")}</p>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="detail-table">
+            <thead><tr>${head}</tr></thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
       </div>
     `;
   }
@@ -138,19 +272,19 @@
     }
     const rowMarkup = rows
       .map((row) => {
-        const rate = Number(row.adoption_rate || 0);
+        const rate = toNumber(row.adoption_rate || 0);
         const width = rate > 0 ? Math.min(100, rate) : 0;
         return `
           <div class="breakdown-row">
             <div class="breakdown-topline">
               <strong>${escapeHtml(row.label || row.system_key || "System")}</strong>
-              <span>${escapeHtml((rate || 0).toFixed(1))}%</span>
+              <span>${escapeHtml(rate.toFixed(1))}%</span>
             </div>
             <div class="bar-track" aria-hidden="true">
               <div class="bar-fill" style="width:${width}%"></div>
             </div>
             <div class="breakdown-footnote">
-              ${escapeHtml(String(row.participating_clinics || 0))} participating / ${escapeHtml(String(row.eligible_clinics || 0))} tracked clinics
+              ${escapeHtml(formatNumber(row.participating_clinics || 0))} active / ${escapeHtml(formatNumber(row.eligible_clinics || 0))} added
             </div>
           </div>
         `;
@@ -159,7 +293,7 @@
     return `
       <div class="panel">
         <h3>Adoption Breakdown</h3>
-        <p>Clinic participation and adoption rate by available system.</p>
+        <p>Clinic participation and adoption rate by selected system.</p>
         <div class="breakdown-list">${rowMarkup}</div>
       </div>
     `;
@@ -189,8 +323,16 @@
     const metrics = (section.metrics || []).map(renderMetric).join("");
     const panels = [];
     const trendMarkup = renderTrend(section.trend);
+    const barMarkup = renderBarChart(section.bar_chart);
+    const tableMarkup = renderTable(section.table);
     if (trendMarkup) {
       panels.push(trendMarkup);
+    }
+    if (barMarkup) {
+      panels.push(barMarkup);
+    }
+    if (tableMarkup) {
+      panels.push(tableMarkup);
     }
     if (section.breakdown) {
       panels.push(renderBreakdown(section.breakdown));
@@ -244,23 +386,24 @@
 
   function renderPayload(payload) {
     const campaign = payload.campaign || {};
+    const systemCount = toNumber(payload.system_count || 0);
     setText("page-title", campaign.campaign_name || payload.requested_campaign_id || "Campaign Performance");
     setText(
       "page-subtitle",
       campaign.brand_name
-        ? `${campaign.brand_name} unified reporting view across ${payload.system_count || 0} active system(s).`
-        : `Unified reporting view across ${payload.system_count || 0} active system(s).`,
+        ? `${campaign.brand_name} unified reporting view across ${systemCount} selected system(s).`
+        : `Unified reporting view across ${systemCount} selected system(s).`,
     );
     setText("campaign-id-label", campaign.campaign_id || payload.requested_campaign_id || "-");
     setText("brand-name-label", campaign.brand_name || "Not mapped");
-    setText("system-count-label", String(payload.system_count || 0));
+    setText("system-count-label", String(systemCount));
     const pillRow = document.getElementById("system-pill-row");
     if (pillRow) {
       pillRow.innerHTML = renderPills(payload.available_systems || []);
     }
 
-    if (!payload.system_count) {
-      showEmpty(payload.detail || "The campaign resolved successfully, but no system data is available yet.");
+    if (!systemCount) {
+      showEmpty(payload.detail || "The campaign resolved successfully, but no configured system data is available yet.");
       return;
     }
 
