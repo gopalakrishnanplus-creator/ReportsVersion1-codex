@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import include, path
 from dashboard.views import campaign_overview, menu_page, campaign_login, export_report, etl_debug_page, send_access_email_view, campaign_access_page, reports_home, campaign_performance_links_page, campaign_performance_page
-from reporting.api_views import campaign_performance_api, in_clinic_api, patient_education_api, red_flag_alert_api
+from reporting.api_views import campaign_performance_api, campaign_performance_page_api, in_clinic_api, patient_education_api, red_flag_alert_api
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -12,6 +12,7 @@ urlpatterns = [
     path("reporting/api/patient_education/", patient_education_api, name="reporting-api-patient-education"),
     path("reporting/api/campaign-performance/", campaign_performance_api, name="reporting-api-campaign-performance"),
     path("reporting/api/campaign-performance/<str:campaign_id>/", campaign_performance_api, name="reporting-api-campaign-performance-specific"),
+    path("reporting/api/campaign-performance-page/<str:campaign_id>/", campaign_performance_page_api, name="reporting-api-campaign-performance-page"),
     path("campaign-performance/links/", campaign_performance_links_page, name="campaign-performance-links"),
     path("campaign-performance/<str:campaign_id>/", campaign_performance_page, name="campaign-performance-page"),
     path("sapa-growth/", include("sapa_growth.urls")),
