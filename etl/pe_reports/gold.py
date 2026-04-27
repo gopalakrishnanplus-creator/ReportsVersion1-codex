@@ -251,6 +251,21 @@ def _date_or_none(value: Any) -> date | None:
         return None
 
 
+def _latest_business_date(*rowsets_with_fields: tuple[list[dict[str, Any]], list[str]]) -> date:
+    today = date.today()
+    candidates: list[date] = []
+    for rows, fields in rowsets_with_fields:
+        for row in rows:
+            for field in fields:
+                value = clean_text(row.get(field))
+                if not value:
+                    continue
+                parsed = _date_or_none(value[:10])
+                if parsed and parsed <= today:
+                    candidates.append(parsed)
+    return max(candidates) if candidates else today
+
+
 def _campaign_week_ranges(campaign: dict[str, Any], base_rows: list[dict[str, Any]], share_rows: list[dict[str, Any]], as_of_date: date) -> list[tuple[date, date]]:
     period_end = week_end_saturday(as_of_date) or as_of_date
     candidates: list[date] = []
@@ -329,7 +344,11 @@ def _share_with_funnel(share_rows: list[dict[str, Any]], funnel_rows: list[dict[
 
 
 def _weekly_summary_rows(campaign: dict[str, Any], base_rows: list[dict[str, Any]], share_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    as_of_date = date.today()
+    as_of_date = _latest_business_date(
+        ([campaign], ["created_at_ts", "start_date"]),
+        (base_rows, ["enrolled_at_ts"]),
+        (share_rows, ["shared_at_ts"]),
+    )
     week_ranges = _campaign_week_ranges(campaign, base_rows, share_rows, as_of_date)
     summary_rows: list[dict[str, Any]] = []
     previous_row: dict[str, Any] | None = None
@@ -757,7 +776,6 @@ def _action_rows(weekly_rows: list[dict[str, Any]], state_rows: list[dict[str, A
 
 def build_gold(run_id: str, source_status: str = "SUCCESS", notes: str = "") -> dict[str, Any]:
     published_at = _now_iso()
-    as_of_date = date.today().isoformat()
     thresholds = get_thresholds()
 
     dim_campaign_rows = fetch_table(SILVER_SCHEMA, "dim_campaign")
@@ -769,6 +787,15 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", notes: str = "") -> 
     funnel_rows = fetch_table(SILVER_SCHEMA, "fact_share_funnel_first_seen")
     video_rows = fetch_table(SILVER_SCHEMA, "fact_video_view")
     enrollment_rows = fetch_table(SILVER_SCHEMA, "fact_campaign_enrollment")
+    as_of_date = _latest_business_date(
+        (dim_campaign_rows, ["created_at_ts"]),
+        (base_rows, ["enrolled_at_ts"]),
+        (enrollment_rows, ["registered_at_ts"]),
+        (share_rows, ["shared_at_ts"]),
+        (playback_rows, ["occurred_at_ts"]),
+        (banner_click_rows, ["clicked_at_ts"]),
+        (video_rows, ["occurred_at_ts", "shared_at_ts"]),
+    ).isoformat()
 
     field_rep_lookup = {clean_text(row.get("field_rep_id")): row for row in field_rep_rows if clean_text(row.get("field_rep_id"))}
     existing_history = fetch_table(GOLD_GLOBAL_SCHEMA, "campaign_health_history") if table_exists(GOLD_GLOBAL_SCHEMA, "campaign_health_history") else []

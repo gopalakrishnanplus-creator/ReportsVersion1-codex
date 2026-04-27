@@ -6,7 +6,7 @@ from django.http import HttpResponse
 from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve, reverse
 
-from etl.pe_reports.gold import build_benchmark_row, compute_health_components
+from etl.pe_reports.gold import _latest_business_date, build_benchmark_row, compute_health_components
 from etl.pe_reports.silver import attribute_banner_click_row, attribute_share_row, match_campaign_doctors, rollup_share_funnel
 from etl.pe_reports.utils import clean_text, week_end_saturday
 from pe_reports.reporting import build_dashboard_payload
@@ -152,6 +152,14 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(row["campaign_count"], 2)
         self.assertEqual(row["avg_campaign_health_score"], 60.0)
 
+    def test_latest_business_date_uses_real_source_dates_and_ignores_future_values(self):
+        result = _latest_business_date(
+            ([{"created_at_ts": "2026-03-01 10:00:00"}], ["created_at_ts"]),
+            ([{"shared_at_ts": "2026-03-27 16:30:00"}], ["shared_at_ts"]),
+            ([{"occurred_at_ts": "3020-01-01 00:00:00"}], ["occurred_at_ts"]),
+        )
+        self.assertEqual(str(result), "2026-03-27")
+
     def test_dashboard_payload_defaults_to_latest_month_and_limits_week_rows(self):
         payload = build_dashboard_payload(
             {"campaign_id_original": "camp-1", "start_date": "2026-02-01", "end_date": "2026-03-31", "local_video_cluster_name": "Bundle"},
@@ -172,6 +180,24 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(payload["selected_month"], "2026-03")
         self.assertEqual(len(payload["weekly_rows"]), 2)
         self.assertEqual(payload["filters_query"], "month=2026-03")
+
+    def test_dashboard_payload_defaults_to_latest_month_with_share_activity(self):
+        payload = build_dashboard_payload(
+            {"campaign_id_original": "camp-1", "start_date": "2026-03-01", "end_date": "2026-04-30", "local_video_cluster_name": "Bundle"},
+            {},
+            [
+                {"week_index": 5, "week_start_date": "2026-03-22", "week_end_date": "2026-03-28", "shares_total": 1},
+                {"week_index": 6, "week_start_date": "2026-03-29", "week_end_date": "2026-04-04", "shares_total": 0},
+                {"week_index": 7, "week_start_date": "2026-04-05", "week_end_date": "2026-04-11", "shares_total": 0},
+            ],
+            {"campaign_id_original": "camp-1", "as_of_date": "2026-04-11"},
+            [{"doctor_key": "DOC-1", "enrolled_at_ts": "2026-03-05", "state": "MH", "field_rep_id_resolved": "FR-1"}],
+            [{"share_public_id": "SHARE-1", "doctor_key": "DOC-1", "shared_at_ts": "2026-03-27 10:00:00", "week_end_date": "2026-03-28", "recipient_reference": "R-1", "is_played": "true", "is_viewed_50": "true", "is_viewed_100": "false", "shared_item_type": "video"}],
+            [],
+            {"activation_pct": 40.0, "play_rate_pct": 40.0, "engagement_50_pct": 40.0, "completion_pct": 40.0},
+        )
+        self.assertEqual(payload["selected_month"], "2026-03")
+        self.assertEqual(clean_text(payload["current_week_row"].get("week_end_date")), "2026-03-28")
 
     def test_dashboard_payload_keeps_current_saturday_week_for_midweek_publish(self):
         payload = build_dashboard_payload(

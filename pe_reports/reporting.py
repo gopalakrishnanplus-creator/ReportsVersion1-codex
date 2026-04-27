@@ -91,7 +91,11 @@ def month_filter_options(weekly_rows: list[dict[str, Any]]) -> list[dict[str, An
     return options
 
 
-def selected_month_key(filters: dict[str, str | None], weekly_rows: list[dict[str, Any]]) -> str | None:
+def selected_month_key(
+    filters: dict[str, str | None],
+    weekly_rows: list[dict[str, Any]],
+    share_rows: list[dict[str, Any]] | None = None,
+) -> str | None:
     explicit = clean_text(filters.get("month"))
     options = month_filter_options(weekly_rows)
     valid_keys = {clean_text(option.get("underlying_key")) for option in options}
@@ -99,6 +103,18 @@ def selected_month_key(filters: dict[str, str | None], weekly_rows: list[dict[st
         return explicit
     if not options:
         return None
+    if share_rows:
+        month_keys = sorted(
+            {
+                month_key
+                for row in share_rows
+                for month_key in [_month_key(row.get("shared_at_ts") or row.get("week_end_date"))]
+                if month_key in valid_keys
+            },
+            reverse=True,
+        )
+        if month_keys:
+            return month_keys[0]
     return clean_text(options[0].get("underlying_key"))
 
 
@@ -295,7 +311,12 @@ def build_dashboard_payload(
     benchmark_best_row: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     weekly_template_rows = bounded_weekly_rows(weekly_template_rows, campaign_summary_row.get("as_of_date"))
-    selected_month = selected_month_key(filters, weekly_template_rows)
+    month_candidate_filters = {key: value for key, value in filters.items() if key != "month"}
+    selected_month = selected_month_key(
+        filters,
+        weekly_template_rows,
+        apply_share_filters(share_rows, month_candidate_filters),
+    )
     effective_filters = dict(filters)
     if selected_month:
         effective_filters["month"] = selected_month
