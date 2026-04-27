@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any
 
 from django.db import connection
@@ -26,6 +28,8 @@ RFA_ALIAS_KEYS = {
     "sapagrowth",
     "sapagrowthclinic",
 }
+
+logger = logging.getLogger(__name__)
 
 
 class CampaignPerformanceNotFound(Exception):
@@ -64,6 +68,14 @@ class CampaignReference:
     campaign_config: CampaignConfig | None = None
 
 
+@dataclass(frozen=True)
+class RfaAttributionContext:
+    mode: str
+    rep_keys: tuple[str, ...] = ()
+    assigned_rep_count: int = 0
+    states: tuple[str, ...] = ()
+
+
 def _normalized_sql(column: str) -> str:
     return f"lower(regexp_replace(COALESCE(btrim({column}), ''), '[^a-zA-Z0-9]', '', 'g'))"
 
@@ -94,6 +106,23 @@ def _table_exists(schema: str, table: str) -> bool:
     with connection.cursor() as cursor:
         cursor.execute("SELECT to_regclass(%s)", [f"{schema}.{table}"])
         return cursor.fetchone()[0] is not None
+
+
+@lru_cache(maxsize=256)
+def _schema_table_columns(schema: str, table: str) -> frozenset[str]:
+    if not _table_exists(schema, table):
+        return frozenset()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = %s
+        """,
+            [schema, table],
+        )
+        return frozenset(str(row[0]) for row in cursor.fetchall())
 
 
 def _is_truthy(value: Any) -> bool:
@@ -291,7 +320,18 @@ def _query_schema_rows(
 ) -> list[dict[str, Any]]:
     safe_schema = _safe_identifier(schema)
     safe_table = _safe_identifier(table)
-    sql = f"SELECT {', '.join(columns)} FROM {safe_schema}.{safe_table}"
+    available_columns = _schema_table_columns(safe_schema, safe_table)
+    select_columns: list[str] = []
+    for column in columns:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", column or ""):
+            safe_column = _safe_identifier(column)
+            if safe_column in available_columns:
+                select_columns.append(safe_column)
+            else:
+                select_columns.append(f"NULL AS {safe_column}")
+            continue
+        select_columns.append(column)
+    sql = f"SELECT {', '.join(select_columns)} FROM {safe_schema}.{safe_table}"
     if where_sql:
         sql += f" WHERE {where_sql}"
     if order_by:
@@ -771,23 +811,6 @@ def _fetch_in_clinic_detail_rows(reference: CampaignReference) -> list[dict[str,
     )
 
 
-def _rfa_detail_rows(reference: CampaignReference) -> list[dict[str, Any]]:
-    if not (_rfa_campaign_match_keys(reference) & RFA_ALIAS_KEYS):
-        return []
-    from reporting.api_services import build_red_flag_alert_rows
-
-    rows = build_red_flag_alert_rows()
-    return sorted(
-        rows,
-        key=lambda item: (
-            -_to_int(item.get("form_fills")),
-            -_to_int(item.get("red_flags_total")),
-            item.get("clinic_group") or "",
-            item.get("clinic") or "",
-        ),
-    )
-
-
 def _summary_card_section(
     *,
     key: str,
@@ -987,7 +1010,8 @@ def _build_patient_education_summary_section(reference: CampaignReference) -> tu
 
 
 def _build_rfa_summary_section(reference: CampaignReference) -> tuple[dict[str, Any], dict[str, Any]]:
-    detail_rows = _rfa_detail_rows(reference)
+    context = _rfa_attribution_context(reference)
+    detail_rows = _rfa_detail_rows(reference, context)
     metrics = [
         _metric("form_fills", "Form fills", sum(_to_int(row.get("form_fills")) for row in detail_rows)),
         _metric("red_flags_total", "Red flags", sum(_to_int(row.get("red_flags_total")) for row in detail_rows)),
@@ -998,6 +1022,16 @@ def _build_rfa_summary_section(reference: CampaignReference) -> tuple[dict[str, 
         _metric("follow_ups_scheduled", "Follow-ups", sum(_to_int(row.get("follow_ups_scheduled")) for row in detail_rows)),
         _metric("reminders_sent", "Reminders sent", sum(_to_int(row.get("reminders_sent")) for row in detail_rows)),
     ]
+    has_values = any(_to_int(metric.get("value")) for metric in metrics)
+    if context.mode == "unavailable":
+        status_text = "Configured in campaign DB, but no RFA field-rep mapping could be resolved for this campaign yet."
+        data_status = "not_attributed"
+    elif has_values:
+        status_text = "Ready"
+        data_status = "ready"
+    else:
+        status_text = "Configured in campaign DB; no attributable RFA activity is published yet."
+        data_status = "no_data"
     section = _summary_card_section(
         key="rfa",
         subtitle="Cumulative RFA summary for brand-manager overview cards.",
@@ -1009,12 +1043,9 @@ def _build_rfa_summary_section(reference: CampaignReference) -> tuple[dict[str, 
                 "Counting method",
                 "Cumulative RFA activity totals from screening, red-flag, scan, and follow-up feeds.",
             ),
-            _meta(
-                "Data status",
-                "Ready" if any(_to_int(metric.get("value")) for metric in metrics) else "Configured in campaign DB; no attributable RFA activity yet.",
-            ),
+            *_rfa_attribution_meta(context, status_text),
         ],
-        data_status="ready" if any(_to_int(metric.get("value")) for metric in metrics) else "no_data",
+        data_status=data_status,
     )
     clinics_with_activity = sum(
         1
@@ -1403,6 +1434,174 @@ def _rfa_campaign_match_keys(reference: CampaignReference) -> set[str]:
     }
 
 
+def _rfa_candidate_campaign_ids(reference: CampaignReference) -> list[str]:
+    config = reference.campaign_config
+    return [
+        value
+        for value in dict.fromkeys(
+            [
+                reference.requested_id,
+                reference.resolved_campaign_id,
+                reference.brand_campaign_id,
+                config.campaign_id if config else "",
+            ]
+        )
+        if str(value or "").strip()
+    ]
+
+
+def _rfa_attribution_context(reference: CampaignReference) -> RfaAttributionContext:
+    candidate_ids = _rfa_candidate_campaign_ids(reference)
+    if candidate_ids and _table_exists("bronze", "campaign_campaignfieldrep") and _table_exists("bronze", "campaign_fieldrep"):
+        placeholders = ", ".join(["%s"] * len(candidate_ids))
+        rows = _fetch_rows(
+            f"""
+            SELECT DISTINCT
+                lower(regexp_replace(NULLIF(btrim(ccf.field_rep_id::text), ''), '[^a-zA-Z0-9]', '', 'g')) AS internal_rep_key,
+                lower(regexp_replace(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), '[^a-zA-Z0-9]', '', 'g')) AS external_rep_key,
+                COALESCE(
+                    NULLIF(btrim(cfr.full_name), ''),
+                    NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''),
+                    NULLIF(btrim(ccf.field_rep_id::text), '')
+                ) AS field_rep_name,
+                initcap(NULLIF(btrim(cfr.state), '')) AS state_normalized
+            FROM bronze.campaign_campaignfieldrep ccf
+            LEFT JOIN bronze.campaign_fieldrep cfr
+              ON cfr.id::text = ccf.field_rep_id::text
+            WHERE {_normalized_sql('ccf.campaign_id::text')} IN ({placeholders})
+        """,
+            [_normalize_lookup(candidate_id) for candidate_id in candidate_ids],
+        )
+        rep_keys = tuple(
+            sorted(
+                {
+                    key
+                    for row in rows
+                    for key in (
+                        str(row.get("internal_rep_key") or "").strip(),
+                        str(row.get("external_rep_key") or "").strip(),
+                    )
+                    if key
+                }
+            )
+        )
+        if rep_keys:
+            return RfaAttributionContext(
+                mode="field_rep",
+                rep_keys=rep_keys,
+                assigned_rep_count=len(rows),
+                states=tuple(
+                    sorted(
+                        {
+                            str(row.get("state_normalized") or "").strip()
+                            for row in rows
+                            if str(row.get("state_normalized") or "").strip()
+                        }
+                    )
+                ),
+            )
+    if _rfa_campaign_match_keys(reference) & RFA_ALIAS_KEYS:
+        return RfaAttributionContext(mode="growth_clinic_alias")
+    return RfaAttributionContext(mode="unavailable")
+
+
+def _rfa_detail_rows(reference: CampaignReference, context: RfaAttributionContext | None = None) -> list[dict[str, Any]]:
+    context = context or _rfa_attribution_context(reference)
+    if context.mode == "unavailable":
+        return []
+    from reporting.api_services import build_red_flag_alert_rows
+
+    rows = (
+        build_red_flag_alert_rows(set(context.rep_keys))
+        if context.mode == "field_rep"
+        else build_red_flag_alert_rows()
+    )
+    return sorted(
+        rows,
+        key=lambda item: (
+            -_to_int(item.get("form_fills")),
+            -_to_int(item.get("red_flags_total")),
+            item.get("clinic_group") or "",
+            item.get("clinic") or "",
+        ),
+    )
+
+
+def _rfa_status_rows(context: RfaAttributionContext) -> list[dict[str, Any]]:
+    if context.mode != "field_rep" or not context.rep_keys or not _table_exists(RFA_GOLD_SCHEMA, "rpt_doctor_status_current"):
+        return []
+    placeholders = ", ".join(["%s"] * len(context.rep_keys))
+    return _fetch_rows(
+        f"""
+        SELECT
+            doctor_key,
+            active_flag,
+            certification_status
+        FROM {RFA_GOLD_SCHEMA}.rpt_doctor_status_current
+        WHERE lower(regexp_replace(COALESCE(NULLIF(btrim(field_rep_id), ''), 'Unassigned'), '[^a-zA-Z0-9]', '', 'g')) IN ({placeholders})
+    """,
+        list(context.rep_keys),
+    )
+
+
+def _rfa_trend_rows(context: RfaAttributionContext) -> list[dict[str, Any]]:
+    if not _table_exists(RFA_GOLD_SCHEMA, "rpt_screening_detail"):
+        return []
+    if context.mode == "field_rep" and context.rep_keys:
+        placeholders = ", ".join(["%s"] * len(context.rep_keys))
+        return _fetch_rows(
+            f"""
+            SELECT
+                to_char(date_trunc('week', submitted_at::timestamp), 'YYYY-MM-DD') AS week_bucket,
+                COUNT(*) AS screenings,
+                COUNT(*) FILTER (WHERE lower(COALESCE(overall_flag_code, '')) = 'red') AS red_tags,
+                COUNT(*) FILTER (WHERE lower(COALESCE(overall_flag_code, '')) = 'yellow') AS yellow_tags
+            FROM {RFA_GOLD_SCHEMA}.rpt_screening_detail
+            WHERE submitted_at IS NOT NULL
+              AND btrim(submitted_at) <> ''
+              AND lower(regexp_replace(COALESCE(NULLIF(btrim(field_rep_id), ''), 'Unassigned'), '[^a-zA-Z0-9]', '', 'g')) IN ({placeholders})
+            GROUP BY 1
+            ORDER BY 1
+        """,
+            list(context.rep_keys),
+        )
+    return _fetch_rows(
+        f"""
+        SELECT
+            to_char(date_trunc('week', submitted_at::timestamp), 'YYYY-MM-DD') AS week_bucket,
+            COUNT(*) AS screenings,
+            COUNT(*) FILTER (WHERE lower(COALESCE(overall_flag_code, '')) = 'red') AS red_tags,
+            COUNT(*) FILTER (WHERE lower(COALESCE(overall_flag_code, '')) = 'yellow') AS yellow_tags
+        FROM {RFA_GOLD_SCHEMA}.rpt_screening_detail
+        WHERE submitted_at IS NOT NULL
+          AND btrim(submitted_at) <> ''
+        GROUP BY 1
+        ORDER BY 1
+    """
+    )
+
+
+def _rfa_attribution_meta(context: RfaAttributionContext, no_data_message: str) -> list[dict[str, str] | None]:
+    if context.mode == "field_rep":
+        return [
+            _meta("Attribution", "Attributed from the campaign's assigned field reps in SAPA/RFA."),
+            _meta("Assigned field reps", context.assigned_rep_count),
+            _meta("Assigned states", ", ".join(context.states)),
+            _meta("Data status", no_data_message),
+        ]
+    if context.mode == "growth_clinic_alias":
+        return [
+            _meta("Attribution", "Resolved to the currently published Growth Clinic RFA dataset."),
+            _meta("Data status", no_data_message),
+        ]
+    return [
+        _meta(
+            "Data status",
+            "Configured in campaign DB, but no RFA field-rep mapping could be resolved for this campaign yet.",
+        )
+    ]
+
+
 def _build_rfa_section(reference: CampaignReference) -> dict[str, Any]:
     subtitle = "Screening throughput, follow-up operations, and risk-tag monitoring from the RFA workflow."
     zero_metrics = [
@@ -1415,18 +1614,17 @@ def _build_rfa_section(reference: CampaignReference) -> dict[str, Any]:
         _metric("follow_ups_scheduled", "Follow-Ups", 0),
         _metric("reminders_sent", "Reminders Sent", 0),
     ]
-    if not (_rfa_campaign_match_keys(reference) & RFA_ALIAS_KEYS):
+    context = _rfa_attribution_context(reference)
+    if context.mode == "unavailable":
         return _empty_section(
             key="rfa",
             subtitle=subtitle,
             reference=reference,
             metrics=zero_metrics,
-            extra_meta=[
-                _meta(
-                    "Data status",
-                    "Configured in campaign DB, but current SAPA/RFA source tables do not expose a campaign-level join for this campaign yet.",
-                )
-            ],
+            extra_meta=_rfa_attribution_meta(
+                context,
+                "Configured in campaign DB, but no RFA field-rep mapping could be resolved for this campaign yet.",
+            ),
             data_status="not_attributed",
         )
     if not _table_exists(RFA_GOLD_SCHEMA, "dashboard_summary_snapshot"):
@@ -1438,44 +1636,46 @@ def _build_rfa_section(reference: CampaignReference) -> dict[str, Any]:
             extra_meta=[_meta("Data status", "Configured in campaign DB; RFA reporting rows are not published yet.")],
         )
 
-    detail_rows = _rfa_detail_rows(reference)
-    summary = _fetch_one(
-        f"""
-        SELECT
-            as_of_date,
-            onboarded_doctors_cumulative,
-            active_clinics_current,
-            certified_clinics_current,
-            total_screenings_cumulative,
-            red_tags_cumulative,
-            followups_scheduled_cumulative,
-            reminders_sent_cumulative
-        FROM {RFA_GOLD_SCHEMA}.dashboard_summary_snapshot
-        LIMIT 1
-    """
-    )
-    trend_rows = (
-        _fetch_rows(
+    detail_rows = _rfa_detail_rows(reference, context)
+    summary = (
+        _fetch_one(
             f"""
             SELECT
-                to_char(date_trunc('week', submitted_at::timestamp), 'YYYY-MM-DD') AS week_bucket,
-                COUNT(*) AS screenings,
-                COUNT(*) FILTER (WHERE lower(COALESCE(overall_flag_code, '')) = 'red') AS red_tags,
-                COUNT(*) FILTER (WHERE lower(COALESCE(overall_flag_code, '')) = 'yellow') AS yellow_tags
-            FROM {RFA_GOLD_SCHEMA}.rpt_screening_detail
-            WHERE submitted_at IS NOT NULL
-              AND btrim(submitted_at) <> ''
-            GROUP BY 1
-            ORDER BY 1
+                as_of_date,
+                onboarded_doctors_cumulative,
+                active_clinics_current,
+                certified_clinics_current
+            FROM {RFA_GOLD_SCHEMA}.dashboard_summary_snapshot
+            LIMIT 1
         """
         )
-        if _table_exists(RFA_GOLD_SCHEMA, "rpt_screening_detail")
-        else []
+        if context.mode == "growth_clinic_alias"
+        else {}
     )
+    trend_rows = _rfa_trend_rows(context)
+    status_rows = _rfa_status_rows(context)
     onboarded = _to_int(summary.get("onboarded_doctors_cumulative"))
     active = _to_int(summary.get("active_clinics_current"))
     certified = _to_int(summary.get("certified_clinics_current"))
-    if not onboarded and detail_rows:
+    if context.mode == "field_rep":
+        onboarded = len({str(row.get("doctor_key") or "").strip() for row in status_rows if str(row.get("doctor_key") or "").strip()})
+        active = len(
+            {
+                str(row.get("doctor_key") or "").strip()
+                for row in status_rows
+                if str(row.get("doctor_key") or "").strip()
+                and str(row.get("active_flag") or "").strip().lower() in {"1", "true", "t", "yes"}
+            }
+        )
+        certified = len(
+            {
+                str(row.get("doctor_key") or "").strip()
+                for row in status_rows
+                if str(row.get("doctor_key") or "").strip()
+                and str(row.get("certification_status") or "").strip().lower() not in {"", "unknown", "not certified", "uncertified", "false", "0"}
+            }
+        )
+    elif not onboarded and detail_rows:
         onboarded = len(detail_rows)
     if not active and detail_rows:
         active = sum(
@@ -1543,7 +1743,12 @@ def _build_rfa_section(reference: CampaignReference) -> dict[str, Any]:
         item
         for item in [
             _meta("As of", _pretty_date(summary.get("as_of_date"))),
-            _meta("Attribution", "Resolved to the currently published Growth Clinic RFA dataset."),
+            *_rfa_attribution_meta(
+                context,
+                "Ready"
+                if any([onboarded, active, certified, form_fills, red_flags, patient_video_views, reports_emailed, form_shares, patient_scans, followups, reminders])
+                else "Configured in campaign DB; no attributable RFA activity is published yet.",
+            ),
             _meta("Tracked base", f"{onboarded} onboarded / {active} active"),
             _meta("Certified clinics", certified),
         ]
@@ -1624,6 +1829,87 @@ def _build_adoption_section(system_sections: list[dict[str, Any]]) -> dict[str, 
     }
 
 
+def _fallback_system_metrics(system_key: str) -> list[dict[str, Any]]:
+    if system_key == "rfa":
+        return [
+            _metric("form_fills", "Form Fills", 0),
+            _metric("red_flags_total", "Red Flags", 0),
+            _metric("patient_video_views", "Patient Video Views", 0),
+            _metric("reports_emailed_to_doctors", "Reports Emailed", 0),
+            _metric("form_shares", "Form Shares", 0),
+            _metric("patient_scans", "Patient Scans", 0),
+            _metric("follow_ups_scheduled", "Follow-Ups", 0),
+            _metric("reminders_sent", "Reminders Sent", 0),
+        ]
+    if system_key == "patient_education":
+        return [
+            _metric("video_views", "Video Views", 0),
+            _metric("video_completions", "Video Completions", 0),
+            _metric("cluster_shares", "Cluster Shares", 0),
+            _metric("patient_scans", "Patient Scans", 0),
+            _metric("banner_clicks", "Banner Clicks", 0),
+        ]
+    return [
+        _metric("shares", "Shares", 0),
+        _metric("link_opens", "Link Opens", 0),
+        _metric("pdf_reads", "PDF Reads", 0),
+        _metric("video_views", "Video Views", 0),
+        _metric("video_completions", "Video Completions", 0),
+        _metric("pdf_downloads", "PDF Downloads", 0),
+    ]
+
+
+def _system_subtitle(system_key: str) -> str:
+    return {
+        "rfa": "Screening throughput, follow-up operations, and risk-tag monitoring from the RFA workflow.",
+        "in_clinic": "Shares, opens, and content consumption from the campaign's in-clinic collateral journey.",
+        "patient_education": "Video reach, patient scanning, and entry-channel engagement from the Patient Education system.",
+    }[system_key]
+
+
+def _safe_page_system_section(system_key: str, reference: CampaignReference, builder: Any) -> dict[str, Any]:
+    try:
+        return builder(reference)
+    except Exception:
+        logger.exception("Campaign performance page section failed for %s", system_key)
+        return _empty_section(
+            key=system_key,
+            subtitle=_system_subtitle(system_key),
+            reference=reference,
+            metrics=_fallback_system_metrics(system_key),
+            extra_meta=[_meta("Data status", "This system could not be loaded right now, but other campaign sections are still available.")],
+            data_status="unavailable",
+        )
+
+
+def _safe_summary_system_section(system_key: str, reference: CampaignReference, builder: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        return builder(reference)
+    except Exception:
+        logger.exception("Campaign performance summary section failed for %s", system_key)
+        section = _summary_card_section(
+            key=system_key,
+            subtitle=f"Cumulative {SYSTEM_LABELS[system_key]} summary is temporarily unavailable.",
+            reference=reference,
+            metrics=_fallback_system_metrics(system_key),
+            system_report_path=_system_report_path(system_key, reference),
+            extra_meta=[_meta("Data status", "This system could not be loaded right now, but other campaign sections are still available.")],
+            data_status="unavailable",
+        )
+        adoption_label = {
+            "rfa": "Red Flag Alert",
+            "in_clinic": "In Clinic",
+            "patient_education": "Patient Education",
+        }[system_key]
+        return section, {
+            "system_key": system_key,
+            "label": adoption_label,
+            "clinics_added": 0,
+            "active_records": 0,
+            "clinics_with_activity": 0,
+        }
+
+
 def build_campaign_performance_page_payload(campaign_id: str) -> dict[str, Any]:
     reference = _resolve_campaign_reference(campaign_id)
     configured_keys = _configured_system_keys(reference)
@@ -1632,7 +1918,7 @@ def build_campaign_performance_page_payload(campaign_id: str) -> dict[str, Any]:
         "in_clinic": _build_in_clinic_section,
         "patient_education": _build_patient_education_section,
     }
-    system_sections = [builders[key](reference) for key in SYSTEM_ORDER if key in configured_keys]
+    system_sections = [_safe_page_system_section(key, reference, builders[key]) for key in SYSTEM_ORDER if key in configured_keys]
     adoption_section = _build_adoption_section(system_sections)
     configured_systems = [{"key": section["key"], "label": section["label"]} for section in system_sections]
     return {
@@ -1658,7 +1944,7 @@ def build_campaign_performance_payload(campaign_id: str) -> dict[str, Any]:
     for key in SYSTEM_ORDER:
         if key not in configured_keys:
             continue
-        section, adoption_row = summary_builders[key](reference)
+        section, adoption_row = _safe_summary_system_section(key, reference, summary_builders[key])
         system_sections.append(section)
         adoption_rows.append(adoption_row)
     adoption_section = _build_adoption_summary_section(adoption_rows)
