@@ -52,6 +52,22 @@ def ensure_text_table(schema: str, table: str, columns: list[str]) -> None:
     column_sql = ", ".join(f"{qident(column)} TEXT" for column in columns)
     with connection.cursor() as cursor:
         cursor.execute(f"CREATE TABLE IF NOT EXISTS {table_name(schema, table)} ({column_sql})")
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s
+            """,
+            [schema, table],
+        )
+        existing_columns = {row[0] for row in cursor.fetchall()}
+        for column in columns:
+            if column in existing_columns:
+                continue
+            cursor.execute(
+                f"ALTER TABLE {table_name(schema, table)} "
+                f"ADD COLUMN {qident(column)} TEXT"
+            )
 
 
 def insert_rows(schema: str, table: str, columns: list[str], rows: Iterable[dict[str, Any]]) -> None:
@@ -70,6 +86,7 @@ def insert_rows(schema: str, table: str, columns: list[str], rows: Iterable[dict
 
 
 def append_rows(schema: str, table: str, columns: list[str], rows: Iterable[dict[str, Any]]) -> None:
+    ensure_text_table(schema, table, columns)
     insert_rows(schema, table, columns, rows)
 
 
