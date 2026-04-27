@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from django.db import connection
@@ -14,6 +15,10 @@ from etl.sapa_growth.storage import table_exists as sapa_table_exists
 SAPA_GOLD_SCHEMA = "gold_sapa"
 SAPA_SILVER_SCHEMA = "silver_sapa"
 PE_GLOBAL_SCHEMA = "gold_pe_global"
+
+
+def _normalized_identifier(value: Any) -> str:
+    return re.sub(r"[^a-zA-Z0-9]", "", clean_text(value)).lower()
 
 
 def _location_bucket(*values: Any) -> str:
@@ -86,6 +91,17 @@ def _pe_campaign_registry_rows() -> list[dict[str, Any]]:
     if not pe_table_exists(PE_GLOBAL_SCHEMA, "campaign_registry"):
         return []
     return fetch_pe_table(PE_GLOBAL_SCHEMA, "campaign_registry")
+
+
+def _filter_rows_by_field_rep_keys(rows: list[dict[str, Any]], field_rep_keys: set[str] | None) -> list[dict[str, Any]]:
+    normalized_keys = {_normalized_identifier(key) for key in (field_rep_keys or set()) if _normalized_identifier(key)}
+    if not normalized_keys:
+        return rows
+    return [
+        row
+        for row in rows
+        if _normalized_identifier(row.get("field_rep_id")) in normalized_keys
+    ]
 
 
 def _aggregate_red_flag_alert_rows(
@@ -196,19 +212,25 @@ def _aggregate_red_flag_alert_rows(
     return _finalize_rows(grouped)
 
 
-def build_red_flag_alert_rows() -> list[dict[str, Any]]:
+def build_red_flag_alert_rows(field_rep_keys: set[str] | None = None) -> list[dict[str, Any]]:
     clinic_lookup = {
         clean_text(row.get("doctor_key")) or "": row
         for row in _sapa_silver_rows("dim_doctor_clinic")
         if clean_text(row.get("doctor_key"))
     }
+    filtered_screening_rows = _filter_rows_by_field_rep_keys(_sapa_rows("rpt_screening_detail"), field_rep_keys)
+    filtered_red_flag_rows = _filter_rows_by_field_rep_keys(_sapa_rows("rpt_submission_redflag_detail"), field_rep_keys)
+    filtered_video_rows = _filter_rows_by_field_rep_keys(_sapa_rows("rpt_video_view_detail"), field_rep_keys)
+    filtered_followup_rows = _filter_rows_by_field_rep_keys(_sapa_rows("rpt_followup_schedule_detail"), field_rep_keys)
+    filtered_reminder_rows = _filter_rows_by_field_rep_keys(_sapa_rows("rpt_reminder_sent_detail"), field_rep_keys)
+    filtered_metric_rows = _filter_rows_by_field_rep_keys(_sapa_silver_rows("fact_metric_event"), field_rep_keys)
     return _aggregate_red_flag_alert_rows(
-        screening_rows=_sapa_rows("rpt_screening_detail"),
-        red_flag_rows=_sapa_rows("rpt_submission_redflag_detail"),
-        video_rows=_sapa_rows("rpt_video_view_detail"),
-        followup_rows=_sapa_rows("rpt_followup_schedule_detail"),
-        reminder_rows=_sapa_rows("rpt_reminder_sent_detail"),
-        metric_rows=_sapa_silver_rows("fact_metric_event"),
+        screening_rows=filtered_screening_rows,
+        red_flag_rows=filtered_red_flag_rows,
+        video_rows=filtered_video_rows,
+        followup_rows=filtered_followup_rows,
+        reminder_rows=filtered_reminder_rows,
+        metric_rows=filtered_metric_rows,
         clinic_lookup=clinic_lookup,
     )
 
