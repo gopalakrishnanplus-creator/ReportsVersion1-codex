@@ -1,0 +1,38 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}Internal Data Admin{% endblock %}
+{% block heading %}PostgreSQL Data Dashboard{% endblock %}
+
+{% block content %}
+<section class="ida-band">
+  <div>
+    <h2>Managed Reporting Tables</h2>
+    <p class="ida-muted">Only reporting schemas are exposed here. Django auth/session tables are intentionally excluded from this internal tool.</p>
+  </div>
+  <div class="ida-safety-note">
+    <strong>Safety model</strong>
+    <span>Changes are audited, wrapped in transactions, and deletes are blocked when dependent records are detected.</span>
+  </div>
+</section>
+
+{% for group in table_groups %}
+<section class="ida-section">
+  <div class="ida-section-heading">
+    <h2>{{ group.schema }}</h2>
+    <span>{{ group.tables|length }} tables</span>
+  </div>
+  <div class="ida-table-grid">
+    {% for table in group.tables %}
+    <a class="ida-table-card" href="{{ table.href }}">
+      <strong>{{ table.name }}</strong>
+      <span>{% if table.row_count is None %}count unavailable{% else %}{{ table.row_count }} records{% endif %}</span>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% empty %}
+<section class="ida-panel">
+  <p>No reporting tables are available yet. Run the ETL pipeline first.</p>
+</section>
+{% endfor %}
+{% endblock %}

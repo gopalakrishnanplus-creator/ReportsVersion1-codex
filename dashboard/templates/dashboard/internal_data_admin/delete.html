@@ -1,0 +1,73 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}Delete Record{% endblock %}
+{% block heading %}Delete Record{% endblock %}
+
+{% block content %}
+<nav class="ida-toolbar">
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-row' table.schema table.name %}?token={{ token|urlencode }}">Back to Record</a>
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-table' table.schema table.name %}">Back to Table</a>
+</nav>
+
+<section class="ida-panel ida-delete-panel">
+  <div class="ida-danger-box">
+    <strong>Delete requires explicit confirmation.</strong>
+    <span>This action is audited and runs in a transaction. It is blocked when dependent records are detected.</span>
+  </div>
+
+  <div class="ida-table-meta">
+    <span><strong>{{ table.schema }}.{{ table.name }}</strong></span>
+    <span><code>{{ identity }}</code></span>
+  </div>
+
+  {% if dependencies %}
+  <section class="ida-warning">
+    <strong>Delete blocked</strong>
+    <span>Clean up the dependent records first, then return here.</span>
+  </section>
+  <div class="ida-scroll">
+    <table class="ida-data-table">
+      <thead>
+        <tr><th>Kind</th><th>Table</th><th>Column</th><th>Value</th><th>Count</th></tr>
+      </thead>
+      <tbody>
+        {% for dep in dependencies %}
+        <tr>
+          <td>{{ dep.kind }}</td>
+          <td>{{ dep.ref_schema }}.{{ dep.ref_table }}</td>
+          <td>{{ dep.ref_column }}</td>
+          <td><code>{{ dep.value }}</code></td>
+          <td>{{ dep.count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <details class="ida-record-preview">
+    <summary>Record preview</summary>
+    <dl class="ida-detail-list">
+      {% for field in fields %}
+      <div>
+        <dt>{{ field.name }}</dt>
+        <dd>{{ field.value }}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+  </details>
+
+  <form class="ida-form" method="post">
+    {% csrf_token %}
+    <label>
+      <span>Reason for delete</span>
+      <input type="text" name="reason" placeholder="Example: dummy campaign removed after QA validation" required {% if not can_delete %}disabled{% endif %}>
+    </label>
+    <label>
+      <span>Type this exact phrase: <code>{{ phrase }}</code></span>
+      <input type="text" name="confirmation" autocomplete="off" required {% if not can_delete %}disabled{% endif %}>
+    </label>
+    <button class="ida-button ida-button-danger" type="submit" {% if not can_delete %}disabled{% endif %}>Delete Record</button>
+  </form>
+</section>
+{% endblock %}

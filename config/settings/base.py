@@ -316,6 +316,11 @@ REPORTS_EMAIL = {
     "ACCESS_LOG_PATH": _env("REPORTS_ACCESS_LOG_PATH", default=str(BASE_DIR / "var" / "report_access_email_log.jsonl")),
 }
 
+INTERNAL_DATA_ADMIN = {
+    "USERNAME": _env("INTERNAL_DATA_ADMIN_USERNAME", default="internal_admin"),
+    "PASSWORD": _env("INTERNAL_DATA_ADMIN_PASSWORD", default="ChangeMeLocalOnly!"),
+}
+
 SOURCE_EXTRACTOR_BACKEND = _env("SOURCE_EXTRACTOR_BACKEND", default="mysql").strip().lower()
 SQLITE_SOURCE_1 = {
     "PATH": _env("SQLITE_SOURCE1_PATH", default=str(BASE_DIR / "var" / "source_server1.sqlite3")),

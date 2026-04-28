@@ -1,0 +1,59 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}{{ table.schema }}.{{ table.name }}{% endblock %}
+{% block heading %}{{ table.schema }}.{{ table.name }}{% endblock %}
+
+{% block content %}
+<nav class="ida-toolbar">
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-home' %}">All Tables</a>
+  <a class="ida-button" href="{% url 'internal-data-admin-new' table.schema table.name %}">Create Record</a>
+</nav>
+
+<section class="ida-panel">
+  <div class="ida-table-meta">
+    <span><strong>{{ row_count }}</strong> total records</span>
+    <span>Primary key: {% if table.primary_key %}{{ table.primary_key|join:", " }}{% else %}none; rows use signed ctid locators{% endif %}</span>
+  </div>
+
+  <div class="ida-scroll">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Record</th>
+          {% for column in display_columns %}
+          <th>{{ column }}</th>
+          {% endfor %}
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td><code>{{ row.identity }}</code></td>
+          {% for cell in row.cells %}
+          <td data-label="{{ cell.name }}">{{ cell.value }}</td>
+          {% endfor %}
+          <td class="ida-actions-cell">
+            <a href="{% url 'internal-data-admin-row' table.schema table.name %}?token={{ row.token|urlencode }}">View</a>
+            <a href="{% url 'internal-data-admin-edit' table.schema table.name %}?token={{ row.token|urlencode }}">Edit</a>
+            <a class="ida-danger-link" href="{% url 'internal-data-admin-delete' table.schema table.name %}?token={{ row.token|urlencode }}">Delete</a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="{{ display_columns|length|add:2 }}">No records found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="ida-pagination">
+    {% if previous_page %}
+    <a class="ida-button ida-button-secondary" href="?page={{ previous_page }}">Previous</a>
+    {% endif %}
+    <span>Page {{ page }}</span>
+    {% if next_page %}
+    <a class="ida-button ida-button-secondary" href="?page={{ next_page }}">Next</a>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

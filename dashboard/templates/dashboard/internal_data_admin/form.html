@@ -1,0 +1,47 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}{{ mode }} Record{% endblock %}
+{% block heading %}{{ mode }} Record{% endblock %}
+
+{% block content %}
+<nav class="ida-toolbar">
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-table' table.schema table.name %}">Back to Table</a>
+  {% if token %}
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-row' table.schema table.name %}?token={{ token|urlencode }}">View Record</a>
+  {% endif %}
+</nav>
+
+<section class="ida-panel">
+  <div class="ida-table-meta">
+    <span><strong>{{ table.schema }}.{{ table.name }}</strong></span>
+    {% if identity %}<span><code>{{ identity }}</code></span>{% endif %}
+  </div>
+
+  <form class="ida-form ida-record-form" method="post">
+    {% csrf_token %}
+    <label class="ida-reason">
+      <span>Reason for {{ mode|lower }}</span>
+      <input type="text" name="reason" placeholder="Example: remove dummy source row after local ETL test" required>
+    </label>
+
+    <div class="ida-field-grid">
+      {% for field in fields %}
+      <label class="ida-field">
+        <span>{{ field.name }} <small>{{ field.data_type }}{% if field.is_pk %}, primary key{% endif %}</small></span>
+        <textarea name="{{ field.name }}" rows="2">{{ field.value }}</textarea>
+        {% if field.is_nullable %}
+        <label class="ida-null-toggle">
+          <input type="checkbox" name="__null__{{ field.name }}" value="1" {% if field.is_null %}checked{% endif %}>
+          Set NULL
+        </label>
+        {% endif %}
+      </label>
+      {% empty %}
+      <p>This table has no editable columns.</p>
+      {% endfor %}
+    </div>
+
+    <button class="ida-button" type="submit">{{ mode }} Record</button>
+  </form>
+</section>
+{% endblock %}

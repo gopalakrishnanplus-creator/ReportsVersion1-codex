@@ -6,6 +6,7 @@ from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 
 import dashboard.views
+from dashboard.internal_data_admin import _is_relevant_schema
 
 
 class DashboardRoutingTests(SimpleTestCase):
@@ -18,6 +19,16 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/campaign-performance/links/").view_name, "campaign-performance-links")
         self.assertEqual(resolve("/campaign-performance/demo/").view_name, "campaign-performance-page")
         self.assertEqual(resolve("/campaign/demo/performance/").view_name, "campaign-performance-page-legacy")
+        self.assertEqual(resolve("/_internal/data-admin/").view_name, "internal-data-admin-home")
+        self.assertEqual(resolve("/_internal/data-admin/login/").view_name, "internal-data-admin-login")
+        self.assertEqual(resolve("/_internal/data-admin/bronze/campaign_campaign/").view_name, "internal-data-admin-table")
+
+    def test_internal_data_admin_schema_filter(self):
+        self.assertTrue(_is_relevant_schema("bronze"))
+        self.assertTrue(_is_relevant_schema("gold_campaign_cardio_2026_q1"))
+        self.assertTrue(_is_relevant_schema("silver_sapa"))
+        self.assertFalse(_is_relevant_schema("public"))
+        self.assertFalse(_is_relevant_schema("information_schema"))
 
 
 class DashboardAccessViewTests(SimpleTestCase):
@@ -25,6 +36,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reports Home")
+        self.assertNotContains(response, "_internal/data-admin")
 
     def test_login_page_does_not_render_credential_hint(self):
         with patch(
@@ -67,6 +79,12 @@ class DashboardAccessViewTests(SimpleTestCase):
             response = self.client.get("/inclinic/")
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "/campaign/demo/performance/")
+        self.assertNotContains(response, "_internal/data-admin")
+
+    def test_internal_data_admin_requires_login(self):
+        response = self.client.get("/_internal/data-admin/")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/_internal/data-admin/login/", response["Location"])
 
     def test_campaign_performance_page_renders_bootstrap_data(self):
         with patch(

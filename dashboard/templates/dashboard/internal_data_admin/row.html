@@ -1,0 +1,35 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}Record Detail{% endblock %}
+{% block heading %}Record Detail{% endblock %}
+
+{% block content %}
+<nav class="ida-toolbar">
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-table' table.schema table.name %}">Back to Table</a>
+  <a class="ida-button" href="{% url 'internal-data-admin-edit' table.schema table.name %}?token={{ token|urlencode }}">Edit</a>
+  <a class="ida-button ida-button-danger" href="{% url 'internal-data-admin-delete' table.schema table.name %}?token={{ token|urlencode }}">Delete</a>
+</nav>
+
+<section class="ida-panel">
+  <div class="ida-table-meta">
+    <span><strong>{{ table.schema }}.{{ table.name }}</strong></span>
+    <span><code>{{ identity }}</code></span>
+  </div>
+
+  {% if dependency_count %}
+  <div class="ida-warning">
+    <strong>{{ dependency_count }} dependent references detected.</strong>
+    <span>Delete will be blocked until dependent rows are cleaned up first.</span>
+  </div>
+  {% endif %}
+
+  <dl class="ida-detail-list">
+    {% for field in fields %}
+    <div>
+      <dt>{{ field.name }}</dt>
+      <dd>{{ field.value }}</dd>
+    </div>
+    {% endfor %}
+  </dl>
+</section>
+{% endblock %}

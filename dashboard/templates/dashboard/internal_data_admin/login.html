@@ -1,0 +1,28 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}Internal Data Admin Login{% endblock %}
+
+{% block content %}
+<section class="ida-login-panel">
+  <p class="ida-eyebrow">Restricted</p>
+  <h1>Internal Data Admin</h1>
+  <p class="ida-muted">Direct access only. Credentials are required before any database table can be viewed or changed.</p>
+
+  {% if error_message %}
+  <p class="ida-message ida-message-error">{{ error_message }}</p>
+  {% endif %}
+
+  <form class="ida-form" method="post">
+    {% csrf_token %}
+    <label>
+      <span>Username</span>
+      <input type="text" name="username" autocomplete="username" required autofocus>
+    </label>
+    <label>
+      <span>Password</span>
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button class="ida-button" type="submit">Open Dashboard</button>
+  </form>
+</section>
+{% endblock %}

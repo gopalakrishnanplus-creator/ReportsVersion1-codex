@@ -1,0 +1,37 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex,nofollow">
+  <title>{% block title %}Internal Data Admin{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/internal_data_admin.css' %}">
+</head>
+<body>
+  <main class="ida-shell">
+    {% if request.session.internal_data_admin_authenticated %}
+    <header class="ida-header">
+      <div>
+        <p class="ida-eyebrow">Internal Data Admin</p>
+        <h1>{% block heading %}PostgreSQL Data Dashboard{% endblock %}</h1>
+      </div>
+      <form method="post" action="{% url 'internal-data-admin-logout' %}">
+        {% csrf_token %}
+        <button class="ida-button ida-button-secondary" type="submit">Log Out</button>
+      </form>
+    </header>
+    {% endif %}
+
+    {% if messages %}
+    <section class="ida-messages" aria-label="Messages">
+      {% for message in messages %}
+      <p class="ida-message ida-message-{{ message.tags }}">{{ message }}</p>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
