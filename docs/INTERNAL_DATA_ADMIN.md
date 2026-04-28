@@ -49,6 +49,17 @@ Select the system, choose the earliest layer to clear, and enter the campaign/en
 
 Deletes execute downstream first: `GOLD -> SILVER -> BRONZE -> RAW`. This avoids manually deleting from every table and reduces dependency mistakes. If RAW/source rows remain and the ETL is rerun, derived rows can be recreated; use RAW cleanup for permanent source removal.
 
+Batch campaign cleanup:
+
+Use batch cleanup when campaign IDs span more than one reporting system, or when you want to clean many campaigns in one reviewed plan.
+
+Modes:
+
+- Delete listed campaigns: enter campaign IDs to delete; all other campaign records are kept.
+- Keep listed campaigns, delete the rest: enter campaign IDs that must remain; other campaign-scoped rows in selected systems are planned for deletion.
+
+Batch cleanup can include Inclinic, SAPA/RFA, and Patient Education together. It only targets rows with recognized campaign identity columns, plus non-kept campaign GOLD schemas. Always review the preview table before execution, especially in keep-list mode.
+
 Safety behavior:
 
 - Mutations require login and CSRF protection.
@@ -58,4 +69,5 @@ Safety behavior:
 - Delete requires a typed confirmation phrase and a reason.
 - Bulk delete requires a typed confirmation phrase and a reason.
 - Hierarchy cleanup requires a typed confirmation phrase and a reason.
+- Batch cleanup requires a typed confirmation phrase and a reason.
 - Delete is blocked when foreign key or known reporting dependencies are detected.

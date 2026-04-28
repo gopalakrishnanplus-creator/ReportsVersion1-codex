@@ -11,8 +11,8 @@
 <section class="ida-band">
   <div>
     <p class="ida-eyebrow">Safer clutter removal</p>
-    <h2>Delete one campaign/entity through the reporting hierarchy</h2>
-    <p class="ida-muted">You should not delete from every table by hand. Pick the system, choose the earliest layer you want to clear, and this planner finds matching downstream rows before anything is deleted.</p>
+    <h2>Clean campaigns through one or more reporting systems</h2>
+    <p class="ida-muted">You should not delete from every table by hand. Use batch cleanup when campaign IDs span Inclinic, SAPA/RFA, and PE; use single cleanup for a targeted one-campaign repair.</p>
   </div>
   <div class="ida-safety-note">
     <strong>Delete order</strong>
@@ -35,6 +35,188 @@
 </section>
 
 <section class="ida-panel">
+  <div class="ida-table-meta">
+    <div>
+      <p class="ida-eyebrow">Batch cleanup</p>
+      <h2>Delete listed campaigns, or keep listed campaigns and delete the rest</h2>
+      <p class="ida-muted">This is for campaign-level clutter across multiple systems. The preview shows every matched table before execution.</p>
+    </div>
+    <div class="ida-safety-note">
+      <strong>Cross-system scope</strong>
+      <span>Select all systems a campaign may exist in. A campaign can appear in Inclinic, SAPA/RFA, and PE at the same time.</span>
+    </div>
+  </div>
+
+  <form class="ida-form ida-cleanup-form" method="post" action="{% url 'internal-data-admin-cleanup' %}">
+    {% csrf_token %}
+    <input type="hidden" name="cleanup_action" value="batch_preview">
+    <div class="ida-field-grid">
+      <label>
+        <span>Batch mode</span>
+        <select name="batch_mode">
+          {% for option in batch_mode_options %}
+          <option value="{{ option.key }}" {% if batch_mode == option.key %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>Starting layer</span>
+        <select name="batch_start_layer">
+          {% for option in layer_options %}
+          <option value="{{ option.key }}" {% if batch_start_layer == option.key %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    <div class="ida-checkbox-panel">
+      <strong>Systems to include</strong>
+      <div class="ida-checkbox-grid">
+        {% for option in system_options %}
+        <label class="ida-check-option">
+          <input type="checkbox" name="systems" value="{{ option.key }}" {% if option.key in batch_selected_systems %}checked{% endif %}>
+          <span>{{ option.label }}</span>
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <label>
+      <span>Campaign IDs, one per line or comma-separated</span>
+      <textarea name="campaign_ids" rows="6" placeholder="CARDIO-2026-Q1&#10;DERMA-2026-Q2&#10;PE-ONBOARDING-DEMO" required>{{ batch_campaign_ids_text }}</textarea>
+    </label>
+
+    <section class="ida-warning">
+      <strong>Keep-list mode is broad by design.</strong>
+      <span>It protects the listed campaign IDs, then deletes other campaign-scoped records from recognized campaign ID/key columns and non-kept campaign GOLD schemas. Always review the preview table before executing.</span>
+    </section>
+
+    <button class="ida-button" type="submit">Preview Batch Cleanup</button>
+  </form>
+</section>
+
+{% if batch_plan %}
+<section class="ida-panel ida-cleanup-plan">
+  <div class="ida-table-meta">
+    <div>
+      <p class="ida-eyebrow">{{ batch_plan.mode_label }}</p>
+      <h2>{{ batch_plan.total_count }} matching records across {{ batch_plan.table_count }} tables</h2>
+      <p class="ida-muted">Systems: {{ batch_plan.system_labels|join:", " }}. Starting at {{ batch_plan.start_layer_label }}.</p>
+    </div>
+    <div class="ida-safety-note">
+      <strong>Confirmation phrase</strong>
+      <span><code>{{ batch_phrase }}</code></span>
+    </div>
+  </div>
+
+  <div class="ida-cleanup-summary-grid">
+    <div>
+      <strong>Listed campaign IDs</strong>
+      <p>{{ batch_plan.campaign_ids|join:", " }}</p>
+    </div>
+    <div>
+      <strong>System totals</strong>
+      {% if batch_plan.system_totals %}
+      <p>
+        {% for system in batch_plan.system_totals %}
+        {{ system.label }}: {{ system.count }}{% if not forloop.last %} / {% endif %}
+        {% endfor %}
+      </p>
+      {% else %}
+      <p>No matching rows found in selected systems.</p>
+      {% endif %}
+    </div>
+    <div>
+      <strong>Layer totals</strong>
+      {% if batch_plan.layer_totals %}
+      <p>
+        {% for layer in batch_plan.layer_totals %}
+        {{ layer.label }}: {{ layer.count }}{% if not forloop.last %} / {% endif %}
+        {% endfor %}
+      </p>
+      {% else %}
+      <p>No matching downstream rows found.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if batch_plan.scoped_gold_schemas %}
+  <section class="ida-warning">
+    <strong>Protected or targeted campaign GOLD schemas</strong>
+    <span>{{ batch_plan.scoped_gold_schemas|join:", " }}</span>
+  </section>
+  {% endif %}
+
+  {% if batch_plan.registry_sources %}
+  <section class="ida-warning">
+    <strong>Registry assisted match</strong>
+    <span>Resolved related keys from {{ batch_plan.registry_sources|join:", " }} so the cleanup can follow campaign IDs and campaign GOLD schemas.</span>
+  </section>
+  {% endif %}
+
+  <div class="ida-scroll">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Delete order</th>
+          <th>System</th>
+          <th>Table</th>
+          <th>Records</th>
+          <th>Matched by</th>
+          <th>Scope</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in batch_plan.rows %}
+        <tr>
+          <td>{{ row.layer_label }}</td>
+          <td>{{ row.system_label }}</td>
+          <td><a href="{% url 'internal-data-admin-table' row.schema row.table %}">{{ row.schema }}.{{ row.table }}</a></td>
+          <td>{{ row.count }}</td>
+          <td>{{ row.match_columns }}</td>
+          <td>{{ row.scope_note }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6">No matching records found for this batch cleanup request.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <form class="ida-form ida-cleanup-execute" method="post" action="{% url 'internal-data-admin-cleanup' %}">
+    {% csrf_token %}
+    <input type="hidden" name="cleanup_action" value="batch_execute">
+    <input type="hidden" name="batch_mode" value="{{ batch_mode }}">
+    <input type="hidden" name="batch_start_layer" value="{{ batch_start_layer }}">
+    <input type="hidden" name="campaign_ids" value="{{ batch_plan.campaign_ids_text }}">
+    {% for system_key in batch_selected_systems %}
+    <input type="hidden" name="systems" value="{{ system_key }}">
+    {% endfor %}
+    <div class="ida-danger-box">
+      <strong>Execute only after reviewing the cross-system table list above.</strong>
+      <span>{{ batch_plan.mode_summary }} Deletes are transaction-wrapped and audited once per table.</span>
+    </div>
+    <label>
+      <span>Reason for batch cleanup</span>
+      <input type="text" name="reason" placeholder="Example: retain approved live campaigns and clear all dummy/test campaign data" required {% if not batch_plan.total_count %}disabled{% endif %}>
+    </label>
+    <label>
+      <span>Type this exact phrase: <code>{{ batch_phrase }}</code></span>
+      <input type="text" name="confirmation" autocomplete="off" required {% if not batch_plan.total_count %}disabled{% endif %}>
+    </label>
+    <button class="ida-button ida-button-danger" type="submit" {% if not batch_plan.total_count %}disabled{% endif %}>Execute Batch Cleanup</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="ida-panel ida-secondary-cleanup">
+  <div class="ida-table-meta">
+    <div>
+      <p class="ida-eyebrow">Single campaign cleanup</p>
+      <h2>Delete one campaign/entity in one system</h2>
+      <p class="ida-muted">Use this for targeted fixes when you know the campaign belongs to one reporting system only.</p>
+    </div>
+  </div>
   <form class="ida-form ida-cleanup-form" method="post" action="{% url 'internal-data-admin-cleanup' %}">
     {% csrf_token %}
     <input type="hidden" name="cleanup_action" value="preview">

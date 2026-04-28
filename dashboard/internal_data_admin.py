@@ -39,6 +39,16 @@ CLEANUP_LAYER_OPTIONS = [
     {"key": "silver", "label": "SILVER and GOLD"},
     {"key": "gold", "label": "GOLD only"},
 ]
+CLEANUP_BATCH_MODES = {
+    "delete_listed": {
+        "label": "Delete only listed campaigns",
+        "summary": "Listed campaign IDs are deleted across the selected systems; everything else is kept.",
+    },
+    "keep_listed": {
+        "label": "Keep listed campaigns, delete the rest",
+        "summary": "Listed campaign IDs are protected; other campaign-scoped records are deleted across the selected systems.",
+    },
+}
 LAYER_LABELS = {
     "raw": "RAW",
     "bronze": "BRONZE",
@@ -833,6 +843,14 @@ def _text_match_condition(columns: list[str], match_values: list[str]) -> tuple[
     return sql.SQL("({})").format(sql.SQL(" OR ").join(clauses)), [match_values for _ in columns]
 
 
+def _campaign_presence_condition(columns: list[str]) -> sql.SQL:
+    clauses = [
+        sql.SQL("NULLIF(BTRIM({}::text), '') IS NOT NULL").format(sql.Identifier(column))
+        for column in columns
+    ]
+    return sql.SQL("({})").format(sql.SQL(" OR ").join(clauses))
+
+
 def _registry_rows_for_entity(schema: str, table: str, match_values: list[str]) -> list[dict[str, Any]]:
     if not _table_exists(schema, table):
         return []
@@ -922,6 +940,23 @@ def _cleanup_entity_scope(system_key: str, entity_key: str) -> dict[str, Any]:
     }
 
 
+def _cleanup_scope_for_keys(system_key: str, entity_keys: list[str]) -> dict[str, Any]:
+    display_values: list[str] = []
+    scoped_gold_schemas: list[str] = []
+    registry_sources: list[str] = []
+    for entity_key in entity_keys:
+        scope = _cleanup_entity_scope(system_key, entity_key)
+        display_values = _dedupe_text_values(display_values + scope["display_values"])
+        scoped_gold_schemas = _dedupe_text_values(scoped_gold_schemas + scope["scoped_gold_schemas"])
+        registry_sources = _dedupe_text_values(registry_sources + scope["registry_sources"])
+    return {
+        "display_values": display_values,
+        "match_values": _cleanup_value_variants(display_values),
+        "scoped_gold_schemas": scoped_gold_schemas,
+        "registry_sources": registry_sources,
+    }
+
+
 def _cleanup_candidate_columns(info: TableInfo) -> list[str]:
     column_names = [column.name for column in info.columns]
     selected = [column for column in CLEANUP_MATCH_COLUMNS if column in column_names]
@@ -966,6 +1001,33 @@ def _cleanup_match_condition(info: TableInfo, scope: dict[str, Any]) -> dict[str
     }
 
 
+def _cleanup_inverse_match_condition(info: TableInfo, keep_scope: dict[str, Any]) -> dict[str, Any] | None:
+    system_key = _system_key_for_schema(info.schema)
+    prefixes = _campaign_gold_schema_prefixes(system_key)
+    if prefixes and info.schema.startswith(prefixes):
+        if info.schema in set(keep_scope["scoped_gold_schemas"]):
+            return None
+        return {
+            "where_sql": sql.SQL("TRUE"),
+            "params": [],
+            "match_columns": [],
+            "scope_note": "entire campaign GOLD schema not in keep list",
+        }
+
+    match_columns = _cleanup_candidate_columns(info)
+    keep_values = keep_scope["match_values"]
+    if not match_columns or not keep_values:
+        return None
+
+    protected_sql, protected_params = _text_match_condition(match_columns, keep_values)
+    return {
+        "where_sql": sql.SQL("{} AND NOT {}").format(_campaign_presence_condition(match_columns), protected_sql),
+        "params": protected_params,
+        "match_columns": match_columns,
+        "scope_note": "campaign-scoped rows excluding keep list",
+    }
+
+
 def _cleanup_count(info: TableInfo, where_sql: sql.SQL, params: list[Any]) -> int:
     rows = _fetch_dicts(
         sql.SQL("SELECT COUNT(*) AS row_count FROM {}.{} WHERE {}").format(
@@ -980,6 +1042,38 @@ def _cleanup_count(info: TableInfo, where_sql: sql.SQL, params: list[Any]) -> in
 
 def _cleanup_confirmation_phrase(system_key: str, entity_key: str) -> str:
     return f"CLEANUP {system_key.upper()} {entity_key.strip()}"
+
+
+def _batch_cleanup_confirmation_phrase(mode: str, campaign_count: int) -> str:
+    if mode == "keep_listed":
+        return f"KEEP {campaign_count} CAMPAIGNS DELETE REST"
+    return f"DELETE {campaign_count} LISTED CAMPAIGNS"
+
+
+def _parse_campaign_ids(raw_value: str) -> list[str]:
+    return _dedupe_text_values(re.split(r"[\n,;\t]+", raw_value or ""))
+
+
+def _values_getlist(values: Any, key: str) -> list[str]:
+    if hasattr(values, "getlist"):
+        return values.getlist(key)
+    raw = values.get(key) if hasattr(values, "get") else None
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return list(raw)
+    return [str(raw)]
+
+
+def _selected_cleanup_systems(values: Any, fallback_system: str | None = None) -> list[str]:
+    requested = [value.strip().lower() for value in _values_getlist(values, "systems") if value.strip()]
+    if not requested:
+        single_system = ((values.get("system") if hasattr(values, "get") else None) or fallback_system or "").strip().lower()
+        if single_system in CLEANUP_SYSTEM_KEYS:
+            requested = [single_system]
+    if not requested or "all" in requested:
+        return list(CLEANUP_SYSTEM_KEYS)
+    return [system for system in CLEANUP_SYSTEM_KEYS if system in requested]
 
 
 def _cleanup_plan(system_key: str, start_layer: str, entity_key: str) -> dict[str, Any]:
@@ -1051,6 +1145,106 @@ def _cleanup_plan(system_key: str, start_layer: str, entity_key: str) -> dict[st
     }
 
 
+def _cleanup_rows_for_scope(system_keys: list[str], start_layer: str, mode: str, scope_by_system: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    start_rank = LAYER_ORDER[start_layer]
+    plan_rows: list[dict[str, Any]] = []
+
+    for ref in _managed_table_refs():
+        schema = ref["schema"]
+        system_key = _system_key_for_schema(schema)
+        if system_key not in system_keys:
+            continue
+        layer_key = _layer_key_for_schema(schema)
+        layer_rank = LAYER_ORDER.get(layer_key)
+        if layer_rank is None or layer_rank < start_rank:
+            continue
+
+        info = _table_info(schema, ref["name"])
+        if mode == "keep_listed":
+            match = _cleanup_inverse_match_condition(info, scope_by_system[system_key])
+        else:
+            match = _cleanup_match_condition(info, scope_by_system[system_key])
+        if not match:
+            continue
+
+        count = _cleanup_count(info, match["where_sql"], match["params"])
+        if count <= 0:
+            continue
+
+        plan_rows.append(
+            {
+                "system_key": system_key,
+                "system_label": SYSTEM_PROFILES[system_key].short_label,
+                "schema": info.schema,
+                "table": info.name,
+                "layer_key": layer_key,
+                "layer_label": LAYER_LABELS[layer_key],
+                "delete_rank": layer_rank,
+                "count": count,
+                "match_columns": ", ".join(match["match_columns"]) if match["match_columns"] else "entire table",
+                "scope_note": match["scope_note"],
+                "where_sql": match["where_sql"],
+                "params": match["params"],
+            }
+        )
+
+    plan_rows.sort(key=lambda row: (-row["delete_rank"], row["system_label"], row["schema"], row["table"]))
+    return plan_rows
+
+
+def _batch_cleanup_plan(system_keys: list[str], start_layer: str, campaign_ids: list[str], mode: str) -> dict[str, Any]:
+    if not system_keys:
+        raise ValueError("Choose at least one reporting system for batch cleanup.")
+    if start_layer not in LAYER_ORDER:
+        raise ValueError("Choose a valid starting layer for batch cleanup.")
+    if mode not in CLEANUP_BATCH_MODES:
+        raise ValueError("Choose whether the listed campaigns should be deleted or kept.")
+    if not campaign_ids:
+        raise ValueError("Enter at least one campaign ID before planning batch cleanup.")
+
+    scope_by_system = {system_key: _cleanup_scope_for_keys(system_key, campaign_ids) for system_key in system_keys}
+    plan_rows = _cleanup_rows_for_scope(system_keys, start_layer, mode, scope_by_system)
+    layer_totals = []
+    for layer_key in ("gold", "silver", "bronze", "raw"):
+        total = sum(row["count"] for row in plan_rows if row["layer_key"] == layer_key)
+        if total:
+            layer_totals.append({"label": LAYER_LABELS[layer_key], "count": total})
+
+    system_totals = []
+    for system_key in system_keys:
+        total = sum(row["count"] for row in plan_rows if row["system_key"] == system_key)
+        if total:
+            system_totals.append({"label": SYSTEM_PROFILES[system_key].short_label, "count": total})
+
+    scoped_gold_schemas: list[str] = []
+    registry_sources: list[str] = []
+    key_values: list[str] = []
+    for scope in scope_by_system.values():
+        scoped_gold_schemas = _dedupe_text_values(scoped_gold_schemas + scope["scoped_gold_schemas"])
+        registry_sources = _dedupe_text_values(registry_sources + scope["registry_sources"])
+        key_values = _dedupe_text_values(key_values + scope["display_values"])
+
+    return {
+        "mode": mode,
+        "mode_label": CLEANUP_BATCH_MODES[mode]["label"],
+        "mode_summary": CLEANUP_BATCH_MODES[mode]["summary"],
+        "system_keys": system_keys,
+        "system_labels": [SYSTEM_PROFILES[system_key].short_label for system_key in system_keys],
+        "start_layer": start_layer,
+        "start_layer_label": _cleanup_layer_option_label(start_layer),
+        "campaign_ids": campaign_ids,
+        "campaign_ids_text": "\n".join(campaign_ids),
+        "key_values": key_values,
+        "scoped_gold_schemas": scoped_gold_schemas,
+        "registry_sources": registry_sources,
+        "rows": plan_rows,
+        "table_count": len(plan_rows),
+        "total_count": sum(row["count"] for row in plan_rows),
+        "layer_totals": layer_totals,
+        "system_totals": system_totals,
+    }
+
+
 def _execute_hierarchy_cleanup(plan: dict[str, Any], reason: str, actor: str) -> dict[str, Any]:
     deleted_rows: list[dict[str, Any]] = []
     with transaction.atomic():
@@ -1069,9 +1263,11 @@ def _execute_hierarchy_cleanup(plan: dict[str, Any], reason: str, actor: str) ->
 
             locator = {
                 "mode": "hierarchy_cleanup",
-                "system": plan["system_key"],
+                "system": plan.get("system_key") or ",".join(plan.get("system_keys", [])),
                 "start_layer": plan["start_layer"],
-                "entity_key": plan["entity_key"],
+                "entity_key": plan.get("entity_key"),
+                "campaign_ids": plan.get("campaign_ids", []),
+                "cleanup_mode": plan.get("mode", "single_entity"),
             }
             before = {
                 "planned_count": row["count"],
@@ -1081,6 +1277,8 @@ def _execute_hierarchy_cleanup(plan: dict[str, Any], reason: str, actor: str) ->
                 "scope_note": row["scope_note"],
                 "key_values": plan["key_values"],
                 "scoped_gold_schemas": plan["scoped_gold_schemas"],
+                "system": row.get("system_label"),
+                "cleanup_mode": plan.get("mode", "single_entity"),
             }
             _audit("hierarchy_cleanup", info, locator, before, None, reason, actor)
             deleted_rows.append({**row, "deleted_count": deleted_count})
@@ -1156,50 +1354,106 @@ def internal_data_admin_cleanup(request: HttpRequest) -> HttpResponse:
 
     _ensure_audit_table()
     values = request.POST if request.method == "POST" else request.GET
-    selected_system = (values.get("system") or "inclinic").strip().lower()
+    requested_system = (values.get("system") or "").strip().lower()
+    selected_system = requested_system or "inclinic"
     if selected_system not in CLEANUP_SYSTEM_KEYS:
         selected_system = "inclinic"
     selected_start_layer = (values.get("start_layer") or "raw").strip().lower()
     if selected_start_layer not in LAYER_ORDER:
         selected_start_layer = "raw"
     entity_key = (values.get("entity_key") or "").strip()
+    batch_fallback_system = requested_system if requested_system in CLEANUP_SYSTEM_KEYS else None
+    batch_selected_systems = _selected_cleanup_systems(values, batch_fallback_system)
+    batch_start_layer = (values.get("batch_start_layer") or values.get("start_layer") or "raw").strip().lower()
+    if batch_start_layer not in LAYER_ORDER:
+        batch_start_layer = "raw"
+    batch_mode = (values.get("batch_mode") or "delete_listed").strip().lower()
+    if batch_mode not in CLEANUP_BATCH_MODES:
+        batch_mode = "delete_listed"
+    batch_campaign_ids_text = values.get("campaign_ids") or ""
+    batch_campaign_ids = _parse_campaign_ids(batch_campaign_ids_text)
 
     plan = None
     phrase = _cleanup_confirmation_phrase(selected_system, entity_key) if entity_key else ""
+    batch_plan = None
+    batch_phrase = _batch_cleanup_confirmation_phrase(batch_mode, len(batch_campaign_ids)) if batch_campaign_ids else ""
     if request.method == "POST":
         cleanup_action = request.POST.get("cleanup_action") or "preview"
-        try:
-            plan = _cleanup_plan(selected_system, selected_start_layer, entity_key)
-            phrase = _cleanup_confirmation_phrase(selected_system, entity_key)
-        except (DatabaseError, ValueError) as exc:
-            messages.error(request, f"Cleanup plan failed: {exc}")
-            plan = None
+        if cleanup_action in {"preview", "execute"}:
+            try:
+                plan = _cleanup_plan(selected_system, selected_start_layer, entity_key)
+                phrase = _cleanup_confirmation_phrase(selected_system, entity_key)
+            except (DatabaseError, ValueError) as exc:
+                messages.error(request, f"Cleanup plan failed: {exc}")
+                plan = None
 
-        if cleanup_action == "execute" and plan:
-            confirmation = (request.POST.get("confirmation") or "").strip()
-            reason = (request.POST.get("reason") or "").strip()
-            if plan["total_count"] <= 0:
-                messages.error(request, "Cleanup execution blocked because the current plan has no matching records.")
-            elif confirmation != phrase:
-                messages.error(request, f'Type "{phrase}" to confirm hierarchy cleanup.')
-            elif len(reason) < 8:
-                messages.error(request, "Please provide a clear reason before running hierarchy cleanup.")
-            else:
-                try:
-                    result = _execute_hierarchy_cleanup(
-                        plan,
-                        reason,
-                        request.session.get(SESSION_USER_KEY, "internal_admin"),
-                    )
-                    messages.success(
-                        request,
-                        f"Hierarchy cleanup deleted {result['deleted_count']} records across {result['table_count']} tables.",
-                    )
-                    return redirect(
-                        f"{reverse('internal-data-admin-cleanup')}?system={selected_system}&start_layer={selected_start_layer}"
-                    )
-                except DatabaseError as exc:
-                    messages.error(request, f"Hierarchy cleanup failed and was rolled back: {exc}")
+            if cleanup_action == "execute" and plan:
+                confirmation = (request.POST.get("confirmation") or "").strip()
+                reason = (request.POST.get("reason") or "").strip()
+                if plan["total_count"] <= 0:
+                    messages.error(request, "Cleanup execution blocked because the current plan has no matching records.")
+                elif confirmation != phrase:
+                    messages.error(request, f'Type "{phrase}" to confirm hierarchy cleanup.')
+                elif len(reason) < 8:
+                    messages.error(request, "Please provide a clear reason before running hierarchy cleanup.")
+                else:
+                    try:
+                        result = _execute_hierarchy_cleanup(
+                            plan,
+                            reason,
+                            request.session.get(SESSION_USER_KEY, "internal_admin"),
+                        )
+                        messages.success(
+                            request,
+                            f"Hierarchy cleanup deleted {result['deleted_count']} records across {result['table_count']} tables.",
+                        )
+                        return redirect(
+                            f"{reverse('internal-data-admin-cleanup')}?system={selected_system}&start_layer={selected_start_layer}"
+                        )
+                    except DatabaseError as exc:
+                        messages.error(request, f"Hierarchy cleanup failed and was rolled back: {exc}")
+
+        if cleanup_action in {"batch_preview", "batch_execute"}:
+            try:
+                batch_plan = _batch_cleanup_plan(
+                    batch_selected_systems,
+                    batch_start_layer,
+                    batch_campaign_ids,
+                    batch_mode,
+                )
+                batch_phrase = _batch_cleanup_confirmation_phrase(batch_mode, len(batch_campaign_ids))
+            except (DatabaseError, ValueError) as exc:
+                messages.error(request, f"Batch cleanup plan failed: {exc}")
+                batch_plan = None
+
+            if cleanup_action == "batch_execute" and batch_plan:
+                confirmation = (request.POST.get("confirmation") or "").strip()
+                reason = (request.POST.get("reason") or "").strip()
+                if batch_plan["total_count"] <= 0:
+                    messages.error(request, "Batch cleanup execution blocked because the current plan has no matching records.")
+                elif confirmation != batch_phrase:
+                    messages.error(request, f'Type "{batch_phrase}" to confirm batch cleanup.')
+                elif len(reason) < 8:
+                    messages.error(request, "Please provide a clear reason before running batch cleanup.")
+                else:
+                    try:
+                        result = _execute_hierarchy_cleanup(
+                            batch_plan,
+                            reason,
+                            request.session.get(SESSION_USER_KEY, "internal_admin"),
+                        )
+                        messages.success(
+                            request,
+                            f"Batch cleanup deleted {result['deleted_count']} records across {result['table_count']} tables.",
+                        )
+                        return redirect(
+                            f"{reverse('internal-data-admin-cleanup')}?start_layer={batch_start_layer}"
+                        )
+                    except DatabaseError as exc:
+                        messages.error(
+                            request,
+                            f"Batch cleanup failed and was rolled back: {exc}",
+                        )
 
     return render(
         request,
@@ -1207,11 +1461,21 @@ def internal_data_admin_cleanup(request: HttpRequest) -> HttpResponse:
         {
             "system_options": _cleanup_system_options(),
             "layer_options": CLEANUP_LAYER_OPTIONS,
+            "batch_mode_options": [
+                {"key": key, **value}
+                for key, value in CLEANUP_BATCH_MODES.items()
+            ],
             "selected_system": selected_system,
             "selected_start_layer": selected_start_layer,
             "entity_key": entity_key,
             "plan": plan,
             "phrase": phrase,
+            "batch_selected_systems": batch_selected_systems,
+            "batch_start_layer": batch_start_layer,
+            "batch_mode": batch_mode,
+            "batch_campaign_ids_text": batch_campaign_ids_text,
+            "batch_plan": batch_plan,
+            "batch_phrase": batch_phrase,
         },
     )
 

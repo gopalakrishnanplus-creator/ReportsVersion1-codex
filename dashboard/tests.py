@@ -9,9 +9,13 @@ import dashboard.views
 from dashboard.internal_data_admin import (
     ColumnInfo,
     TableInfo,
+    _batch_cleanup_confirmation_phrase,
     _cleanup_candidate_columns,
+    _cleanup_inverse_match_condition,
     _is_relevant_schema,
     _layer_key_for_schema,
+    _parse_campaign_ids,
+    _selected_cleanup_systems,
     _system_key_for_schema,
 )
 
@@ -68,6 +72,31 @@ class DashboardRoutingTests(SimpleTestCase):
             _cleanup_candidate_columns(info),
             ["brand_campaign_id", "campaign_key", "id"],
         )
+
+    def test_batch_campaign_id_parser_dedupes_common_separators(self):
+        self.assertEqual(
+            _parse_campaign_ids("CARDIO-1\nDERMA-2, CARDIO-1;PE-3\t"),
+            ["CARDIO-1", "DERMA-2", "PE-3"],
+        )
+
+    def test_batch_cleanup_system_selection_supports_multiple_systems(self):
+        self.assertEqual(_selected_cleanup_systems({"systems": ["pe", "inclinic"]}), ["inclinic", "pe"])
+        self.assertEqual(_selected_cleanup_systems({}), ["inclinic", "sapa", "pe"])
+
+    def test_batch_keep_mode_protects_matching_campaign_gold_schema(self):
+        scope = {"scoped_gold_schemas": ["gold_pe_campaign_keep"], "match_values": ["keep"]}
+        protected = TableInfo("gold_pe_campaign_keep", "dashboard_summary", [], [])
+        stale = TableInfo("gold_pe_campaign_stale", "dashboard_summary", [], [])
+
+        self.assertIsNone(_cleanup_inverse_match_condition(protected, scope))
+        self.assertEqual(
+            _cleanup_inverse_match_condition(stale, scope)["scope_note"],
+            "entire campaign GOLD schema not in keep list",
+        )
+
+    def test_batch_cleanup_confirmation_phrases_are_explicit(self):
+        self.assertEqual(_batch_cleanup_confirmation_phrase("delete_listed", 2), "DELETE 2 LISTED CAMPAIGNS")
+        self.assertEqual(_batch_cleanup_confirmation_phrase("keep_listed", 3), "KEEP 3 CAMPAIGNS DELETE REST")
 
 
 class DashboardAccessViewTests(SimpleTestCase):

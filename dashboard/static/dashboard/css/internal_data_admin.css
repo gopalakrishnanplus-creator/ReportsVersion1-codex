@@ -477,6 +477,10 @@ code {
   margin-top: 14px;
 }
 
+.ida-secondary-cleanup {
+  margin-top: 14px;
+}
+
 .ida-cleanup-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -506,6 +510,41 @@ code {
 
 .ida-cleanup-execute {
   margin-top: 14px;
+}
+
+.ida-checkbox-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--ida-line);
+  border-radius: 8px;
+  background: var(--ida-panel-soft);
+}
+
+.ida-checkbox-panel > strong {
+  color: var(--ida-blue-dark);
+}
+
+.ida-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.ida-check-option {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 9px !important;
+  padding: 9px 10px;
+  border: 1px solid #d5e1ef;
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--ida-text) !important;
+}
+
+.ida-check-option input {
+  width: auto;
 }
 
 .ida-status {
