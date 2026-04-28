@@ -15,7 +15,7 @@ INTERNAL_DATA_ADMIN_USERNAME=internal_admin
 INTERNAL_DATA_ADMIN_PASSWORD=ChangeMeLocalOnly!
 ```
 
-The dashboard exposes reporting schemas only: `raw_*`, `bronze`, `silver*`, `gold_*`, `control`, and `ops`. Django auth/session/admin tables are excluded.
+The dashboard exposes reporting schemas only: `raw_*`, `bronze*`, `silver*`, `gold_*`, `control`, and `ops`. Django auth/session/admin tables are excluded.
 
 System grouping:
 
@@ -32,6 +32,23 @@ Bulk delete:
 
 Open a table, select multiple rows, choose "Review Selected Delete", inspect dependency warnings, then confirm with the exact phrase shown on screen. Bulk delete is table-scoped, transaction-wrapped, and audited one row at a time.
 
+Hierarchy cleanup planner:
+
+Use the planner when clutter belongs to one campaign, source entity, or campaign GOLD schema and should be cleared consistently across layers.
+
+```text
+http://127.0.0.1:8000/_internal/data-admin/cleanup/
+```
+
+Select the system, choose the earliest layer to clear, and enter the campaign/entity key. The planner previews every matching table before deletion.
+
+- RAW means RAW, BRONZE, SILVER, and GOLD are included.
+- BRONZE means BRONZE, SILVER, and GOLD are included.
+- SILVER means SILVER and GOLD are included.
+- GOLD means only GOLD/report output is included.
+
+Deletes execute downstream first: `GOLD -> SILVER -> BRONZE -> RAW`. This avoids manually deleting from every table and reduces dependency mistakes. If RAW/source rows remain and the ETL is rerun, derived rows can be recreated; use RAW cleanup for permanent source removal.
+
 Safety behavior:
 
 - Mutations require login and CSRF protection.
@@ -40,4 +57,5 @@ Safety behavior:
 - Row links use signed locators so table and row identity cannot be tampered with casually.
 - Delete requires a typed confirmation phrase and a reason.
 - Bulk delete requires a typed confirmation phrase and a reason.
+- Hierarchy cleanup requires a typed confirmation phrase and a reason.
 - Delete is blocked when foreign key or known reporting dependencies are detected.

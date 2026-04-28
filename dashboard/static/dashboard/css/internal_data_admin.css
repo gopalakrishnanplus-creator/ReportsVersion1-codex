@@ -342,7 +342,8 @@ code {
 }
 
 .ida-form input,
-.ida-form textarea {
+.ida-form textarea,
+.ida-form select {
   width: 100%;
   border: 1px solid #cbd6e6;
   border-radius: 6px;
@@ -354,7 +355,8 @@ code {
 }
 
 .ida-form input:focus,
-.ida-form textarea:focus {
+.ida-form textarea:focus,
+.ida-form select:focus {
   outline: none;
   border-color: var(--ida-blue);
   box-shadow: 0 0 0 3px rgba(29, 79, 145, .14);
@@ -460,6 +462,49 @@ code {
 }
 
 .ida-bulk-confirm {
+  margin-top: 14px;
+}
+
+.ida-inline-toolbar {
+  margin-top: 12px;
+}
+
+.ida-cleanup-form {
+  gap: 16px;
+}
+
+.ida-cleanup-plan {
+  margin-top: 14px;
+}
+
+.ida-cleanup-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.ida-cleanup-summary-grid > div {
+  padding: 12px;
+  border: 1px solid var(--ida-line);
+  border-radius: 8px;
+  background: var(--ida-panel-soft);
+}
+
+.ida-cleanup-summary-grid strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ida-blue-dark);
+}
+
+.ida-cleanup-summary-grid p {
+  margin: 0;
+  color: var(--ida-muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ida-cleanup-execute {
   margin-top: 14px;
 }
 

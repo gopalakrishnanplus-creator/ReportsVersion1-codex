@@ -6,7 +6,14 @@ from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 
 import dashboard.views
-from dashboard.internal_data_admin import _is_relevant_schema, _system_key_for_schema
+from dashboard.internal_data_admin import (
+    ColumnInfo,
+    TableInfo,
+    _cleanup_candidate_columns,
+    _is_relevant_schema,
+    _layer_key_for_schema,
+    _system_key_for_schema,
+)
 
 
 class DashboardRoutingTests(SimpleTestCase):
@@ -21,11 +28,13 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/campaign/demo/performance/").view_name, "campaign-performance-page-legacy")
         self.assertEqual(resolve("/_internal/data-admin/").view_name, "internal-data-admin-home")
         self.assertEqual(resolve("/_internal/data-admin/login/").view_name, "internal-data-admin-login")
+        self.assertEqual(resolve("/_internal/data-admin/cleanup/").view_name, "internal-data-admin-cleanup")
         self.assertEqual(resolve("/_internal/data-admin/bronze/campaign_campaign/").view_name, "internal-data-admin-table")
         self.assertEqual(resolve("/_internal/data-admin/bronze/campaign_campaign/bulk-delete/").view_name, "internal-data-admin-bulk-delete")
 
     def test_internal_data_admin_schema_filter(self):
         self.assertTrue(_is_relevant_schema("bronze"))
+        self.assertTrue(_is_relevant_schema("bronze_pe"))
         self.assertTrue(_is_relevant_schema("gold_campaign_cardio_2026_q1"))
         self.assertTrue(_is_relevant_schema("silver_sapa"))
         self.assertFalse(_is_relevant_schema("public"))
@@ -37,6 +46,28 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(_system_key_for_schema("gold_sapa"), "sapa")
         self.assertEqual(_system_key_for_schema("raw_pe_portal"), "pe")
         self.assertEqual(_system_key_for_schema("control"), "shared")
+
+    def test_internal_data_admin_layer_mapping(self):
+        self.assertEqual(_layer_key_for_schema("raw_server2"), "raw")
+        self.assertEqual(_layer_key_for_schema("bronze_pe"), "bronze")
+        self.assertEqual(_layer_key_for_schema("silver_sapa"), "silver")
+        self.assertEqual(_layer_key_for_schema("gold_pe_campaign_demo"), "gold")
+        self.assertEqual(_layer_key_for_schema("ops"), "other")
+
+    def test_hierarchy_cleanup_uses_campaign_identity_columns_only(self):
+        columns = [
+            ColumnInfo("id", "integer", False, 1, None, False, False),
+            ColumnInfo("campaign_name", "text", True, 2, None, False, False),
+            ColumnInfo("brand_campaign_id", "text", True, 3, None, False, False),
+            ColumnInfo("doctor_name", "text", True, 4, None, False, False),
+            ColumnInfo("campaign_key", "text", True, 5, None, False, False),
+        ]
+        info = TableInfo("silver", "campaign_summary", columns, ["id"])
+
+        self.assertEqual(
+            _cleanup_candidate_columns(info),
+            ["brand_campaign_id", "campaign_key", "id"],
+        )
 
 
 class DashboardAccessViewTests(SimpleTestCase):

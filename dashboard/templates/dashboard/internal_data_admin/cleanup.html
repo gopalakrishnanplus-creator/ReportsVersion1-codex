@@ -1,0 +1,168 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}Hierarchy Cleanup Planner{% endblock %}
+{% block heading %}Hierarchy Cleanup Planner{% endblock %}
+
+{% block content %}
+<nav class="ida-toolbar">
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-home' %}">Back to Dashboard</a>
+</nav>
+
+<section class="ida-band">
+  <div>
+    <p class="ida-eyebrow">Safer clutter removal</p>
+    <h2>Delete one campaign/entity through the reporting hierarchy</h2>
+    <p class="ida-muted">You should not delete from every table by hand. Pick the system, choose the earliest layer you want to clear, and this planner finds matching downstream rows before anything is deleted.</p>
+  </div>
+  <div class="ida-safety-note">
+    <strong>Delete order</strong>
+    <span>Execution runs downstream first: GOLD -> SILVER -> BRONZE -> RAW. The whole cleanup is one transaction and one audited operation per table.</span>
+  </div>
+</section>
+
+<section class="ida-panel ida-guidance-panel">
+  <p class="ida-eyebrow">What to delete for what</p>
+  <div class="ida-guidance-grid">
+    <div>
+      <strong>Permanent dummy/test cleanup</strong>
+      <p>Choose RAW so the source-copy rows and all derived BRONZE/SILVER/GOLD records are cleared together. Rerun the system ETL after source cleanup.</p>
+    </div>
+    <div>
+      <strong>Bad derived output</strong>
+      <p>Choose BRONZE or SILVER when source rows are valid but derived/reporting rows need a clean rebuild. Choose GOLD only for stale dashboard output.</p>
+    </div>
+  </div>
+</section>
+
+<section class="ida-panel">
+  <form class="ida-form ida-cleanup-form" method="post" action="{% url 'internal-data-admin-cleanup' %}">
+    {% csrf_token %}
+    <input type="hidden" name="cleanup_action" value="preview">
+    <div class="ida-field-grid">
+      <label>
+        <span>Reporting system</span>
+        <select name="system">
+          {% for option in system_options %}
+          <option value="{{ option.key }}" {% if selected_system == option.key %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>Starting layer</span>
+        <select name="start_layer">
+          {% for option in layer_options %}
+          <option value="{{ option.key }}" {% if selected_start_layer == option.key %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span>Campaign/entity key</span>
+        <input type="text" name="entity_key" value="{{ entity_key }}" placeholder="Example: CARDIO-2026-Q1 or gold_pe_campaign_demo" required>
+      </label>
+    </div>
+    <button class="ida-button" type="submit">Preview Cleanup Plan</button>
+  </form>
+</section>
+
+{% if plan %}
+<section class="ida-panel ida-cleanup-plan">
+  <div class="ida-table-meta">
+    <div>
+      <p class="ida-eyebrow">{{ plan.system_label }}</p>
+      <h2>{{ plan.total_count }} matching records across {{ plan.table_count }} tables</h2>
+      <p class="ida-muted">Starting at {{ plan.start_layer_label }} for <code>{{ plan.entity_key }}</code>.</p>
+    </div>
+    <div class="ida-safety-note">
+      <strong>Confirmation phrase</strong>
+      <span><code>{{ phrase }}</code></span>
+    </div>
+  </div>
+
+  <div class="ida-cleanup-summary-grid">
+    <div>
+      <strong>Matched key variants</strong>
+      {% if plan.key_values %}
+      <p>{{ plan.key_values|join:", " }}</p>
+      {% else %}
+      <p>No key variants resolved.</p>
+      {% endif %}
+    </div>
+    <div>
+      <strong>Layer totals</strong>
+      {% if plan.layer_totals %}
+      <p>
+        {% for layer in plan.layer_totals %}
+        {{ layer.label }}: {{ layer.count }}{% if not forloop.last %} / {% endif %}
+        {% endfor %}
+      </p>
+      {% else %}
+      <p>No matching downstream rows found.</p>
+      {% endif %}
+    </div>
+    <div>
+      <strong>Campaign GOLD schemas</strong>
+      {% if plan.scoped_gold_schemas %}
+      <p>{{ plan.scoped_gold_schemas|join:", " }}</p>
+      {% else %}
+      <p>No dedicated campaign schema was resolved.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if plan.registry_sources %}
+  <section class="ida-warning">
+    <strong>Registry assisted match</strong>
+    <span>Resolved related keys from {{ plan.registry_sources|join:", " }} so the cleanup can follow campaign IDs and campaign GOLD schemas instead of a single literal value.</span>
+  </section>
+  {% endif %}
+
+  <div class="ida-scroll">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Delete order</th>
+          <th>Table</th>
+          <th>Records</th>
+          <th>Matched by</th>
+          <th>Scope</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in plan.rows %}
+        <tr>
+          <td>{{ row.layer_label }}</td>
+          <td><a href="{% url 'internal-data-admin-table' row.schema row.table %}">{{ row.schema }}.{{ row.table }}</a></td>
+          <td>{{ row.count }}</td>
+          <td>{{ row.match_columns }}</td>
+          <td>{{ row.scope_note }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5">No matching records found for this system, layer, and entity key.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <form class="ida-form ida-cleanup-execute" method="post" action="{% url 'internal-data-admin-cleanup' %}">
+    {% csrf_token %}
+    <input type="hidden" name="cleanup_action" value="execute">
+    <input type="hidden" name="system" value="{{ selected_system }}">
+    <input type="hidden" name="start_layer" value="{{ selected_start_layer }}">
+    <input type="hidden" name="entity_key" value="{{ entity_key }}">
+    <div class="ida-danger-box">
+      <strong>Execute only after reviewing the table list above.</strong>
+      <span>If source rows still exist and the ETL is rerun, derived BRONZE/SILVER/GOLD rows can be recreated. For permanent cleanup, include RAW/source or remove the source system records too.</span>
+    </div>
+    <label>
+      <span>Reason for hierarchy cleanup</span>
+      <input type="text" name="reason" placeholder="Example: remove QA dummy campaign and downstream report output" required {% if not plan.total_count %}disabled{% endif %}>
+    </label>
+    <label>
+      <span>Type this exact phrase: <code>{{ phrase }}</code></span>
+      <input type="text" name="confirmation" autocomplete="off" required {% if not plan.total_count %}disabled{% endif %}>
+    </label>
+    <button class="ida-button ida-button-danger" type="submit" {% if not plan.total_count %}disabled{% endif %}>Delete Matched Hierarchy Records</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

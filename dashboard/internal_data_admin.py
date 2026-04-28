@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -25,6 +26,58 @@ ROW_TOKEN_SALT = "dashboard.internal-data-admin.row"
 PAGE_SIZE = 75
 AUDIT_SCHEMA = "ops"
 AUDIT_TABLE = "internal_dashboard_audit"
+LAYER_ORDER = {
+    "raw": 1,
+    "bronze": 2,
+    "silver": 3,
+    "gold": 4,
+}
+CLEANUP_SYSTEM_KEYS = ("inclinic", "sapa", "pe")
+CLEANUP_LAYER_OPTIONS = [
+    {"key": "raw", "label": "RAW and everything downstream"},
+    {"key": "bronze", "label": "BRONZE, SILVER, and GOLD"},
+    {"key": "silver", "label": "SILVER and GOLD"},
+    {"key": "gold", "label": "GOLD only"},
+]
+LAYER_LABELS = {
+    "raw": "RAW",
+    "bronze": "BRONZE",
+    "silver": "SILVER",
+    "gold": "GOLD",
+}
+REGISTRY_TABLES = {
+    "inclinic": [("gold_global", "campaign_registry")],
+    "sapa": [("gold_sapa", "campaign_registry"), ("gold_sapa", "dim_campaign")],
+    "pe": [("gold_pe_global", "campaign_registry")],
+}
+REGISTRY_MATCH_COLUMNS = [
+    "brand_campaign_id",
+    "campaign_id",
+    "campaign_id_resolved",
+    "pe_campaign_id",
+    "rfa_campaign_id",
+    "source_campaign_id",
+    "master_campaign_id",
+    "campaign_identifier",
+    "campaign_key",
+    "gold_schema_name",
+    "schema_name",
+    "campaign_schema",
+]
+REGISTRY_SCHEMA_COLUMNS = {"gold_schema_name", "schema_name", "campaign_schema"}
+CLEANUP_MATCH_COLUMNS = [
+    "brand_campaign_id",
+    "campaign_id",
+    "campaign_id_resolved",
+    "pe_campaign_id",
+    "rfa_campaign_id",
+    "source_campaign_id",
+    "master_campaign_id",
+    "campaign_identifier",
+    "campaign_key",
+    "campaign_code",
+    "campaign_uuid",
+]
 
 
 @dataclass(frozen=True)
@@ -145,7 +198,7 @@ def _execute(query, params: list[Any] | tuple[Any, ...] | None = None) -> None:
 def _is_relevant_schema(schema: str) -> bool:
     if schema in {"raw_server1", "raw_server2", "bronze", "silver", "gold_global", "control", "ops"}:
         return True
-    return schema.startswith(("raw_", "silver_", "gold_"))
+    return schema.startswith(("raw_", "bronze_", "silver_", "gold_"))
 
 
 def _is_managed_table(schema: str, table: str) -> bool:
@@ -182,6 +235,18 @@ def _layer_for_schema(schema: str) -> str:
     if schema == "ops":
         return "OPS rules/config"
     return "Reporting table"
+
+
+def _layer_key_for_schema(schema: str) -> str:
+    if schema.startswith("raw_") or schema in {"raw_server1", "raw_server2"}:
+        return "raw"
+    if schema.startswith("bronze") or schema == "bronze":
+        return "bronze"
+    if schema.startswith("silver") or schema == "silver":
+        return "silver"
+    if schema.startswith("gold"):
+        return "gold"
+    return "other"
 
 
 def _table_cleanup_note(info: TableInfo) -> str:
@@ -234,7 +299,7 @@ def _table_exists(schema: str, table: str) -> bool:
     return bool(rows)
 
 
-def _list_tables() -> list[dict[str, Any]]:
+def _managed_table_refs() -> list[dict[str, str]]:
     raw_tables = _fetch_dicts(
         """
         SELECT table_schema, table_name
@@ -243,12 +308,20 @@ def _list_tables() -> list[dict[str, Any]]:
         ORDER BY table_schema, table_name
         """
     )
-    tables: list[dict[str, Any]] = []
+    refs: list[dict[str, str]] = []
     for row in raw_tables:
         schema = row["table_schema"]
         table = row["table_name"]
-        if not _is_managed_table(schema, table):
-            continue
+        if _is_managed_table(schema, table):
+            refs.append({"schema": schema, "name": table})
+    return refs
+
+
+def _list_tables() -> list[dict[str, Any]]:
+    tables: list[dict[str, Any]] = []
+    for row in _managed_table_refs():
+        schema = row["schema"]
+        table = row["name"]
         system = _system_profile_for_schema(schema)
         tables.append(
             {
@@ -690,6 +763,335 @@ def _bulk_delete_selected(info: TableInfo, selected_rows: list[dict[str, Any]], 
     return deleted_count
 
 
+def _cleanup_system_options() -> list[dict[str, str]]:
+    return [
+        {
+            "key": key,
+            "label": SYSTEM_PROFILES[key].label,
+            "summary": SYSTEM_PROFILES[key].cleanup_summary,
+        }
+        for key in CLEANUP_SYSTEM_KEYS
+    ]
+
+
+def _cleanup_layer_option_label(layer_key: str) -> str:
+    for option in CLEANUP_LAYER_OPTIONS:
+        if option["key"] == layer_key:
+            return option["label"]
+    return LAYER_LABELS.get(layer_key, layer_key.upper())
+
+
+def _dedupe_text_values(values: list[Any] | tuple[Any, ...]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(text)
+    return deduped
+
+
+def _normalize_cleanup_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _cleanup_value_variants(values: list[str]) -> list[str]:
+    variants: list[str] = []
+    for value in values:
+        text = value.strip()
+        if not text:
+            continue
+        compact = re.sub(r"\s+", "", text)
+        underscored = re.sub(r"[\s-]+", "_", text)
+        dashed = re.sub(r"[\s_]+", "-", text)
+        variants.extend(
+            [
+                text,
+                compact,
+                underscored,
+                dashed,
+                text.replace("-", "_"),
+                text.replace("_", "-"),
+                _normalize_cleanup_key(text),
+            ]
+        )
+    return [value.lower() for value in _dedupe_text_values(variants)]
+
+
+def _text_match_condition(columns: list[str], match_values: list[str]) -> tuple[sql.SQL, list[Any]]:
+    clauses = [
+        sql.SQL("LOWER(BTRIM({}::text)) = ANY(%s)").format(sql.Identifier(column))
+        for column in columns
+    ]
+    return sql.SQL("({})").format(sql.SQL(" OR ").join(clauses)), [match_values for _ in columns]
+
+
+def _registry_rows_for_entity(schema: str, table: str, match_values: list[str]) -> list[dict[str, Any]]:
+    if not _table_exists(schema, table):
+        return []
+    info = _table_info(schema, table)
+    column_names = [column.name for column in info.columns]
+    match_columns = [column for column in REGISTRY_MATCH_COLUMNS if column in column_names]
+    if not match_columns:
+        return []
+
+    select_columns = _dedupe_text_values(match_columns + [column for column in REGISTRY_SCHEMA_COLUMNS if column in column_names])
+    where_sql, params = _text_match_condition(match_columns, match_values)
+    return _fetch_dicts(
+        sql.SQL("SELECT {} FROM {}.{} WHERE {} LIMIT 50").format(
+            sql.SQL(", ").join(sql.Identifier(column) for column in select_columns),
+            sql.Identifier(schema),
+            sql.Identifier(table),
+            where_sql,
+        ),
+        params,
+    )
+
+
+def _campaign_gold_schema_prefixes(system_key: str) -> tuple[str, ...]:
+    if system_key == "inclinic":
+        return ("gold_campaign_",)
+    if system_key == "pe":
+        return ("gold_pe_campaign_",)
+    return ()
+
+
+def _matching_campaign_gold_schemas(system_key: str, values: list[str]) -> list[str]:
+    prefixes = _campaign_gold_schema_prefixes(system_key)
+    if not prefixes:
+        return []
+
+    normalized_values = {_normalize_cleanup_key(value) for value in values if value}
+    rows = _fetch_dicts(
+        """
+        SELECT DISTINCT table_schema
+        FROM information_schema.tables
+        WHERE table_type = 'BASE TABLE'
+        ORDER BY table_schema
+        """
+    )
+    schemas: list[str] = []
+    for row in rows:
+        schema = row["table_schema"]
+        for prefix in prefixes:
+            if not schema.startswith(prefix):
+                continue
+            suffix = schema[len(prefix):]
+            if _normalize_cleanup_key(schema) in normalized_values or _normalize_cleanup_key(suffix) in normalized_values:
+                schemas.append(schema)
+    return schemas
+
+
+def _cleanup_entity_scope(system_key: str, entity_key: str) -> dict[str, Any]:
+    display_values = _dedupe_text_values([entity_key])
+    scoped_gold_schemas: list[str] = []
+    registry_sources: list[str] = []
+    match_values = _cleanup_value_variants(display_values)
+
+    for schema, table in REGISTRY_TABLES.get(system_key, []):
+        rows = _registry_rows_for_entity(schema, table, match_values)
+        if not rows:
+            continue
+        registry_sources.append(f"{schema}.{table}")
+        for row in rows:
+            for column, value in row.items():
+                if value is None:
+                    continue
+                display_values = _dedupe_text_values(display_values + [value])
+                if column in REGISTRY_SCHEMA_COLUMNS:
+                    scoped_gold_schemas = _dedupe_text_values(scoped_gold_schemas + [value])
+        match_values = _cleanup_value_variants(display_values)
+
+    scoped_gold_schemas = _dedupe_text_values(
+        scoped_gold_schemas + _matching_campaign_gold_schemas(system_key, display_values + scoped_gold_schemas)
+    )
+    display_values = _dedupe_text_values(display_values + scoped_gold_schemas)
+
+    return {
+        "display_values": display_values,
+        "match_values": _cleanup_value_variants(display_values),
+        "scoped_gold_schemas": scoped_gold_schemas,
+        "registry_sources": registry_sources,
+    }
+
+
+def _cleanup_candidate_columns(info: TableInfo) -> list[str]:
+    column_names = [column.name for column in info.columns]
+    selected = [column for column in CLEANUP_MATCH_COLUMNS if column in column_names]
+
+    for column in column_names:
+        lowered = column.lower()
+        if column in selected:
+            continue
+        if "campaign" in lowered and any(marker in lowered for marker in ("id", "key", "code", "uuid")):
+            selected.append(column)
+
+    campaign_table = "campaign" in info.name.lower() or info.name.lower() in {"campaign_registry", "dim_campaign"}
+    if campaign_table:
+        for column in ("underlying_key", "id"):
+            if column in column_names and column not in selected:
+                selected.append(column)
+
+    return selected
+
+
+def _cleanup_match_condition(info: TableInfo, scope: dict[str, Any]) -> dict[str, Any] | None:
+    scoped_gold_schemas = set(scope["scoped_gold_schemas"])
+    if info.schema in scoped_gold_schemas and info.schema.startswith(_campaign_gold_schema_prefixes(_system_key_for_schema(info.schema))):
+        return {
+            "where_sql": sql.SQL("TRUE"),
+            "params": [],
+            "match_columns": [],
+            "scope_note": "entire matched campaign GOLD schema",
+        }
+
+    match_columns = _cleanup_candidate_columns(info)
+    match_values = scope["match_values"]
+    if not match_columns or not match_values:
+        return None
+
+    where_sql, params = _text_match_condition(match_columns, match_values)
+    return {
+        "where_sql": where_sql,
+        "params": params,
+        "match_columns": match_columns,
+        "scope_note": "campaign/entity key columns",
+    }
+
+
+def _cleanup_count(info: TableInfo, where_sql: sql.SQL, params: list[Any]) -> int:
+    rows = _fetch_dicts(
+        sql.SQL("SELECT COUNT(*) AS row_count FROM {}.{} WHERE {}").format(
+            sql.Identifier(info.schema),
+            sql.Identifier(info.name),
+            where_sql,
+        ),
+        params,
+    )
+    return int(rows[0]["row_count"])
+
+
+def _cleanup_confirmation_phrase(system_key: str, entity_key: str) -> str:
+    return f"CLEANUP {system_key.upper()} {entity_key.strip()}"
+
+
+def _cleanup_plan(system_key: str, start_layer: str, entity_key: str) -> dict[str, Any]:
+    entity_key = entity_key.strip()
+    if system_key not in CLEANUP_SYSTEM_KEYS:
+        raise ValueError("Choose Inclinic, SAPA/RFA, or Patient Education before planning cleanup.")
+    if start_layer not in LAYER_ORDER:
+        raise ValueError("Choose a valid starting layer for cleanup.")
+    if not entity_key:
+        raise ValueError("Enter a campaign, schema, or source entity key before planning cleanup.")
+
+    start_rank = LAYER_ORDER[start_layer]
+    scope = _cleanup_entity_scope(system_key, entity_key)
+    plan_rows: list[dict[str, Any]] = []
+
+    for ref in _managed_table_refs():
+        schema = ref["schema"]
+        if _system_key_for_schema(schema) != system_key:
+            continue
+        layer_key = _layer_key_for_schema(schema)
+        layer_rank = LAYER_ORDER.get(layer_key)
+        if layer_rank is None or layer_rank < start_rank:
+            continue
+
+        info = _table_info(schema, ref["name"])
+        match = _cleanup_match_condition(info, scope)
+        if not match:
+            continue
+
+        count = _cleanup_count(info, match["where_sql"], match["params"])
+        if count <= 0:
+            continue
+
+        plan_rows.append(
+            {
+                "schema": info.schema,
+                "table": info.name,
+                "layer_key": layer_key,
+                "layer_label": LAYER_LABELS[layer_key],
+                "delete_rank": layer_rank,
+                "count": count,
+                "match_columns": ", ".join(match["match_columns"]) if match["match_columns"] else "entire table",
+                "scope_note": match["scope_note"],
+                "where_sql": match["where_sql"],
+                "params": match["params"],
+            }
+        )
+
+    plan_rows.sort(key=lambda row: (-row["delete_rank"], row["schema"], row["table"]))
+    layer_totals = []
+    for layer_key in ("gold", "silver", "bronze", "raw"):
+        total = sum(row["count"] for row in plan_rows if row["layer_key"] == layer_key)
+        if total:
+            layer_totals.append({"label": LAYER_LABELS[layer_key], "count": total})
+
+    return {
+        "system_key": system_key,
+        "system_label": SYSTEM_PROFILES[system_key].label,
+        "start_layer": start_layer,
+        "start_layer_label": _cleanup_layer_option_label(start_layer),
+        "entity_key": entity_key,
+        "key_values": scope["display_values"],
+        "scoped_gold_schemas": scope["scoped_gold_schemas"],
+        "registry_sources": scope["registry_sources"],
+        "rows": plan_rows,
+        "table_count": len(plan_rows),
+        "total_count": sum(row["count"] for row in plan_rows),
+        "layer_totals": layer_totals,
+    }
+
+
+def _execute_hierarchy_cleanup(plan: dict[str, Any], reason: str, actor: str) -> dict[str, Any]:
+    deleted_rows: list[dict[str, Any]] = []
+    with transaction.atomic():
+        for row in plan["rows"]:
+            info = TableInfo(schema=row["schema"], name=row["table"], columns=[], primary_key=[])
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    sql.SQL("DELETE FROM {}.{} WHERE {}").format(
+                        sql.Identifier(row["schema"]),
+                        sql.Identifier(row["table"]),
+                        row["where_sql"],
+                    ),
+                    row["params"],
+                )
+                deleted_count = cursor.rowcount if cursor.rowcount >= 0 else 0
+
+            locator = {
+                "mode": "hierarchy_cleanup",
+                "system": plan["system_key"],
+                "start_layer": plan["start_layer"],
+                "entity_key": plan["entity_key"],
+            }
+            before = {
+                "planned_count": row["count"],
+                "deleted_count": deleted_count,
+                "layer": row["layer_label"],
+                "match_columns": row["match_columns"],
+                "scope_note": row["scope_note"],
+                "key_values": plan["key_values"],
+                "scoped_gold_schemas": plan["scoped_gold_schemas"],
+            }
+            _audit("hierarchy_cleanup", info, locator, before, None, reason, actor)
+            deleted_rows.append({**row, "deleted_count": deleted_count})
+
+    return {
+        "deleted_count": sum(row["deleted_count"] for row in deleted_rows),
+        "table_count": len(deleted_rows),
+        "rows": deleted_rows,
+    }
+
+
 @never_cache
 @require_http_methods(["GET", "POST"])
 def internal_data_admin_login(request: HttpRequest) -> HttpResponse:
@@ -741,6 +1143,75 @@ def internal_data_admin_home(request: HttpRequest) -> HttpResponse:
             "selected_profile": selected_profile,
             "table_groups": _group_tables(visible_tables),
             "actor": request.session.get(SESSION_USER_KEY, "internal_admin"),
+        },
+    )
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
+def internal_data_admin_cleanup(request: HttpRequest) -> HttpResponse:
+    auth_redirect = _require_auth(request)
+    if auth_redirect:
+        return auth_redirect
+
+    _ensure_audit_table()
+    values = request.POST if request.method == "POST" else request.GET
+    selected_system = (values.get("system") or "inclinic").strip().lower()
+    if selected_system not in CLEANUP_SYSTEM_KEYS:
+        selected_system = "inclinic"
+    selected_start_layer = (values.get("start_layer") or "raw").strip().lower()
+    if selected_start_layer not in LAYER_ORDER:
+        selected_start_layer = "raw"
+    entity_key = (values.get("entity_key") or "").strip()
+
+    plan = None
+    phrase = _cleanup_confirmation_phrase(selected_system, entity_key) if entity_key else ""
+    if request.method == "POST":
+        cleanup_action = request.POST.get("cleanup_action") or "preview"
+        try:
+            plan = _cleanup_plan(selected_system, selected_start_layer, entity_key)
+            phrase = _cleanup_confirmation_phrase(selected_system, entity_key)
+        except (DatabaseError, ValueError) as exc:
+            messages.error(request, f"Cleanup plan failed: {exc}")
+            plan = None
+
+        if cleanup_action == "execute" and plan:
+            confirmation = (request.POST.get("confirmation") or "").strip()
+            reason = (request.POST.get("reason") or "").strip()
+            if plan["total_count"] <= 0:
+                messages.error(request, "Cleanup execution blocked because the current plan has no matching records.")
+            elif confirmation != phrase:
+                messages.error(request, f'Type "{phrase}" to confirm hierarchy cleanup.')
+            elif len(reason) < 8:
+                messages.error(request, "Please provide a clear reason before running hierarchy cleanup.")
+            else:
+                try:
+                    result = _execute_hierarchy_cleanup(
+                        plan,
+                        reason,
+                        request.session.get(SESSION_USER_KEY, "internal_admin"),
+                    )
+                    messages.success(
+                        request,
+                        f"Hierarchy cleanup deleted {result['deleted_count']} records across {result['table_count']} tables.",
+                    )
+                    return redirect(
+                        f"{reverse('internal-data-admin-cleanup')}?system={selected_system}&start_layer={selected_start_layer}"
+                    )
+                except DatabaseError as exc:
+                    messages.error(request, f"Hierarchy cleanup failed and was rolled back: {exc}")
+
+    return render(
+        request,
+        "dashboard/internal_data_admin/cleanup.html",
+        {
+            "system_options": _cleanup_system_options(),
+            "layer_options": CLEANUP_LAYER_OPTIONS,
+            "selected_system": selected_system,
+            "selected_start_layer": selected_start_layer,
+            "entity_key": entity_key,
+            "plan": plan,
+            "phrase": phrase,
         },
     )
 

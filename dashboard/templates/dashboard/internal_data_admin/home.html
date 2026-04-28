@@ -8,6 +8,9 @@
   <div>
     <h2>System Cleanup Workspace</h2>
     <p class="ida-muted">Tables are grouped by reporting system so cleanup starts in the right place. You usually do not delete from every table; clean source/RAW rows first, then rerun the relevant ETL so derived layers rebuild.</p>
+    <p class="ida-toolbar ida-inline-toolbar">
+      <a class="ida-button" href="{% url 'internal-data-admin-cleanup' %}?system={{ selected_system }}">Open Hierarchy Cleanup Planner</a>
+    </p>
   </div>
   <div class="ida-safety-note">
     <strong>Safety model</strong>
