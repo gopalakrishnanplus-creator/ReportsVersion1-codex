@@ -53,6 +53,7 @@ The SAPA/RFA campaign separation is built from live MySQL source tables, not fro
 - `campaign_fieldrep` supplies field-rep identity, names, external ids, and state.
 - `campaign_campaignfieldrep` maps field reps to campaigns for redflags-side doctor records where direct campaign enrollment is unavailable.
 - Screening, reminder, follow-up, video, webinar, and course facts inherit the campaign-specific doctor key so dashboard tiles, drill-downs, CSV exports, and PDF exports remain filter-consistent.
+- When a doctor appears in multiple RFA campaigns because of transfer, each dated fact is attributed to one campaign only. The ETL chooses the latest campaign enrollment/start date applicable to the event date, instead of copying the same source event into every campaign.
 
 SAPA WordPress extraction first uses explicit `SAPA_WORDPRESS_*` variables.
 
