@@ -30,15 +30,6 @@
     <section class="filters-card">
       <form id="global-filters" method="get" action="{{ route_base }}" class="filters-grid">
         <label>
-          <span>Campaign</span>
-          <select name="campaign_key">
-            <option value="">All Campaigns</option>
-            {% for option in filter_options.campaigns %}
-            <option value="{{ option.underlying_key }}" {% if filters.campaign_key == option.underlying_key %}selected{% endif %}>{{ option.display_label }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>
           <span>State</span>
           <select name="state">
             <option value="">All States</option>

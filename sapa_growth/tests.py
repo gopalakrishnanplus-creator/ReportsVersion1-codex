@@ -9,6 +9,7 @@ from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve, reverse
 
 from etl.sapa_growth.mysql import extract_rows
+from etl.sapa_growth.silver import _best_dim_for_event, _doctor_indexes, _doctor_matches_for_api
 from sapa_growth.logic import classify_metric_event, explode_followup_schedule, map_course_status, normalize_phone, webinar_effective_date
 from sapa_growth.services import _derived_certified_rows, _enrich_video_rows, dashboard_context, detail_context, export_dashboard_pdf
 from sapa_growth.video_metadata import resolve_video_metadata
@@ -136,6 +137,36 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["doctor_key"], "DOC-1")
         self.assertEqual(rows[0]["certification_status"], "enrolled")
+
+    def test_transferred_doctor_events_are_attributed_to_one_campaign(self):
+        dim_rows = [
+            {
+                "doctor_key": "DOC-1::campaign:old",
+                "source_doctor_id": "DOC-1",
+                "canonical_email": "doctor@example.com",
+                "campaign_key": "old",
+                "campaign_registered_at": "2026-01-01 00:00:00",
+                "campaign_start_date": "2026-01-01",
+                "campaign_end_date": "",
+            },
+            {
+                "doctor_key": "DOC-1::campaign:new",
+                "source_doctor_id": "DOC-1",
+                "canonical_email": "doctor@example.com",
+                "campaign_key": "new",
+                "campaign_registered_at": "2026-04-15 00:00:00",
+                "campaign_start_date": "2026-04-01",
+                "campaign_end_date": "",
+            },
+        ]
+
+        self.assertEqual(_best_dim_for_event(dim_rows, "2026-03-15")["campaign_key"], "old")
+        self.assertEqual(_best_dim_for_event(dim_rows, "2026-04-20")["campaign_key"], "new")
+
+        _, by_email, by_phone = _doctor_indexes(dim_rows)
+        matches = _doctor_matches_for_api({"email": "doctor@example.com"}, by_email, by_phone, "2026-04-20")
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0][0]["campaign_key"], "new")
 
     def test_dashboard_pdf_export_returns_pdf_attachment(self):
         request = RequestFactory().post(

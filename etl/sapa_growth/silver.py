@@ -53,13 +53,18 @@ def _doctor_indexes(dim_rows: list[dict[str, Any]]) -> tuple[dict[str, list[dict
     return by_doctor_id, by_email, by_phone
 
 
-def _doctor_matches_for_api(row: dict[str, Any], by_email: dict[str, list[dict[str, Any]]], by_phone: dict[str, list[dict[str, Any]]]) -> list[tuple[dict[str, Any] | None, str]]:
+def _doctor_matches_for_api(
+    row: dict[str, Any],
+    by_email: dict[str, list[dict[str, Any]]],
+    by_phone: dict[str, list[dict[str, Any]]],
+    event_date: Any = None,
+) -> list[tuple[dict[str, Any] | None, str]]:
     email = clean_text(row.get("email") or row.get("user_email"))
     if email and email.lower() in by_email:
-        return [(item, "email") for item in by_email[email.lower()]]
+        return [(_best_dim_for_event(by_email[email.lower()], event_date), "email")]
     phone = normalize_phone(row.get("phone"))
     if phone and phone in by_phone:
-        return [(item, "phone") for item in by_phone[phone]]
+        return [(_best_dim_for_event(by_phone[phone], event_date), "phone")]
     return [(None, "unmapped")]
 
 
@@ -131,6 +136,45 @@ def _campaign_specific_doctor_key(base_key: str, campaign_key: str) -> str:
     return f"{base_key}::campaign:{campaign_key}"
 
 
+def _campaign_start_for_match(row: dict[str, Any]) -> date | None:
+    return (
+        parse_date(row.get("campaign_registered_at"))
+        or parse_date(row.get("campaign_start_date"))
+        or parse_date(row.get("first_seen_at"))
+    )
+
+
+def _campaign_end_for_match(row: dict[str, Any]) -> date | None:
+    return parse_date(row.get("campaign_end_date"))
+
+
+def _best_dim_for_event(dim_rows: list[dict[str, Any]], event_date: Any = None) -> dict[str, Any] | None:
+    if not dim_rows:
+        return None
+    if len(dim_rows) == 1:
+        return dim_rows[0]
+
+    event = parse_date(event_date) or date.today()
+
+    def sort_key(row: dict[str, Any]) -> tuple[date, str]:
+        return (_campaign_start_for_match(row) or date.min, clean_text(row.get("doctor_key")) or "")
+
+    active_rows = []
+    for row in dim_rows:
+        start = _campaign_start_for_match(row)
+        end = _campaign_end_for_match(row)
+        if (start is None or start <= event) and (end is None or event <= end):
+            active_rows.append(row)
+    if active_rows:
+        return max(active_rows, key=sort_key)
+
+    prior_rows = [row for row in dim_rows if (_campaign_start_for_match(row) or date.min) <= event]
+    if prior_rows:
+        return max(prior_rows, key=sort_key)
+
+    return min(dim_rows, key=sort_key)
+
+
 def build_silver(run_id: str) -> dict[str, Any]:
     now_iso = _now_iso()
 
@@ -189,6 +233,13 @@ def build_silver(run_id: str) -> dict[str, Any]:
         label = clean_text(campaign.get("name")) or clean_text(brand.get("name"))
         return _campaign_key_label({"campaign_id": key, "campaign_name": label})
 
+    def campaign_dates(campaign_id: Any) -> dict[str, str]:
+        campaign = rfa_campaigns.get(clean_text(campaign_id)) or {}
+        return {
+            "campaign_start_date": _empty_text(iso_date(campaign.get("start_date"))),
+            "campaign_end_date": _empty_text(iso_date(campaign.get("end_date"))),
+        }
+
     def resolve_field_rep(field_rep_value: Any, campaign_id: Any = None) -> dict[str, str]:
         raw = clean_text(field_rep_value)
         rep = field_rep_by_id.get(raw or "") or field_rep_by_external.get(_norm_id(raw))
@@ -220,12 +271,15 @@ def build_silver(run_id: str) -> dict[str, Any]:
             if not campaign_id:
                 continue
             campaign_key, campaign_label = campaign_meta(campaign_id)
+            date_info = campaign_dates(campaign_id)
             rep_info = resolve_field_rep(enrollment.get("registered_by_id") or (doctor_row or {}).get("field_rep_id"), campaign_id)
             output.append(
                 {
                     "campaign_id": campaign_id,
                     "campaign_key": campaign_key,
                     "campaign_label": campaign_label,
+                    "campaign_start_date": date_info["campaign_start_date"],
+                    "campaign_end_date": date_info["campaign_end_date"],
                     "field_rep_id": rep_info["field_rep_id"],
                     "field_rep_name": rep_info["field_rep_name"],
                     "field_rep_state": rep_info["field_rep_state"],
@@ -241,6 +295,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
                 "campaign_id": "",
                 "campaign_key": campaign_key,
                 "campaign_label": campaign_label,
+                "campaign_start_date": "",
+                "campaign_end_date": "",
                 "field_rep_id": rep_info["field_rep_id"],
                 "field_rep_name": rep_info["field_rep_name"],
                 "field_rep_state": rep_info["field_rep_state"],
@@ -254,12 +310,15 @@ def build_silver(run_id: str) -> dict[str, Any]:
         output = []
         for campaign_id in campaign_ids:
             campaign_key, campaign_label = campaign_meta(campaign_id)
+            date_info = campaign_dates(campaign_id)
             rep_info = resolve_field_rep((rep or {}).get("id") or doctor_row.get("field_rep_id"), campaign_id)
             output.append(
                 {
                     "campaign_id": campaign_id,
                     "campaign_key": campaign_key,
                     "campaign_label": campaign_label,
+                    "campaign_start_date": date_info["campaign_start_date"],
+                    "campaign_end_date": date_info["campaign_end_date"],
                     "field_rep_id": rep_info["field_rep_id"],
                     "field_rep_name": rep_info["field_rep_name"],
                     "field_rep_state": rep_info["field_rep_state"],
@@ -267,10 +326,10 @@ def build_silver(run_id: str) -> dict[str, Any]:
                 }
             )
         if output:
-            return output
+            return [_best_dim_for_event(output, doctor_row.get("created_at")) or output[0]]
         campaign_key, campaign_label = _campaign_key_label(doctor_row)
         rep_info = resolve_field_rep(doctor_row.get("field_rep_id"))
-        return [{"campaign_id": "", "campaign_key": campaign_key, "campaign_label": campaign_label, "field_rep_id": rep_info["field_rep_id"], "field_rep_name": rep_info["field_rep_name"], "field_rep_state": rep_info["field_rep_state"], "registered_at": ""}]
+        return [{"campaign_id": "", "campaign_key": campaign_key, "campaign_label": campaign_label, "campaign_start_date": "", "campaign_end_date": "", "field_rep_id": rep_info["field_rep_id"], "field_rep_name": rep_info["field_rep_name"], "field_rep_state": rep_info["field_rep_state"], "registered_at": ""}]
 
     dim_rows: list[dict[str, Any]] = []
     included_doctor_ids: set[str] = set()
@@ -295,6 +354,9 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     "campaign_id": campaign_info["campaign_id"],
                     "campaign_key": campaign_key,
                     "campaign_label": campaign_info["campaign_label"],
+                    "campaign_registered_at": _empty_text(iso_datetime(campaign_info.get("registered_at"))),
+                    "campaign_start_date": campaign_info["campaign_start_date"],
+                    "campaign_end_date": campaign_info["campaign_end_date"],
                     "canonical_display_name": display_name_from_sources(campaign_row, doctor_row),
                     "first_name": first_name or "",
                     "last_name": last_name or "",
@@ -338,6 +400,9 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     "campaign_id": campaign_info["campaign_id"],
                     "campaign_key": campaign_info["campaign_key"],
                     "campaign_label": campaign_info["campaign_label"],
+                    "campaign_registered_at": "",
+                    "campaign_start_date": campaign_info["campaign_start_date"],
+                    "campaign_end_date": campaign_info["campaign_end_date"],
                     "canonical_display_name": display_name_from_sources(None, doctor_row),
                     "first_name": _empty_text(doctor_row.get("first_name")),
                     "last_name": _empty_text(doctor_row.get("last_name")),
@@ -371,6 +436,9 @@ def build_silver(run_id: str) -> dict[str, Any]:
         "campaign_id",
         "campaign_key",
         "campaign_label",
+        "campaign_registered_at",
+        "campaign_start_date",
+        "campaign_end_date",
         "canonical_display_name",
         "first_name",
         "last_name",
@@ -469,11 +537,12 @@ def build_silver(run_id: str) -> dict[str, Any]:
         patient_video_by_flag_and_language.setdefault((red_flag_id, language_code), patient_video_url)
         patient_video_by_flag.setdefault(red_flag_id, patient_video_url)
 
-    def resolve_doctor_matches_from_source_id(source_doctor_id: Any, source_hint: str) -> list[tuple[str, dict[str, Any] | None]]:
+    def resolve_doctor_matches_from_source_id(source_doctor_id: Any, source_hint: str, event_date: Any = None) -> list[tuple[str, dict[str, Any] | None]]:
         doctor_id = clean_text(source_doctor_id)
         dim_matches = dim_by_doctor_id.get(doctor_id) or []
         if dim_matches:
-            return [(row["doctor_key"], row) for row in dim_matches]
+            match = _best_dim_for_event(dim_matches, event_date)
+            return [(match["doctor_key"], match)] if match else []
         if doctor_id:
             return [(f"unmatched:{doctor_id}", None)]
         return [(f"unmatched:{source_hint}", None)]
@@ -483,10 +552,10 @@ def build_silver(run_id: str) -> dict[str, Any]:
     for source_table, source_rows in (("redflags_patientsubmission", redflag_submissions), ("gnd_gndpatientsubmission", gnd_submissions)):
         for row in source_rows:
             source_submission_id = clean_text(row.get("record_id") or row.get("id")) or hash_fields(source_table, row)
-            for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"{source_table}:{source_submission_id}"):
+            submitted_at = iso_datetime(row.get("submitted_at"))
+            for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"{source_table}:{source_submission_id}", submitted_at):
                 filters = _doctor_filters(doctor_dim)
                 overall_flag = (_empty_text(row.get("overall_flag_code"))).lower()
-                submitted_at = iso_datetime(row.get("submitted_at"))
                 submission_key = f"{source_table}:{source_submission_id}"
                 if filters["campaign_key"]:
                     submission_key = f"{submission_key}:campaign:{filters['campaign_key']}"
@@ -609,7 +678,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
 
     metric_fact_rows = []
     for row in metric_rows:
-        for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"metric:{row.get('id')}"):
+        event_ts = _empty_text(iso_datetime(row.get("ts")))
+        for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"metric:{row.get('id')}", event_ts):
             filters = _doctor_filters(doctor_dim)
             classifications = classify_metric_event(row.get("event_type"), row.get("action_key"))
             metric_event_id = _empty_text(row.get("id"))
@@ -630,7 +700,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     "language_code": _empty_text(row.get("language_code")),
                     "video_url": _empty_text(row.get("video_url")),
                     "meta_raw": _empty_text(row.get("meta")),
-                    "ts": _empty_text(iso_datetime(row.get("ts"))),
+                    "ts": event_ts,
                     "red_flag_id": _empty_text(row.get("red_flag_id")),
                     "overall_flag_code": _empty_text(row.get("overall_flag_code")),
                     "doctor_display_name": filters["doctor_display_name"],
@@ -679,12 +749,12 @@ def build_silver(run_id: str) -> dict[str, Any]:
 
     followup_fact_rows = []
     for row in followup_rows:
-        for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"followup:{row.get('id')}"):
-            filters = _doctor_filters(doctor_dim)
-            reminder_id = _empty_text(row.get("id"))
-            if filters["campaign_key"]:
-                reminder_id = f"{reminder_id}:campaign:{filters['campaign_key']}"
-            for item in explode_followup_schedule(row):
+        for item in explode_followup_schedule(row):
+            for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"followup:{row.get('id')}", item["scheduled_followup_date"]):
+                filters = _doctor_filters(doctor_dim)
+                reminder_id = _empty_text(row.get("id"))
+                if filters["campaign_key"]:
+                    reminder_id = f"{reminder_id}:campaign:{filters['campaign_key']}"
                 followup_fact_rows.append(
                     {
                         "reminder_id": reminder_id,
@@ -799,7 +869,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             normalize_phone(row.get("phone")),
             row.get("start_date"),
         )
-        for matched_dim, match_method in _doctor_matches_for_api(row, dim_by_email, dim_by_phone):
+        for matched_dim, match_method in _doctor_matches_for_api(row, dim_by_email, dim_by_phone, effective_date):
             filters = _doctor_filters(matched_dim)
             registration_key = base_registration_key
             if filters["campaign_key"]:
@@ -866,7 +936,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         dashboard_status = map_course_status(row.get("progress_status"))
         if dashboard_status is None:
             invalid_course_status_counter[_empty_text(row.get("progress_status"), "BLANK")] += 1
-        for matched_dim, match_method in _doctor_matches_for_api(row, dim_by_email, dim_by_phone):
+        course_match_date = row.get("completed_at") or row.get("started_at") or row.get("enrolled_at") or date.today().isoformat()
+        for matched_dim, match_method in _doctor_matches_for_api(row, dim_by_email, dim_by_phone, course_match_date):
             filters = _doctor_filters(matched_dim)
             course_progress_rows.append(
                 {
