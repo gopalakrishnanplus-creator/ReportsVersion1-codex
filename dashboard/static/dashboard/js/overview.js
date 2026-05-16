@@ -25,7 +25,8 @@
     ];
 
     const rawMax = Math.max(...series.flatMap((s) => s.values).filter((value) => Number.isFinite(value)), 0);
-    const maxVal = rawMax <= 0 ? 100 : Math.min(100, Math.max(10, Math.ceil(rawMax / 10) * 10));
+    const axisSteps = [1, 2, 5, 10, 20, 40, 60, 80, 100];
+    const maxVal = rawMax <= 0 ? 100 : axisSteps.find((step) => step >= rawMax * 1.15) || 100;
     const groupCount = labels.length;
     const groupWidth = chartW / Math.max(groupCount, 1);
     const barWidth = Math.min(20, groupWidth / 6);
@@ -42,7 +43,8 @@
       ctx.stroke();
       ctx.fillStyle = '#6b7280';
       ctx.font = '11px Arial';
-      const pct = (maxVal - (maxVal * i / 5)).toFixed(0);
+      const tickValue = maxVal - (maxVal * i / 5);
+      const pct = maxVal <= 5 ? tickValue.toFixed(1) : tickValue.toFixed(0);
       ctx.fillText(`${pct}`, 10, y + 4);
     }
 
