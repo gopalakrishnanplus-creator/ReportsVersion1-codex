@@ -142,7 +142,6 @@
         document.getElementById('kpi_tiles'),
         !fieldRepPanel?.classList.contains('hidden') ? fieldRepPanel : null,
         document.querySelector('.bottom-grid'),
-        document.getElementById('weekly_table'),
       ].filter(Boolean);
 
       for (const section of sections) {

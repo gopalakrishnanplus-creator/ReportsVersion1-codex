@@ -1180,7 +1180,19 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             )
             wow_weekly = weekly_health - _to_float(prev_week.get("weekly_health_score")) if prev_week else 0.0
 
-            state_rows = _fetch_dicts(
+            bridge_base_exists = _table_exists("silver", "bridge_brand_campaign_doctor_base")
+            base_state_sql = "NULLIF(btrim(base.state_normalized), '')," if bridge_base_exists else ""
+            base_join_sql = (
+                """
+                    LEFT JOIN silver.bridge_brand_campaign_doctor_base base
+                      ON base.brand_campaign_id = f.brand_campaign_id
+                     AND base.doctor_identity_key = f.doctor_identity_key
+                """
+                if bridge_base_exists
+                else ""
+            )
+            try:
+                state_rows = _fetch_dicts(
                 f"""
                 WITH campaign_ref AS (
                     SELECT DISTINCT candidate_campaign_id
@@ -1236,7 +1248,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                       f.doctor_identity_key,
                       COALESCE(
                         NULLIF(btrim(f.state_normalized), ''),
-                        NULLIF(btrim(base.state_normalized), ''),
+                        {base_state_sql}
                         NULLIF(btrim(d.state_normalized), ''),
                         NULLIF(btrim(fr.state_normalized), ''),
                         NULLIF(btrim(rsc_fact.state_normalized), ''),
@@ -1248,9 +1260,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                       f.reached_first_ts,
                       f.opened_first_ts
                     FROM {selected_schema}.fact_doctor_collateral_latest f
-                    LEFT JOIN silver.bridge_brand_campaign_doctor_base base
-                      ON base.brand_campaign_id = f.brand_campaign_id
-                     AND base.doctor_identity_key = f.doctor_identity_key
+                    {base_join_sql}
                     LEFT JOIN silver.dim_doctor d
                       ON d.doctor_identity_key = f.doctor_identity_key
                     LEFT JOIN silver.dim_field_rep fr
@@ -1314,7 +1324,9 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     latest_week.get("week_start_date"),
                     latest_week.get("week_end_date"),
                 ],
-            )
+                )
+            except (ProgrammingError, OperationalError):
+                state_rows = []
 
             state_attention = []
             for row in state_rows:
@@ -1404,56 +1416,61 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 "video_pct": round(_safe_pct(_to_float(weekly_best.get("video_viewed_50_unique")), _to_float(weekly_best.get("doctors_opened_unique"))), 1),
                 "pdf_pct": round(_safe_pct(_to_float(weekly_best.get("pdf_download_unique")), _to_float(weekly_best.get("doctors_opened_unique"))), 1),
             }
-            benchmark_metric_rows = _fetch_dicts(
-                """
-                WITH recent_campaigns AS (
-                    SELECT DISTINCT brand_campaign_id
-                    FROM gold_global.campaign_health_history
-                    ORDER BY brand_campaign_id DESC
-                    LIMIT 10
-                ),
-                campaign_doctor_base AS (
-                    SELECT b.brand_campaign_id, COUNT(DISTINCT b.doctor_identity_key) AS total_doctors
-                    FROM silver.bridge_brand_campaign_doctor_base b
-                    JOIN recent_campaigns r ON r.brand_campaign_id = b.brand_campaign_id
-                    GROUP BY b.brand_campaign_id
-                ),
-                campaign_actions AS (
-                    SELECT
-                        a.brand_campaign_id,
-                        COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.reached_first_ts,'') IS NOT NULL) AS reached,
-                        COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.opened_first_ts,'') IS NOT NULL) AS opened,
-                        COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.video_gt_50_first_ts,'') IS NOT NULL) AS video,
-                        COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.pdf_download_first_ts,'') IS NOT NULL) AS pdf
-                    FROM silver.doctor_action_first_seen a
-                    JOIN recent_campaigns r ON r.brand_campaign_id = a.brand_campaign_id
-                    GROUP BY a.brand_campaign_id
-                ),
-                campaign_stats AS (
-                    SELECT
-                        x.brand_campaign_id,
-                        x.reached,
-                        x.opened,
-                        x.video,
-                        x.pdf,
-                        CASE WHEN d.total_doctors=0 THEN 0 ELSE (x.reached::numeric / d.total_doctors) * 100 END AS reached_pct,
-                        CASE WHEN x.reached=0 THEN 0 ELSE (x.opened::numeric / x.reached) * 100 END AS opened_pct,
-                        CASE WHEN x.opened=0 THEN 0 ELSE (x.video::numeric / x.opened) * 100 END AS video_pct,
-                        CASE WHEN x.opened=0 THEN 0 ELSE (x.pdf::numeric / x.opened) * 100 END AS pdf_pct,
-                        (
-                          CASE WHEN d.total_doctors=0 THEN 0 ELSE (x.reached::numeric / d.total_doctors) END
-                          + CASE WHEN x.reached=0 THEN 0 ELSE (x.opened::numeric / x.reached) END
-                          + CASE WHEN x.opened=0 THEN 0 ELSE ((GREATEST(x.video, x.pdf))::numeric / x.opened) END
-                        ) / 3.0 * 100 AS health_score
-                    FROM campaign_actions x
-                    JOIN campaign_doctor_base d ON d.brand_campaign_id = x.brand_campaign_id
-                )
-                SELECT *
-                FROM campaign_stats
-                ORDER BY health_score DESC, reached DESC, opened DESC
-                LIMIT 1
-                """
-            )
+            benchmark_metric_rows = []
+            if bridge_base_exists:
+                try:
+                    benchmark_metric_rows = _fetch_dicts(
+                        """
+                        WITH recent_campaigns AS (
+                            SELECT DISTINCT brand_campaign_id
+                            FROM gold_global.campaign_health_history
+                            ORDER BY brand_campaign_id DESC
+                            LIMIT 10
+                        ),
+                        campaign_doctor_base AS (
+                            SELECT b.brand_campaign_id, COUNT(DISTINCT b.doctor_identity_key) AS total_doctors
+                            FROM silver.bridge_brand_campaign_doctor_base b
+                            JOIN recent_campaigns r ON r.brand_campaign_id = b.brand_campaign_id
+                            GROUP BY b.brand_campaign_id
+                        ),
+                        campaign_actions AS (
+                            SELECT
+                                a.brand_campaign_id,
+                                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.reached_first_ts,'') IS NOT NULL) AS reached,
+                                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.opened_first_ts,'') IS NOT NULL) AS opened,
+                                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.video_gt_50_first_ts,'') IS NOT NULL) AS video,
+                                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.pdf_download_first_ts,'') IS NOT NULL) AS pdf
+                            FROM silver.doctor_action_first_seen a
+                            JOIN recent_campaigns r ON r.brand_campaign_id = a.brand_campaign_id
+                            GROUP BY a.brand_campaign_id
+                        ),
+                        campaign_stats AS (
+                            SELECT
+                                x.brand_campaign_id,
+                                x.reached,
+                                x.opened,
+                                x.video,
+                                x.pdf,
+                                CASE WHEN d.total_doctors=0 THEN 0 ELSE (x.reached::numeric / d.total_doctors) * 100 END AS reached_pct,
+                                CASE WHEN x.reached=0 THEN 0 ELSE (x.opened::numeric / x.reached) * 100 END AS opened_pct,
+                                CASE WHEN x.opened=0 THEN 0 ELSE (x.video::numeric / x.opened) * 100 END AS video_pct,
+                                CASE WHEN x.opened=0 THEN 0 ELSE (x.pdf::numeric / x.opened) * 100 END AS pdf_pct,
+                                (
+                                  CASE WHEN d.total_doctors=0 THEN 0 ELSE (x.reached::numeric / d.total_doctors) END
+                                  + CASE WHEN x.reached=0 THEN 0 ELSE (x.opened::numeric / x.reached) END
+                                  + CASE WHEN x.opened=0 THEN 0 ELSE ((GREATEST(x.video, x.pdf))::numeric / x.opened) END
+                                ) / 3.0 * 100 AS health_score
+                            FROM campaign_actions x
+                            JOIN campaign_doctor_base d ON d.brand_campaign_id = x.brand_campaign_id
+                        )
+                        SELECT *
+                        FROM campaign_stats
+                        ORDER BY health_score DESC, reached DESC, opened DESC
+                        LIMIT 1
+                        """
+                    )
+                except (ProgrammingError, OperationalError):
+                    benchmark_metric_rows = []
             bm = benchmark_metric_rows[0] if benchmark_metric_rows else {}
             benchmark_reached_pct = round(_to_float(bm.get("reached_pct")), 1)
             benchmark_opened_pct = round(_to_float(bm.get("opened_pct")), 1)
