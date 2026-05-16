@@ -170,7 +170,7 @@ def build_gold(run_id: str) -> None:
                 SELECT
                     COALESCE(s.schedule_start_date, a.first_activity_date, CURRENT_DATE)::date AS schedule_start_date,
                     GREATEST(
-                        COALESCE(s.schedule_end_date, a.last_activity_date, s.schedule_start_date, CURRENT_DATE)::date,
+                        LEAST(COALESCE(s.schedule_end_date, a.last_activity_date, s.schedule_start_date, CURRENT_DATE)::date, CURRENT_DATE),
                         COALESCE(s.schedule_start_date, a.first_activity_date, CURRENT_DATE)::date
                     ) AS schedule_end_date
                 FROM activity_bounds a

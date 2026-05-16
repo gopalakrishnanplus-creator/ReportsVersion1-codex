@@ -363,7 +363,7 @@ def _weekly_rows_for_current_collateral(
             SELECT
                 COALESCE(%s::date, first_activity_date, CURRENT_DATE)::date AS schedule_start_date,
                 GREATEST(
-                    COALESCE(%s::date, last_activity_date, %s::date, CURRENT_DATE)::date,
+                    LEAST(COALESCE(%s::date, last_activity_date, %s::date, CURRENT_DATE)::date, CURRENT_DATE),
                     COALESCE(%s::date, first_activity_date, CURRENT_DATE)::date
                 ) AS schedule_end_date
             FROM activity_bounds
@@ -1024,6 +1024,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     selected_schema = None
     all_weekly_rows: list[dict[str, Any]] = []
     weekly_rows: list[dict[str, Any]] = []
+    data_weekly_rows: list[dict[str, Any]] = []
+    active_week_values: set[int] = set()
     error_message = None
     state_attention: list[dict[str, Any]] = []
     schedule_text = "Schedule unavailable"
@@ -1133,8 +1135,9 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         data_weekly_rows = [r for r in all_weekly_rows if _row_has_week_data(r)]
         metric_weekly_rows = data_weekly_rows or all_weekly_rows
 
-        week_options = sorted({_to_int(r.get("week_index")) for r in all_weekly_rows if _to_int(r.get("week_index")) > 0})
-        if week_filter and week_filter not in week_options:
+        week_values = sorted({_to_int(r.get("week_index")) for r in all_weekly_rows if _to_int(r.get("week_index")) > 0})
+        active_week_values = {_to_int(r.get("week_index")) for r in data_weekly_rows if _to_int(r.get("week_index")) > 0}
+        if week_filter and week_filter not in week_values:
             week_filter = None
 
         if week_filter:
@@ -1564,14 +1567,21 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     except Exception as exc:
         error_message = str(exc)
 
-    trend_source_rows = weekly_rows if weekly_rows else []
+    trend_source_rows = weekly_rows if week_filter else data_weekly_rows
     trend_labels = [f"Week {r.get('week_index')}" for r in trend_source_rows]
     reached_pct_series = [_safe_pct(_to_float(r.get("doctors_reached_unique")), _to_float(r.get("total_doctors_in_campaign"))) for r in trend_source_rows]
     opened_pct_series = [_safe_pct(_to_float(r.get("doctors_opened_unique")), _to_float(r.get("total_doctors_in_campaign"))) for r in trend_source_rows]
     pdf_pct_series = [_safe_pct(_to_float(r.get("pdf_download_unique")), _to_float(r.get("total_doctors_in_campaign"))) for r in trend_source_rows]
     video_pct_series = [_safe_pct(_to_float(r.get("video_viewed_50_unique")), _to_float(r.get("total_doctors_in_campaign"))) for r in trend_source_rows]
 
-    week_options = sorted({_to_int(r.get("week_index")) for r in all_weekly_rows if _to_int(r.get("week_index")) > 0})
+    week_options = [
+        {
+            "value": week_index,
+            "label": f"Week {week_index}{' *' if week_index in active_week_values else ''}",
+            "has_data": week_index in active_week_values,
+        }
+        for week_index in sorted({_to_int(r.get("week_index")) for r in all_weekly_rows if _to_int(r.get("week_index")) > 0})
+    ]
 
     if selected_campaign:
         if not brand_name or brand_name == "Apex":
