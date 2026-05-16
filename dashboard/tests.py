@@ -307,3 +307,4 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Field Representative Insights")
         self.assertContains(response, "Asha Mehta")
         self.assertNotContains(response, "Action Required This Week")
+        self.assertNotContains(response, "Weekly KPI Table")

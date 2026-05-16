@@ -220,34 +220,11 @@
       </article>
     </section>
 
-    <section id="weekly_table" class="card">
-      <h3>Weekly KPI Table</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Week</th><th>Reached</th><th>Opened</th><th>Video &gt;50%</th><th>PDF</th><th>Consumed</th><th>Health</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in weekly_rows %}
-            <tr>
-              <td>Week {{ row.week_index }}</td>
-              <td>{{ row.doctors_reached_unique }}</td>
-              <td>{{ row.doctors_opened_unique }}</td>
-              <td>{{ row.video_viewed_50_unique }}</td>
-              <td>{{ row.pdf_download_unique }}</td>
-              <td>{{ row.doctors_consumed_unique }}</td>
-              <td>{{ row.weekly_health_score|floatformat:1 }}</td>
-            </tr>
-          {% empty %}
-            <tr><td colspan="7">Insufficient Data</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% if error_message %}
+    {% if error_message %}
+      <section class="card">
         <p class="error">Data issue: {{ error_message }}</p>
-      {% endif %}
-    </section>
+      </section>
+    {% endif %}
   </main>
 
   {{ trend_labels|json_script:"trend-labels" }}
