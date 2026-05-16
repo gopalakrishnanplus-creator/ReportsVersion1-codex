@@ -50,7 +50,7 @@
 
       series.forEach((s, sIdx) => {
         const val = s.values[idx] || 0;
-        const h = (val / maxVal) * chartH;
+        const h = val > 0 ? Math.max((val / maxVal) * chartH, 3) : 0;
         const x = xBase + sIdx * (barWidth + 4);
         const y = margin.top + chartH - h;
         ctx.fillStyle = s.color;

@@ -124,7 +124,7 @@ def build_gold(run_id: str) -> None:
                 SELECT COUNT(DISTINCT doctor_identity_key) AS total_doctors_in_campaign
                 FROM silver.bridge_brand_campaign_doctor_base WHERE brand_campaign_id=%s
             ),
-            fact_normalized AS (
+            source_events AS (
                 SELECT
                     COALESCE(NULLIF(doctor_master_id_resolved,''), doctor_identity_key, source_latest_transaction_id::text) AS doctor_key,
                     CASE WHEN reached_first_ts IS NULL OR btrim(reached_first_ts) = '' OR lower(btrim(reached_first_ts)) = 'null' THEN NULL ELSE reached_first_ts::date END AS reached_first_date,
@@ -133,38 +133,72 @@ def build_gold(run_id: str) -> None:
                     CASE WHEN pdf_download_first_ts IS NULL OR btrim(pdf_download_first_ts) = '' OR lower(btrim(pdf_download_first_ts)) = 'null' THEN NULL ELSE pdf_download_first_ts::date END AS pdf_download_first_date
                 FROM {schema}.fact_doctor_collateral_latest
             ),
-            anchor_date AS (
-                SELECT COALESCE(MAX(COALESCE(reached_first_date, opened_first_date, video_gt_50_first_date, pdf_download_first_date)), CURRENT_DATE)::date AS reference_date
+            fact_normalized AS (
+                SELECT
+                    doctor_key,
+                    reached_first_date,
+                    opened_first_date,
+                    video_gt_50_first_date,
+                    pdf_download_first_date,
+                    (
+                        SELECT MIN(activity_date)
+                        FROM (
+                            VALUES
+                                (reached_first_date),
+                                (opened_first_date),
+                                (video_gt_50_first_date),
+                                (pdf_download_first_date)
+                        ) AS dates(activity_date)
+                        WHERE activity_date IS NOT NULL
+                    ) AS first_activity_date
+                FROM source_events
+            ),
+            activity_bounds AS (
+                SELECT
+                    MIN(first_activity_date) AS first_activity_date,
+                    MAX(first_activity_date) AS last_activity_date
                 FROM fact_normalized
             ),
-            month_bounds AS (
+            schedule_source AS (
                 SELECT
-                    date_trunc('month', reference_date)::date AS month_start,
-                    (date_trunc('month', reference_date) + interval '1 month - 1 day')::date AS month_end
-                FROM anchor_date
+                    MIN(schedule_start_date) AS schedule_start_date,
+                    MAX(schedule_end_date) AS schedule_end_date
+                FROM silver.bridge_campaign_collateral_schedule
+                WHERE campaign_id_resolved::text = NULLIF(btrim(%s), '')
+            ),
+            schedule_bounds AS (
+                SELECT
+                    COALESCE(s.schedule_start_date, a.first_activity_date, CURRENT_DATE)::date AS schedule_start_date,
+                    GREATEST(
+                        COALESCE(s.schedule_end_date, a.last_activity_date, s.schedule_start_date, CURRENT_DATE)::date,
+                        COALESCE(s.schedule_start_date, a.first_activity_date, CURRENT_DATE)::date
+                    ) AS schedule_end_date
+                FROM activity_bounds a
+                CROSS JOIN schedule_source s
             ),
             weeks AS (
                 SELECT
-                    gs AS week_index,
-                    ((SELECT month_start FROM month_bounds) + ((gs - 1) * interval '7 day'))::date AS week_start_date,
-                    LEAST(
-                        ((SELECT month_start FROM month_bounds) + ((gs * 7 - 1) * interval '1 day'))::date,
-                        (SELECT month_end FROM month_bounds)
-                    )::date AS week_end_date
-                FROM generate_series(
-                    1,
-                    GREATEST(
-                        1,
-                        CEIL(EXTRACT(DAY FROM (SELECT month_end FROM month_bounds)) / 7.0)::int
-                    )
-                ) gs
+                    ROW_NUMBER() OVER (ORDER BY week_start)::int AS week_index,
+                    week_start::date AS week_start_date,
+                    LEAST((week_start + interval '6 day')::date, b.schedule_end_date)::date AS week_end_date
+                FROM schedule_bounds b
+                CROSS JOIN LATERAL generate_series(
+                    b.schedule_start_date,
+                    b.schedule_end_date,
+                    interval '7 day'
+                ) AS gs(week_start)
             ),
             agg AS (
                 SELECT
                     w.week_index,
                     w.week_start_date,
                     w.week_end_date,
-                    COUNT(DISTINCT f.doctor_key) FILTER (WHERE f.reached_first_date BETWEEN w.week_start_date AND w.week_end_date) AS doctors_reached_unique,
+                    COUNT(DISTINCT f.doctor_key) FILTER (
+                        WHERE f.reached_first_date BETWEEN w.week_start_date AND w.week_end_date
+                           OR f.opened_first_date BETWEEN w.week_start_date AND w.week_end_date
+                           OR f.video_gt_50_first_date BETWEEN w.week_start_date AND w.week_end_date
+                           OR f.pdf_download_first_date BETWEEN w.week_start_date AND w.week_end_date
+                    ) AS doctors_reached_unique,
                     COUNT(DISTINCT f.doctor_key) FILTER (WHERE f.opened_first_date BETWEEN w.week_start_date AND w.week_end_date) AS doctors_opened_unique,
                     COUNT(DISTINCT f.doctor_key) FILTER (WHERE f.video_gt_50_first_date BETWEEN w.week_start_date AND w.week_end_date) AS video_viewed_50_unique,
                     COUNT(DISTINCT f.doctor_key) FILTER (WHERE f.pdf_download_first_date BETWEEN w.week_start_date AND w.week_end_date) AS pdf_download_unique,
@@ -203,7 +237,7 @@ def build_gold(run_id: str) -> None:
                 CASE WHEN b.total_doctors_in_campaign=0 THEN 1 ELSE 0 END AS insufficient_data_flag
             FROM agg CROSS JOIN base b
             """,
-            [brand_campaign_id, brand_campaign_id],
+            [brand_campaign_id, row["campaign_id_resolved"], brand_campaign_id],
         )
 
         execute(f"CREATE TABLE IF NOT EXISTS {schema}.weekly_action_items AS SELECT * FROM {schema}.kpi_weekly_summary WHERE false;")
