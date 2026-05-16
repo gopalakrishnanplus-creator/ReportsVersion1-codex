@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -80,6 +81,438 @@ def _format_schedule_date(value: Any) -> str | None:
 
 def _normalize_campaign_id(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _normalize_lookup_key(value: Any) -> str:
+    return re.sub(r"[^a-zA-Z0-9]", "", str(value or "").strip().lower())
+
+
+def _normalized_sql(column_sql: str) -> str:
+    return f"lower(regexp_replace(COALESCE(btrim({column_sql}), ''), '[^a-zA-Z0-9]', '', 'g'))"
+
+
+def _placeholders(values: list[Any]) -> str:
+    return ", ".join(["%s"] * len(values))
+
+
+def _unique_non_empty(values: list[Any]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text.lower() == "null":
+            continue
+        if text not in seen:
+            seen.add(text)
+            output.append(text)
+    return output
+
+
+def _campaign_brand_variants(selected_campaign: str) -> list[str]:
+    lookup_key = _normalize_lookup_key(selected_campaign)
+    if not lookup_key:
+        return [selected_campaign]
+    try:
+        rows = _fetch_dicts(
+            f"""
+            SELECT DISTINCT brand_campaign_id
+            FROM (
+                SELECT brand_campaign_id
+                FROM gold_global.campaign_registry
+                WHERE {_normalized_sql('brand_campaign_id')} = %s
+                UNION ALL
+                SELECT brand_campaign_id
+                FROM silver.map_brand_campaign_to_campaign
+                WHERE {_normalized_sql('brand_campaign_id')} = %s
+                UNION ALL
+                SELECT brand_campaign_id
+                FROM bronze.campaign_management_campaign
+                WHERE {_normalized_sql('brand_campaign_id')} = %s
+            ) variants
+            WHERE COALESCE(NULLIF(btrim(brand_campaign_id), ''), '') <> ''
+            """,
+            [lookup_key, lookup_key, lookup_key],
+        )
+    except (ProgrammingError, OperationalError):
+        rows = []
+    return _unique_non_empty([selected_campaign, *[row.get("brand_campaign_id") for row in rows]])
+
+
+def _campaign_key_placeholders(selected_campaign: str, brand_campaign_variants: list[str]) -> tuple[list[str], str]:
+    keys = _unique_non_empty([_normalize_lookup_key(selected_campaign), *[_normalize_lookup_key(v) for v in brand_campaign_variants]])
+    if not keys:
+        keys = [_normalize_lookup_key(selected_campaign)]
+    return keys, _placeholders(keys)
+
+
+def _candidate_campaign_ids_cte(brand_key_placeholders: str) -> str:
+    return f"""
+        candidate_campaign_ids AS (
+            SELECT DISTINCT candidate_campaign_id
+            FROM (
+                SELECT NULLIF(btrim(%s), '') AS candidate_campaign_id
+                UNION ALL
+                SELECT NULLIF(btrim(m.campaign_id_resolved), '')
+                FROM silver.map_brand_campaign_to_campaign m
+                WHERE {_normalized_sql('m.brand_campaign_id')} IN ({brand_key_placeholders})
+                UNION ALL
+                SELECT NULLIF(btrim(cm.id::text), '')
+                FROM bronze.campaign_management_campaign cm
+                WHERE {_normalized_sql('cm.brand_campaign_id')} IN ({brand_key_placeholders})
+                UNION ALL
+                SELECT NULLIF(btrim(cc.id::text), '')
+                FROM bronze.campaign_campaign cc
+                WHERE {_normalized_sql('cc.id::text')} = %s
+            ) candidates
+            WHERE candidate_campaign_id IS NOT NULL
+        )
+    """
+
+
+def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
+    lookup_key = _normalize_lookup_key(selected_campaign)
+    return _fetch_dicts(
+        f"""
+        WITH campaign_row AS (
+            SELECT
+                cm.id,
+                cm.brand_campaign_id,
+                cm.brand_name,
+                cm.company_logo,
+                ROW_NUMBER() OVER (
+                    ORDER BY
+                        CASE
+                            WHEN {_normalized_sql('cm.brand_campaign_id')} = %s THEN 1
+                            WHEN {_normalized_sql('cm.id::text')} = %s THEN 2
+                            ELSE 3
+                        END,
+                        cm.id DESC
+                ) AS rn
+            FROM bronze.campaign_management_campaign cm
+            LEFT JOIN silver.map_brand_campaign_to_campaign m
+              ON {_normalized_sql('m.brand_campaign_id')} = %s
+            WHERE
+                {_normalized_sql('cm.brand_campaign_id')} = %s
+                OR {_normalized_sql('cm.id::text')} = %s
+                OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
+        ),
+        campaign_source AS (
+            SELECT id, brand_campaign_id, brand_name, company_logo
+            FROM campaign_row
+            WHERE rn = 1
+        ),
+        schedule_candidates AS (
+            SELECT
+                sc.collateral_id,
+                sc.schedule_start_date,
+                sc.schedule_end_date,
+                sc.collateral_title,
+                CASE
+                    WHEN cs.brand_name IS NULL OR btrim(cs.brand_name) = '' OR lower(btrim(cs.brand_name)) = 'null'
+                    THEN NULL
+                    ELSE cs.brand_name
+                END AS brand_name,
+                CASE
+                    WHEN cs.company_logo IS NULL OR btrim(cs.company_logo) = '' OR lower(btrim(cs.company_logo)) = 'null'
+                    THEN NULL
+                    ELSE cs.company_logo
+                END AS company_logo,
+                CASE
+                    WHEN sc.schedule_start_date <= CURRENT_DATE AND sc.schedule_end_date >= CURRENT_DATE THEN 0
+                    WHEN sc.schedule_start_date <= CURRENT_DATE THEN 1
+                    WHEN sc.schedule_start_date > CURRENT_DATE THEN 2
+                    ELSE 3
+                END AS schedule_rank
+            FROM campaign_source cs
+            LEFT JOIN silver.bridge_campaign_collateral_schedule sc
+              ON sc.campaign_id_resolved::text = cs.id::text
+        )
+        SELECT *
+        FROM schedule_candidates
+        ORDER BY
+            schedule_rank,
+            CASE WHEN schedule_start_date <= CURRENT_DATE THEN schedule_start_date END DESC NULLS LAST,
+            CASE WHEN schedule_start_date > CURRENT_DATE THEN schedule_start_date END ASC NULLS LAST,
+            schedule_end_date DESC NULLS LAST,
+            collateral_id DESC NULLS LAST
+        LIMIT 50
+        """,
+        [lookup_key, lookup_key, lookup_key, lookup_key, lookup_key],
+    )
+
+
+def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list[str]) -> int:
+    brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
+    candidate_cte = _candidate_campaign_ids_cte(brand_placeholders)
+    params = [selected_campaign, *brand_keys, *brand_keys, _normalize_lookup_key(selected_campaign)]
+    rows = _fetch_dicts(
+        f"""
+        WITH {candidate_cte},
+        assigned_rep_keys AS (
+            SELECT DISTINCT rep_key
+            FROM (
+                SELECT {_normalized_sql('ccf.field_rep_id::text')} AS rep_key
+                FROM bronze.campaign_campaignfieldrep ccf
+                JOIN candidate_campaign_ids ci
+                  ON {_normalized_sql('ccf.campaign_id')} = {_normalized_sql('ci.candidate_campaign_id')}
+                UNION ALL
+                SELECT {_normalized_sql('cfr.brand_supplied_field_rep_id')} AS rep_key
+                FROM bronze.campaign_campaignfieldrep ccf
+                JOIN candidate_campaign_ids ci
+                  ON {_normalized_sql('ccf.campaign_id')} = {_normalized_sql('ci.candidate_campaign_id')}
+                LEFT JOIN bronze.campaign_fieldrep cfr
+                  ON cfr.id::text = ccf.field_rep_id::text
+            ) keys
+            WHERE rep_key <> ''
+        ),
+        assigned_doctors AS (
+            SELECT DISTINCT d.doctor_identity_key
+            FROM assigned_rep_keys ar
+            JOIN silver.dim_doctor d
+              ON {_normalized_sql('d.rep_id_normalized')} = ar.rep_key
+              OR {_normalized_sql('d.field_rep_id_resolved')} = ar.rep_key
+        ),
+        declared_counts AS (
+            SELECT MAX(
+                CASE
+                    WHEN cm.num_doctors ~ '^[0-9]+(\\.[0-9]+)?$' THEN cm.num_doctors::numeric
+                    ELSE NULL
+                END
+            ) AS declared_total
+            FROM bronze.campaign_management_campaign cm
+            WHERE {_normalized_sql('cm.brand_campaign_id')} IN ({brand_placeholders})
+        ),
+        supported_counts AS (
+            SELECT MAX(
+                CASE
+                    WHEN cc.num_doctors_supported ~ '^[0-9]+(\\.[0-9]+)?$' THEN cc.num_doctors_supported::numeric
+                    ELSE NULL
+                END
+            ) AS supported_total
+            FROM bronze.campaign_campaign cc
+            JOIN candidate_campaign_ids ci
+              ON {_normalized_sql('cc.id::text')} = {_normalized_sql('ci.candidate_campaign_id')}
+        )
+        SELECT GREATEST(
+            COALESCE((SELECT COUNT(*) FROM assigned_doctors), 0),
+            COALESCE((SELECT declared_total FROM declared_counts), 0),
+            COALESCE((SELECT supported_total FROM supported_counts), 0)
+        )::int AS assigned_total
+        """,
+        [*params, *brand_keys],
+    )
+    return _to_int(rows[0].get("assigned_total")) if rows else 0
+
+
+def _weekly_rows_for_current_collateral(
+    selected_campaign: str,
+    brand_campaign_variants: list[str],
+    current_collateral_ids: list[str],
+    total_doctors: int,
+) -> list[dict[str, Any]]:
+    brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
+    collateral_filter = ""
+    params: list[Any] = [*brand_keys]
+    if current_collateral_ids:
+        collateral_filter = f"AND a.collateral_id::text IN ({_placeholders(current_collateral_ids)})"
+        params.extend(current_collateral_ids)
+
+    params.append(selected_campaign)
+    return _fetch_dicts(
+        f"""
+        WITH fact_normalized AS (
+            SELECT
+                COALESCE(NULLIF(a.doctor_identity_key,''), a.brand_campaign_id || ':' || a.collateral_id) AS doctor_key,
+                CASE WHEN a.reached_first_ts IS NULL OR btrim(a.reached_first_ts) = '' OR lower(btrim(a.reached_first_ts)) = 'null' THEN NULL ELSE a.reached_first_ts::date END AS reached_first_date,
+                CASE WHEN a.opened_first_ts IS NULL OR btrim(a.opened_first_ts) = '' OR lower(btrim(a.opened_first_ts)) = 'null' THEN NULL ELSE a.opened_first_ts::date END AS opened_first_date,
+                CASE WHEN a.video_gt_50_first_ts IS NULL OR btrim(a.video_gt_50_first_ts) = '' OR lower(btrim(a.video_gt_50_first_ts)) = 'null' THEN NULL ELSE a.video_gt_50_first_ts::date END AS video_gt_50_first_date,
+                CASE WHEN a.pdf_download_first_ts IS NULL OR btrim(a.pdf_download_first_ts) = '' OR lower(btrim(a.pdf_download_first_ts)) = 'null' THEN NULL ELSE a.pdf_download_first_ts::date END AS pdf_download_first_date
+            FROM silver.doctor_action_first_seen a
+            WHERE {_normalized_sql('a.brand_campaign_id')} IN ({brand_placeholders})
+              {collateral_filter}
+        ),
+        anchor_date AS (
+            SELECT COALESCE(MAX(COALESCE(reached_first_date, opened_first_date, video_gt_50_first_date, pdf_download_first_date)), CURRENT_DATE)::date AS reference_date
+            FROM fact_normalized
+        ),
+        month_bounds AS (
+            SELECT
+                date_trunc('month', reference_date)::date AS month_start,
+                (date_trunc('month', reference_date) + interval '1 month - 1 day')::date AS month_end
+            FROM anchor_date
+        ),
+        weeks AS (
+            SELECT
+                gs AS week_index,
+                ((SELECT month_start FROM month_bounds) + ((gs - 1) * interval '7 day'))::date AS week_start_date,
+                LEAST(
+                    ((SELECT month_start FROM month_bounds) + ((gs * 7 - 1) * interval '1 day'))::date,
+                    (SELECT month_end FROM month_bounds)
+                )::date AS week_end_date
+            FROM generate_series(
+                1,
+                GREATEST(1, CEIL(EXTRACT(DAY FROM (SELECT month_end FROM month_bounds)) / 7.0)::int)
+            ) gs
+        ),
+        agg AS (
+            SELECT
+                w.week_index,
+                w.week_start_date,
+                w.week_end_date,
+                COUNT(DISTINCT f.doctor_key) FILTER (WHERE f.reached_first_date BETWEEN w.week_start_date AND w.week_end_date) AS doctors_reached_unique,
+                COUNT(DISTINCT f.doctor_key) FILTER (WHERE f.opened_first_date BETWEEN w.week_start_date AND w.week_end_date) AS doctors_opened_unique,
+                COUNT(DISTINCT f.doctor_key) FILTER (WHERE f.video_gt_50_first_date BETWEEN w.week_start_date AND w.week_end_date) AS video_viewed_50_unique,
+                COUNT(DISTINCT f.doctor_key) FILTER (WHERE f.pdf_download_first_date BETWEEN w.week_start_date AND w.week_end_date) AS pdf_download_unique,
+                COUNT(DISTINCT f.doctor_key) FILTER (
+                    WHERE (f.video_gt_50_first_date BETWEEN w.week_start_date AND w.week_end_date)
+                       OR (f.pdf_download_first_date BETWEEN w.week_start_date AND w.week_end_date)
+                ) AS doctors_consumed_unique
+            FROM weeks w
+            LEFT JOIN fact_normalized f ON TRUE
+            GROUP BY w.week_index, w.week_start_date, w.week_end_date
+        )
+        SELECT
+            %s::text AS brand_campaign_id,
+            week_index,
+            week_start_date,
+            week_end_date,
+            doctors_reached_unique,
+            doctors_opened_unique,
+            video_viewed_50_unique,
+            pdf_download_unique,
+            doctors_consumed_unique,
+            %s::numeric AS total_doctors_in_campaign,
+            (%s::numeric / GREATEST((SELECT COUNT(*) FROM weeks), 1)::numeric) AS weekly_doctor_base,
+            LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_reached_unique / NULLIF((%s::numeric / GREATEST((SELECT COUNT(*) FROM weeks), 1)::numeric),0) END, 1.0) AS weekly_reached_pct,
+            CASE WHEN doctors_reached_unique=0 THEN 0 ELSE doctors_opened_unique::numeric / doctors_reached_unique END AS weekly_opened_pct,
+            CASE WHEN doctors_opened_unique=0 THEN 0 ELSE doctors_consumed_unique::numeric / doctors_opened_unique END AS weekly_consumption_pct,
+            ((LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_reached_unique / NULLIF((%s::numeric / GREATEST((SELECT COUNT(*) FROM weeks), 1)::numeric),0) END, 1.0)
+            + CASE WHEN doctors_reached_unique=0 THEN 0 ELSE doctors_opened_unique::numeric / doctors_reached_unique END
+            + CASE WHEN doctors_opened_unique=0 THEN 0 ELSE doctors_consumed_unique::numeric / doctors_opened_unique END) / 3.0) * 100 AS weekly_health_score
+        FROM agg
+        ORDER BY week_index
+        """,
+        [*params, total_doctors, total_doctors, total_doctors, total_doctors, total_doctors, total_doctors],
+    )
+
+
+def _field_rep_insight_rows(
+    selected_campaign: str,
+    brand_campaign_variants: list[str],
+    current_collateral_ids: list[str],
+) -> list[dict[str, Any]]:
+    brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
+    candidate_cte = _candidate_campaign_ids_cte(brand_placeholders)
+    collateral_filter_tx = ""
+    collateral_filter_share = ""
+    if current_collateral_ids:
+        collateral_placeholders = _placeholders(current_collateral_ids)
+        collateral_filter_tx = f"AND tx.collateral_id::text IN ({collateral_placeholders})"
+        collateral_filter_share = f"AND s.collateral_id::text IN ({collateral_placeholders})"
+
+    params = [
+        selected_campaign,
+        *brand_keys,
+        *brand_keys,
+        _normalize_lookup_key(selected_campaign),
+        *brand_keys,
+        *current_collateral_ids,
+        *brand_keys,
+        *current_collateral_ids,
+    ]
+    return _fetch_dicts(
+        f"""
+        WITH {candidate_cte},
+        assigned_reps AS (
+            SELECT DISTINCT
+                ccf.field_rep_id::text AS field_rep_id,
+                COALESCE(
+                    NULLIF(btrim(cfr.full_name), ''),
+                    NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''),
+                    NULLIF(btrim(ccf.field_rep_id::text), ''),
+                    'Unknown Field Rep'
+                ) AS field_rep_name,
+                {_normalized_sql('ccf.field_rep_id::text')} AS internal_rep_key,
+                {_normalized_sql('cfr.brand_supplied_field_rep_id')} AS external_rep_key,
+                COALESCE(NULLIF(initcap(btrim(cfr.state)), ''), 'UNKNOWN') AS state_normalized
+            FROM bronze.campaign_campaignfieldrep ccf
+            JOIN candidate_campaign_ids ci
+              ON {_normalized_sql('ccf.campaign_id')} = {_normalized_sql('ci.candidate_campaign_id')}
+            LEFT JOIN bronze.campaign_fieldrep cfr
+              ON cfr.id::text = ccf.field_rep_id::text
+        ),
+        assigned_doctors AS (
+            SELECT
+                ar.field_rep_id,
+                COUNT(DISTINCT d.doctor_identity_key) AS total_doctors_assigned
+            FROM assigned_reps ar
+            LEFT JOIN silver.dim_doctor d
+              ON {_normalized_sql('d.rep_id_normalized')} IN (ar.internal_rep_key, ar.external_rep_key)
+              OR {_normalized_sql('d.field_rep_id_resolved')} IN (ar.internal_rep_key, ar.external_rep_key)
+            GROUP BY ar.field_rep_id
+        ),
+        activity AS (
+            SELECT
+                {_normalized_sql('tx.field_rep_id')} AS rep_key,
+                tx.doctor_identity_key,
+                1 AS sent_flag,
+                CASE WHEN tx.has_viewed_flag = '1' OR NULLIF(tx.opened_event_ts, '') IS NOT NULL THEN 1 ELSE 0 END AS viewed_flag,
+                CASE
+                    WHEN tx.video_view_gt_50_flag = '1'
+                      OR COALESCE(tx.last_video_percentage_num, 0) > 0
+                      OR COALESCE(tx.video_watch_percentage_num, 0) > 0
+                      OR NULLIF(tx.video_lt_50_at_ts, '') IS NOT NULL
+                      OR NULLIF(tx.video_gt_50_at_ts, '') IS NOT NULL
+                      OR NULLIF(tx.video_100_at_ts, '') IS NOT NULL
+                    THEN 1 ELSE 0
+                END AS video_flag,
+                CASE WHEN tx.downloaded_pdf_flag = '1' OR NULLIF(tx.pdf_download_event_ts, '') IS NOT NULL THEN 1 ELSE 0 END AS pdf_flag
+            FROM silver.fact_collateral_transaction tx
+            WHERE {_normalized_sql('tx.brand_campaign_id')} IN ({brand_placeholders})
+              {collateral_filter_tx}
+            UNION ALL
+            SELECT
+                {_normalized_sql('s.field_rep_id::text')} AS rep_key,
+                s.doctor_identity_key,
+                1 AS sent_flag,
+                0 AS viewed_flag,
+                0 AS video_flag,
+                0 AS pdf_flag
+            FROM silver.fact_share_log s
+            WHERE {_normalized_sql('s.brand_campaign_id')} IN ({brand_placeholders})
+              {collateral_filter_share}
+        ),
+        activity_by_rep AS (
+            SELECT
+                rep_key,
+                COUNT(DISTINCT doctor_identity_key) FILTER (WHERE sent_flag = 1) AS doctors_sent,
+                COUNT(DISTINCT doctor_identity_key) FILTER (WHERE viewed_flag = 1) AS doctors_viewed,
+                COUNT(DISTINCT doctor_identity_key) FILTER (WHERE video_flag = 1) AS doctors_video_played,
+                COUNT(DISTINCT doctor_identity_key) FILTER (WHERE pdf_flag = 1) AS doctors_pdf_downloaded
+            FROM activity
+            WHERE rep_key <> ''
+            GROUP BY rep_key
+        )
+        SELECT
+            ar.field_rep_id,
+            ar.field_rep_name,
+            ar.state_normalized,
+            COALESCE(ad.total_doctors_assigned, 0)::int AS total_doctors_assigned,
+            COALESCE(ab.doctors_sent, 0)::int AS doctors_sent,
+            COALESCE(ab.doctors_viewed, 0)::int AS doctors_viewed,
+            COALESCE(ab.doctors_video_played, 0)::int AS doctors_video_played,
+            COALESCE(ab.doctors_pdf_downloaded, 0)::int AS doctors_pdf_downloaded
+        FROM assigned_reps ar
+        LEFT JOIN assigned_doctors ad ON ad.field_rep_id = ar.field_rep_id
+        LEFT JOIN activity_by_rep ab
+          ON ab.rep_key IN (ar.internal_rep_key, ar.external_rep_key)
+        ORDER BY
+            COALESCE(ab.doctors_sent, 0) DESC,
+            COALESCE(ad.total_doctors_assigned, 0) DESC,
+            ar.field_rep_name
+        """,
+        params,
+    )
 
 
 def _build_media_logo_url(company_logo_path: Any) -> str | None:
@@ -567,6 +1000,15 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     brand_name = "Apex"
     brand_logo_text = "apex"
     company_logo_url = None
+    field_rep_insights: list[dict[str, Any]] = []
+    field_rep_summary = {
+        "total_reps": 0,
+        "total_doctors_assigned": 0,
+        "doctors_sent": 0,
+        "doctors_viewed": 0,
+        "doctors_video_played": 0,
+        "doctors_pdf_downloaded": 0,
+    }
 
     action_panel = {
         "primary_issue": "No issue detected",
@@ -596,30 +1038,61 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     }
 
     try:
-        selected_campaign = _normalize_campaign_id(selected_campaign)
+        requested_campaign = _normalize_campaign_id(selected_campaign)
+        selected_campaign = requested_campaign
+        lookup_key = _normalize_lookup_key(requested_campaign)
         schema_rows = _fetch_dicts(
-            """
+            f"""
             SELECT brand_campaign_id, gold_schema_name
             FROM gold_global.campaign_registry
-            WHERE btrim(brand_campaign_id) = btrim(%s)
+            WHERE {_normalized_sql('brand_campaign_id')} = %s
+            ORDER BY
+                CASE WHEN btrim(brand_campaign_id) = btrim(%s) THEN 0 ELSE 1 END,
+                last_seen_ts DESC NULLS LAST,
+                brand_campaign_id
+            LIMIT 1
             """,
-            [selected_campaign],
+            [lookup_key, requested_campaign],
         )
         if not schema_rows:
-            schema_rows = _fetch_dicts(
-                """
-                SELECT brand_campaign_id, gold_schema_name
-                FROM gold_global.campaign_registry
-                WHERE lower(btrim(brand_campaign_id)) = lower(btrim(%s))
-                """,
-                [selected_campaign],
-            )
-        if not schema_rows:
-            return {"error_message": f"Campaign schema not found for {selected_campaign}", **context_metrics}
+            return {"error_message": f"Campaign schema not found for {requested_campaign}", **context_metrics}
 
         selected_campaign = _normalize_campaign_id(schema_rows[0]["brand_campaign_id"])
         selected_schema = schema_rows[0]["gold_schema_name"]
-        all_weekly_rows = _fetch_dicts(f"SELECT * FROM {selected_schema}.kpi_weekly_summary ORDER BY week_index")
+        brand_campaign_variants = _campaign_brand_variants(requested_campaign)
+        brand_campaign_variants = _unique_non_empty([selected_campaign, *brand_campaign_variants])
+
+        schedule_rows = _current_schedule_rows(requested_campaign)
+        current_collateral_ids: list[str] = []
+        if schedule_rows:
+            primary_schedule = schedule_rows[0]
+            primary_rank = primary_schedule.get("schedule_rank")
+            current_collateral_ids = _unique_non_empty(
+                [
+                    row.get("collateral_id")
+                    for row in schedule_rows
+                    if row.get("schedule_rank") == primary_rank
+                ]
+            )
+            start = _format_schedule_date(primary_schedule.get("schedule_start_date"))
+            end = _format_schedule_date(primary_schedule.get("schedule_end_date"))
+            if start and end:
+                schedule_text = f"{start} - {end}"
+            collateral_name = primary_schedule.get("collateral_title") or collateral_name
+            brand_name = primary_schedule.get("brand_name") or brand_name
+            company_logo_url = _build_media_logo_url(primary_schedule.get("company_logo"))
+
+        assigned_total_doctors = _assigned_doctor_count(requested_campaign, brand_campaign_variants)
+        all_weekly_rows = _weekly_rows_for_current_collateral(
+            requested_campaign,
+            brand_campaign_variants,
+            current_collateral_ids,
+            assigned_total_doctors,
+        )
+        if not current_collateral_ids and not any(_row_has_week_data(row) for row in all_weekly_rows):
+            fallback_weekly_rows = _fetch_dicts(f"SELECT * FROM {selected_schema}.kpi_weekly_summary ORDER BY week_index")
+            if fallback_weekly_rows:
+                all_weekly_rows = fallback_weekly_rows
         available_weekly_rows = [r for r in all_weekly_rows if _row_has_week_data(r)]
 
         week_options = sorted({_to_int(r.get("week_index")) for r in available_weekly_rows if _to_int(r.get("week_index")) > 0})
@@ -630,81 +1103,6 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             weekly_rows = [r for r in available_weekly_rows if _to_int(r.get("week_index")) == week_filter]
         else:
             weekly_rows = list(available_weekly_rows)
-
-        schedule_rows = _fetch_dicts(
-            """
-            WITH campaign_row AS (
-                SELECT
-                    cm.id,
-                    cm.brand_campaign_id,
-                    cm.brand_name,
-                    cm.company_logo,
-                    ROW_NUMBER() OVER (
-                        ORDER BY
-                            CASE
-                                WHEN regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g') THEN 1
-                                WHEN cm.id::text = btrim(%s) THEN 2
-                                ELSE 3
-                            END,
-                            cm.id DESC
-                    ) AS rn
-                FROM bronze.campaign_management_campaign cm
-                LEFT JOIN silver.map_brand_campaign_to_campaign m
-                  ON regexp_replace(lower(btrim(m.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
-                WHERE
-                    regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
-                    OR cm.id::text = btrim(%s)
-                    OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
-            ),
-            campaign_source AS (
-                SELECT id, brand_campaign_id, brand_name, company_logo
-                FROM campaign_row
-                WHERE rn = 1
-            )
-            SELECT
-                MIN(
-                    CASE
-                        WHEN cc.start_date IS NULL OR btrim(cc.start_date) = '' OR lower(btrim(cc.start_date)) = 'null'
-                        THEN NULL
-                        ELSE cc.start_date::date
-                    END
-                ) AS schedule_start_date,
-                MAX(
-                    CASE
-                        WHEN cc.end_date IS NULL OR btrim(cc.end_date) = '' OR lower(btrim(cc.end_date)) = 'null'
-                        THEN NULL
-                        ELSE cc.end_date::date
-                    END
-                ) AS schedule_end_date,
-                MIN(NULLIF(c.title, '')) AS collateral_title,
-                MIN(
-                    CASE
-                        WHEN cs.brand_name IS NULL OR btrim(cs.brand_name) = '' OR lower(btrim(cs.brand_name)) = 'null'
-                        THEN NULL
-                        ELSE cs.brand_name
-                    END
-                ) AS brand_name,
-                MIN(
-                    CASE
-                        WHEN cs.company_logo IS NULL OR btrim(cs.company_logo) = '' OR lower(btrim(cs.company_logo)) = 'null'
-                        THEN NULL
-                        ELSE cs.company_logo
-                    END
-                ) AS company_logo
-            FROM campaign_source cs
-            LEFT JOIN bronze.collateral_management_campaigncollateral cc ON cc.campaign_id::text = cs.id::text
-            LEFT JOIN bronze.collateral_management_collateral c ON c.id = cc.collateral_id
-            """,
-            [selected_campaign, selected_campaign, selected_campaign, selected_campaign, selected_campaign],
-        )
-        if schedule_rows:
-            start = _format_schedule_date(schedule_rows[0].get("schedule_start_date"))
-            end = _format_schedule_date(schedule_rows[0].get("schedule_end_date"))
-            if start and end:
-                schedule_text = f"{start} - {end}"
-            collateral_name = schedule_rows[0].get("collateral_title") or collateral_name
-            brand_name = schedule_rows[0].get("brand_name") or brand_name
-            company_logo_url = _build_media_logo_url(schedule_rows[0].get("company_logo"))
 
         if not company_logo_url:
             fallback_logo = _fetch_dicts(
@@ -1095,6 +1493,16 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 "week_of": f"Week {current_week_idx} ({latest_week.get('week_start_date')} to {latest_week.get('week_end_date')})",
             }
 
+        field_rep_insights = _field_rep_insight_rows(requested_campaign, brand_campaign_variants, current_collateral_ids)
+        field_rep_summary = {
+            "total_reps": len(field_rep_insights),
+            "total_doctors_assigned": assigned_total_doctors or sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights),
+            "doctors_sent": sum(_to_int(row.get("doctors_sent")) for row in field_rep_insights),
+            "doctors_viewed": sum(_to_int(row.get("doctors_viewed")) for row in field_rep_insights),
+            "doctors_video_played": sum(_to_int(row.get("doctors_video_played")) for row in field_rep_insights),
+            "doctors_pdf_downloaded": sum(_to_int(row.get("doctors_pdf_downloaded")) for row in field_rep_insights),
+        }
+
     except Exception as exc:
         error_message = str(exc)
 
@@ -1124,6 +1532,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         "collateral_name": collateral_name,
         "state_attention": state_attention,
         "action_panel": action_panel,
+        "field_rep_insights": field_rep_insights,
+        "field_rep_summary": field_rep_summary,
         "collateral_cards": collateral_cards,
         "trend_labels": trend_labels,
         "reached_pct_series": [round(v, 1) for v in reached_pct_series],

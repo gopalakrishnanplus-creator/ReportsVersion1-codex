@@ -71,6 +71,41 @@
     weekSelect.addEventListener('change', () => weekForm.submit());
   }
 
+  const fieldRepTile = document.getElementById('field_rep_tile');
+  const fieldRepPanel = document.getElementById('field_rep_insights_panel');
+  const fieldRepToggle = document.getElementById('field-rep-toggle');
+  const fieldRepClose = document.getElementById('field-rep-close');
+
+  function setFieldRepPanel(open) {
+    if (!fieldRepTile || !fieldRepPanel) return;
+    fieldRepPanel.classList.toggle('hidden', !open);
+    fieldRepTile.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (fieldRepToggle) {
+      fieldRepToggle.textContent = open ? 'Hide insights' : 'View all reps';
+    }
+    if (open) {
+      fieldRepPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  if (fieldRepTile && fieldRepPanel) {
+    fieldRepTile.addEventListener('click', () => {
+      setFieldRepPanel(fieldRepPanel.classList.contains('hidden'));
+    });
+    fieldRepTile.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        setFieldRepPanel(fieldRepPanel.classList.contains('hidden'));
+      }
+    });
+  }
+  if (fieldRepClose) {
+    fieldRepClose.addEventListener('click', (event) => {
+      event.stopPropagation();
+      setFieldRepPanel(false);
+    });
+  }
+
   const downloadBtn = document.getElementById('download-pdf-btn');
   const reportRoot = document.getElementById('report-root');
   if (!downloadBtn || !reportRoot) return;
@@ -85,34 +120,60 @@
         throw new Error('Required PDF libraries are unavailable');
       }
 
-      const captureCanvas = await window.html2canvas(reportRoot, {
-        backgroundColor: '#f2f4f8',
-        useCORS: true,
-        scale: Math.min(2, window.devicePixelRatio || 1.5),
-        windowWidth: document.documentElement.scrollWidth,
-        windowHeight: document.documentElement.scrollHeight,
-      });
-
-      const imgData = captureCanvas.toDataURL('image/png');
       const { jsPDF } = window.jspdf;
       const pdfDoc = new jsPDF('p', 'mm', 'a4');
-
       const pageWidth = pdfDoc.internal.pageSize.getWidth();
       const pageHeight = pdfDoc.internal.pageSize.getHeight();
-      const imgWidth = pageWidth;
-      const imgHeight = (captureCanvas.height * imgWidth) / captureCanvas.width;
+      const margin = 9;
+      const sectionGap = 5;
+      const contentWidth = pageWidth - margin * 2;
+      const contentHeight = pageHeight - margin * 2;
+      let y = margin;
+      let hasContent = false;
 
-      let remaining = imgHeight;
-      let position = 0;
+      document.body.classList.add('pdf-exporting');
+      await document.fonts?.ready;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
 
-      pdfDoc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-      remaining -= pageHeight;
+      const sections = [
+        document.getElementById('header'),
+        document.querySelector('.controls-card'),
+        document.querySelector('.top-grid'),
+        document.getElementById('kpi_tiles'),
+        !fieldRepPanel?.classList.contains('hidden') ? fieldRepPanel : null,
+        document.querySelector('.bottom-grid'),
+        document.getElementById('weekly_table'),
+      ].filter(Boolean);
 
-      while (remaining > 0) {
-        position = remaining - imgHeight;
-        pdfDoc.addPage();
-        pdfDoc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-        remaining -= pageHeight;
+      for (const section of sections) {
+        const captureCanvas = await window.html2canvas(section, {
+          backgroundColor: '#ffffff',
+          useCORS: true,
+          scale: Math.min(2, window.devicePixelRatio || 1.5),
+          windowWidth: Math.max(1240, document.documentElement.scrollWidth),
+        });
+        if (!captureCanvas.width || !captureCanvas.height) continue;
+
+        const imgData = captureCanvas.toDataURL('image/png');
+        let imgWidth = contentWidth;
+        let imgHeight = (captureCanvas.height * imgWidth) / captureCanvas.width;
+        let x = margin;
+
+        if (imgHeight > contentHeight) {
+          const scale = contentHeight / imgHeight;
+          imgWidth *= scale;
+          imgHeight = contentHeight;
+          x = margin + (contentWidth - imgWidth) / 2;
+        }
+
+        if (hasContent && y + imgHeight > pageHeight - margin) {
+          pdfDoc.addPage();
+          y = margin;
+        }
+
+        pdfDoc.addImage(imgData, 'PNG', x, y, imgWidth, imgHeight);
+        y += imgHeight + sectionGap;
+        hasContent = true;
       }
 
       const safeCampaign = (window.location.pathname.split('/')[2] || 'campaign').replace(/[^a-zA-Z0-9-_]/g, '_');
@@ -124,6 +185,7 @@
       console.error('Failed to auto-download PDF', err);
       alert('PDF download failed in this browser. Please refresh and try again.');
     } finally {
+      document.body.classList.remove('pdf-exporting');
       downloadBtn.disabled = false;
       downloadBtn.textContent = originalText;
     }

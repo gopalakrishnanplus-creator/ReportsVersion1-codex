@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from django.conf import settings
 from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 
@@ -228,3 +229,81 @@ class DashboardAccessViewTests(SimpleTestCase):
 
         self.assertEqual(rows[0]["selected_systems"], ["InClinic"])
         self.assertEqual(rows[0]["system_report_links"][0]["url"], "http://testserver/campaign/brand-9/")
+
+    def test_campaign_overview_renders_field_rep_insights_instead_of_action_tile(self):
+        session = self.client.session
+        session["auth_demo"] = True
+        session.save()
+        self.client.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
+
+        context = {
+            "selected_campaign": "demo",
+            "brand_name": "Demo Brand",
+            "brand_logo_text": "Demo Brand",
+            "company_logo_url": None,
+            "selected_schema": "gold_campaign_demo",
+            "weekly_rows": [],
+            "error_message": None,
+            "schedule_text": "May 01, 2026 - May 31, 2026",
+            "collateral_name": "Current Collateral",
+            "state_attention": [],
+            "field_rep_summary": {
+                "total_reps": 1,
+                "total_doctors_assigned": 120,
+                "doctors_sent": 30,
+                "doctors_viewed": 20,
+                "doctors_video_played": 12,
+                "doctors_pdf_downloaded": 8,
+            },
+            "field_rep_insights": [
+                {
+                    "field_rep_name": "Asha Mehta",
+                    "state_normalized": "Maharashtra",
+                    "total_doctors_assigned": 120,
+                    "doctors_sent": 30,
+                    "doctors_viewed": 20,
+                    "doctors_video_played": 12,
+                    "doctors_pdf_downloaded": 8,
+                }
+            ],
+            "collateral_cards": {
+                "current": {"title": "Current Collateral", "reached": 30, "opened": 20, "video": 12, "pdf": 8, "reached_pct": 25, "opened_pct": 66.7, "video_pct": 60, "pdf_pct": 40},
+                "best": {"title": "Week 1 Best", "reached": 30, "opened": 20, "video": 12, "pdf": 8, "reached_pct": 25, "opened_pct": 66.7, "video_pct": 60, "pdf_pct": 40},
+                "benchmark": {"reached": 40, "opened": 30, "video": 20, "pdf": 10, "reached_pct": 30, "opened_pct": 75, "video_pct": 66.7, "pdf_pct": 33.3},
+            },
+            "trend_labels": [],
+            "reached_pct_series": [],
+            "opened_pct_series": [],
+            "pdf_pct_series": [],
+            "video_pct_series": [],
+            "week_options": [],
+            "selected_week": None,
+            "campaign_health": 45,
+            "campaign_wow": 0,
+            "campaign_benchmark_label": "Below Average",
+            "campaign_color": "yellow",
+            "weekly_health": 45,
+            "weekly_wow": 0,
+            "weekly_benchmark_label": "Average",
+            "weekly_color": "yellow",
+            "kpi_reached": 30,
+            "kpi_opened": 20,
+            "kpi_video": 12,
+            "kpi_pdf": 8,
+            "kpi_reached_pct": 25,
+            "kpi_opened_pct": 66.7,
+            "kpi_video_pct": 60,
+            "kpi_pdf_pct": 40,
+            "week_of": "Week 1",
+        }
+
+        with patch(
+            "dashboard.views.build_report_access",
+            return_value=type("Access", (), {"session_key": "auth_demo"})(),
+        ), patch("dashboard.views._build_report_context", return_value=context):
+            response = self.client.get("/campaign/demo/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Field Representative Insights")
+        self.assertContains(response, "Asha Mehta")
+        self.assertNotContains(response, "Action Required This Week")

@@ -282,6 +282,29 @@ def build_silver(run_id: str) -> None:
             NULL::text AS _dq_errors
         FROM (
             SELECT
+                m.brand_campaign_id,
+                d.doctor_identity_key,
+                ccf.field_rep_id::text AS field_rep_id_resolved,
+                'ASSIGNED_TO_CAMPAIGN_REP'::text AS inclusion_reason
+            FROM silver.map_brand_campaign_to_campaign m
+            JOIN bronze.campaign_campaignfieldrep ccf
+              ON lower(regexp_replace(NULLIF(btrim(ccf.campaign_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+               = lower(regexp_replace(NULLIF(btrim(m.campaign_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
+            LEFT JOIN bronze.campaign_fieldrep cfr
+              ON cfr.id::text = ccf.field_rep_id::text
+            JOIN silver.dim_doctor d
+              ON lower(regexp_replace(NULLIF(btrim(d.rep_id_normalized), ''), '[^a-zA-Z0-9]', '', 'g'))
+                 IN (
+                    lower(regexp_replace(NULLIF(btrim(ccf.field_rep_id::text), ''), '[^a-zA-Z0-9]', '', 'g')),
+                    lower(regexp_replace(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+                 )
+              OR lower(regexp_replace(NULLIF(btrim(d.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
+                 IN (
+                    lower(regexp_replace(NULLIF(btrim(ccf.field_rep_id::text), ''), '[^a-zA-Z0-9]', '', 'g')),
+                    lower(regexp_replace(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+                 )
+            UNION
+            SELECT
                 t.brand_campaign_id,
                 t.doctor_identity_key,
                 t.field_rep_id AS field_rep_id_resolved,
