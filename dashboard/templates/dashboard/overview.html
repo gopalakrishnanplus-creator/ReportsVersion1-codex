@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>In-Clinic Sharing Dashboard</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260327d">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260516a">
 </head>
 <body>
   <main id="report-root" class="dashboard">
@@ -90,15 +90,21 @@
         {% endfor %}
       </article>
 
-      <article id="action_panel" class="card side-panel action-panel">
-        <h3>Action Required This Week</h3>
-        <p class="subtext">Primary Issue:</p>
-        <p class="issue">{{ action_panel.primary_issue }}</p>
-        <p class="subtext">Who should act:</p>
-        <p><strong>{{ action_panel.who_should_act }}</strong></p>
-        <ul>
-          {% for a in action_panel.actions %}<li>{{ a }}</li>{% endfor %}
-        </ul>
+      <article id="field_rep_tile" class="card side-panel field-rep-tile" role="button" tabindex="0" aria-controls="field_rep_insights_panel" aria-expanded="false">
+        <p class="subtext">Click to view</p>
+        <h3>Field Representative Insights</h3>
+        <div class="field-rep-tile-metrics">
+          <div>
+            <strong>{{ field_rep_summary.total_reps }}</strong>
+            <span>Field Reps</span>
+          </div>
+          <div>
+            <strong>{{ field_rep_summary.total_doctors_assigned }}</strong>
+            <span>Doctors Assigned</span>
+          </div>
+        </div>
+        <p class="caption">Sent {{ field_rep_summary.doctors_sent }} · Viewed {{ field_rep_summary.doctors_viewed }} · Video {{ field_rep_summary.doctors_video_played }} · PDF {{ field_rep_summary.doctors_pdf_downloaded }}</p>
+        <button type="button" id="field-rep-toggle" class="insight-toggle">View all reps</button>
       </article>
     </section>
 
@@ -127,6 +133,46 @@
         <p class="kpi-rate">{{ kpi_pdf_pct }}%</p>
         <p class="caption">Downloads / Doctors Opened</p>
       </article>
+    </section>
+
+    <section id="field_rep_insights_panel" class="card field-rep-panel hidden" aria-live="polite">
+      <div class="panel-title-row">
+        <div>
+          <h3>Field Representative Insights</h3>
+          <p class="subtext">Doctor assignment and current collateral engagement by field representative.</p>
+        </div>
+        <button type="button" id="field-rep-close" class="ghost-btn">Hide Insights</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Field Representative</th>
+              <th>State</th>
+              <th>Doctors Assigned</th>
+              <th>Collateral Sent</th>
+              <th>Viewed</th>
+              <th>Video Played</th>
+              <th>PDF / Collateral Saved</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for rep in field_rep_insights %}
+              <tr>
+                <td>{{ rep.field_rep_name }}</td>
+                <td>{{ rep.state_normalized }}</td>
+                <td>{{ rep.total_doctors_assigned }}</td>
+                <td>{{ rep.doctors_sent }}</td>
+                <td>{{ rep.doctors_viewed }}</td>
+                <td>{{ rep.doctors_video_played }}</td>
+                <td>{{ rep.doctors_pdf_downloaded }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="7">No field representative assignment data available.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section class="bottom-grid">
@@ -211,6 +257,6 @@
   {{ video_pct_series|json_script:"trend-video" }}
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-  <script src="{% static 'dashboard/js/overview.js' %}"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260516a"></script>
 </body>
 </html>
