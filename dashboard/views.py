@@ -1130,16 +1130,19 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             fallback_weekly_rows = _fetch_dicts(f"SELECT * FROM {selected_schema}.kpi_weekly_summary ORDER BY week_index")
             if fallback_weekly_rows:
                 all_weekly_rows = fallback_weekly_rows
-        available_weekly_rows = [r for r in all_weekly_rows if _row_has_week_data(r)]
+        data_weekly_rows = [r for r in all_weekly_rows if _row_has_week_data(r)]
+        metric_weekly_rows = data_weekly_rows or all_weekly_rows
 
-        week_options = sorted({_to_int(r.get("week_index")) for r in available_weekly_rows if _to_int(r.get("week_index")) > 0})
+        week_options = sorted({_to_int(r.get("week_index")) for r in all_weekly_rows if _to_int(r.get("week_index")) > 0})
         if week_filter and week_filter not in week_options:
             week_filter = None
 
         if week_filter:
-            weekly_rows = [r for r in available_weekly_rows if _to_int(r.get("week_index")) == week_filter]
+            weekly_rows = [r for r in all_weekly_rows if _to_int(r.get("week_index")) == week_filter]
         else:
-            weekly_rows = list(available_weekly_rows)
+            weekly_rows = list(all_weekly_rows)
+
+        metric_rows = weekly_rows if week_filter else metric_weekly_rows
 
         if not company_logo_url:
             fallback_logo = _fetch_dicts(
@@ -1186,8 +1189,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             if fallback_collateral:
                 collateral_name = fallback_collateral[0].get("collateral_title") or collateral_name
 
-        if weekly_rows:
-            latest_week = weekly_rows[-1]
+        if metric_rows:
+            latest_week = metric_rows[-1]
             total_doctors = _to_float(latest_week.get("total_doctors_in_campaign"))
 
             latest_reached = _to_float(latest_week.get("doctors_reached_unique"))
@@ -1205,14 +1208,15 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             current_week_idx = _to_int(latest_week.get("week_index"), 1)
             prev_week = None
             if current_week_idx > 1:
-                prev_candidates = [r for r in available_weekly_rows if _to_int(r.get("week_index")) == current_week_idx - 1]
+                prev_candidates = [r for r in all_weekly_rows if _to_int(r.get("week_index")) == current_week_idx - 1]
                 prev_week = prev_candidates[-1] if prev_candidates else None
 
-            campaign_health = sum(_to_float(r.get("weekly_health_score")) for r in available_weekly_rows) / max(len(available_weekly_rows), 1)
+            health_rows = data_weekly_rows or metric_rows
+            campaign_health = sum(_to_float(r.get("weekly_health_score")) for r in health_rows) / max(len(health_rows), 1)
             weekly_health = _to_float(latest_week.get("weekly_health_score"))
             wow_campaign = campaign_health - (
-                sum(_to_float(r.get("weekly_health_score")) for r in available_weekly_rows[:-1]) / max(len(available_weekly_rows[:-1]), 1)
-                if len(available_weekly_rows) > 1
+                sum(_to_float(r.get("weekly_health_score")) for r in health_rows[:-1]) / max(len(health_rows[:-1]), 1)
+                if len(health_rows) > 1
                 else campaign_health
             )
             wow_weekly = weekly_health - _to_float(prev_week.get("weekly_health_score")) if prev_week else 0.0
@@ -1420,7 +1424,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     ],
                 }
 
-            weekly_best = max(available_weekly_rows, key=lambda r: _to_float(r.get("weekly_health_score")))
+            weekly_best = max(health_rows, key=lambda r: _to_float(r.get("weekly_health_score")))
             bench_rows = _fetch_dicts(
                 """
                 SELECT avg_campaign_health_score
@@ -1567,7 +1571,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     pdf_pct_series = [_safe_pct(_to_float(r.get("pdf_download_unique")), _to_float(r.get("total_doctors_in_campaign"))) for r in trend_source_rows]
     video_pct_series = [_safe_pct(_to_float(r.get("video_viewed_50_unique")), _to_float(r.get("total_doctors_in_campaign"))) for r in trend_source_rows]
 
-    week_options = sorted({_to_int(r.get("week_index")) for r in all_weekly_rows if _row_has_week_data(r) and _to_int(r.get("week_index")) > 0})
+    week_options = sorted({_to_int(r.get("week_index")) for r in all_weekly_rows if _to_int(r.get("week_index")) > 0})
 
     if selected_campaign:
         if not brand_name or brand_name == "Apex":

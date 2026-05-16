@@ -24,7 +24,8 @@
       { name: 'Video Viewed (>50%) %', values: video, color: '#f0aa12' },
     ];
 
-    const maxVal = Math.max(100, ...series.flatMap((s) => s.values), 1);
+    const rawMax = Math.max(...series.flatMap((s) => s.values).filter((value) => Number.isFinite(value)), 0);
+    const maxVal = rawMax <= 0 ? 100 : Math.min(100, Math.max(10, Math.ceil(rawMax / 10) * 10));
     const groupCount = labels.length;
     const groupWidth = chartW / Math.max(groupCount, 1);
     const barWidth = Math.min(20, groupWidth / 6);
