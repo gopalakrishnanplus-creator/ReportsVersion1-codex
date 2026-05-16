@@ -365,7 +365,7 @@ def build_silver(run_id: str) -> None:
             k.brand_campaign_id,
             k.collateral_id,
             k.doctor_identity_key,
-            COALESCE(share.reached_first_share_ts, tx.reached_first_tx_ts) AS reached_first_ts,
+            COALESCE(share.reached_first_share_ts, tx.reached_first_tx_ts, tx.opened_first_ts, tx.video_gt_50_first_ts, tx.pdf_download_first_ts) AS reached_first_ts,
             tx.opened_first_ts,
             tx.video_gt_50_first_ts,
             tx.pdf_download_first_ts,
