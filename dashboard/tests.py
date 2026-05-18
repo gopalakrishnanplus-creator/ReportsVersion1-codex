@@ -101,6 +101,10 @@ class DashboardRoutingTests(SimpleTestCase):
 
 
 class DashboardAccessViewTests(SimpleTestCase):
+    def test_engagement_health_uses_actual_campaign_denominator(self):
+        score = dashboard.views._engagement_health_score(reached=5, opened=5, consumed=5, total_doctors=1000)
+        self.assertAlmostEqual(score, 0.5, places=1)
+
     def test_reports_home_renders(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
@@ -257,6 +261,7 @@ class DashboardAccessViewTests(SimpleTestCase):
             },
             "field_rep_insights": [
                 {
+                    "field_rep_id": "FR-101",
                     "field_rep_name": "Asha Mehta",
                     "state_normalized": "Maharashtra",
                     "total_doctors_assigned": 120,
@@ -305,6 +310,10 @@ class DashboardAccessViewTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Field Representative Insights")
+        self.assertContains(response, "Field Rep ID")
+        self.assertContains(response, "Download Excel")
         self.assertContains(response, "Asha Mehta")
+        self.assertContains(response, "FR-101")
         self.assertNotContains(response, "Action Required This Week")
         self.assertNotContains(response, "Weekly KPI Table")
+        self.assertNotContains(response, "Back to Menu")

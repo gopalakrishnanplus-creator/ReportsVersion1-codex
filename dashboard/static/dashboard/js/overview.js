@@ -109,6 +109,52 @@
     });
   }
 
+  const stateViewAll = document.getElementById('state-view-all');
+  if (stateViewAll) {
+    stateViewAll.addEventListener('click', () => {
+      const extraRows = document.querySelectorAll('.state-row-extra');
+      const shouldOpen = stateViewAll.getAttribute('aria-expanded') !== 'true';
+      extraRows.forEach((row) => row.classList.toggle('hidden', !shouldOpen));
+      stateViewAll.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+      stateViewAll.textContent = shouldOpen ? 'Show Less' : 'View All';
+    });
+  }
+
+  function escapeExcelHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  const fieldRepExcelBtn = document.getElementById('field-rep-excel-btn');
+  const fieldRepTable = document.getElementById('field-rep-insights-table');
+  if (fieldRepExcelBtn && fieldRepTable) {
+    fieldRepExcelBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const rows = Array.from(fieldRepTable.querySelectorAll('tr')).map((row) => (
+        Array.from(row.children).map((cell) => `<td>${escapeExcelHtml(cell.textContent.trim())}</td>`).join('')
+      ));
+      const workbook = `
+        <html>
+          <head><meta charset="UTF-8"></head>
+          <body><table border="1">${rows.map((row) => `<tr>${row}</tr>`).join('')}</table></body>
+        </html>
+      `;
+      const blob = new Blob([workbook], { type: 'application/vnd.ms-excel;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const safeCampaign = (window.location.pathname.split('/')[2] || 'campaign').replace(/[^a-zA-Z0-9-_]/g, '_');
+      link.href = url;
+      link.download = `field_rep_insights_${safeCampaign}.xls`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    });
+  }
+
   const downloadBtn = document.getElementById('download-pdf-btn');
   const reportRoot = document.getElementById('report-root');
   if (!downloadBtn || !reportRoot) return;
@@ -143,7 +189,6 @@
         document.querySelector('.controls-card'),
         document.querySelector('.top-grid'),
         document.getElementById('kpi_tiles'),
-        !fieldRepPanel?.classList.contains('hidden') ? fieldRepPanel : null,
         document.querySelector('.bottom-grid'),
       ].filter(Boolean);
 

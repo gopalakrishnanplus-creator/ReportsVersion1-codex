@@ -65,6 +65,22 @@ def _health_color(score: float) -> str:
     return "green"
 
 
+def _clean_display_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.lower() in {"null", "none", "n/a", "na", "-", "brand"}:
+        return None
+    return text
+
+
+def _engagement_health_score(reached: float, opened: float, consumed: float, total_doctors: float) -> float:
+    reached_component = min(_safe_pct(reached, total_doctors), 100.0) / 100.0
+    opened_component = min(_safe_pct(opened, total_doctors), 100.0) / 100.0
+    consumed_component = min(_safe_pct(consumed, total_doctors), 100.0) / 100.0
+    return ((reached_component * 0.5) + (opened_component * 0.25) + (consumed_component * 0.25)) * 100.0
+
+
 def _format_schedule_date(value: Any) -> str | None:
     if value is None:
         return None
@@ -177,17 +193,24 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
             SELECT
                 cm.id,
                 cm.brand_campaign_id,
+                cm.name AS campaign_name,
                 cm.brand_name,
+                cm.company_name,
                 cm.company_logo,
-                ROW_NUMBER() OVER (
-                    ORDER BY
-                        CASE
-                            WHEN {_normalized_sql('cm.brand_campaign_id')} = %s THEN 1
-                            WHEN {_normalized_sql('cm.id::text')} = %s THEN 2
-                            ELSE 3
-                        END,
-                        cm.id DESC
-                ) AS rn
+                CASE
+                    WHEN cm.start_date IS NULL OR btrim(cm.start_date) = '' OR lower(btrim(cm.start_date)) = 'null' THEN NULL
+                    ELSE cm.start_date::date
+                END AS campaign_start_date,
+                CASE
+                    WHEN cm.end_date IS NULL OR btrim(cm.end_date) = '' OR lower(btrim(cm.end_date)) = 'null' THEN NULL
+                    ELSE cm.end_date::date
+                END AS campaign_end_date,
+                COALESCE(NULLIF(cm.updated_at, ''), NULLIF(cm.created_at, '')) AS source_updated_at,
+                CASE
+                    WHEN {_normalized_sql('cm.brand_campaign_id')} = %s THEN 1
+                    WHEN {_normalized_sql('cm.id::text')} = %s THEN 2
+                    ELSE 3
+                END AS campaign_match_rank
             FROM bronze.campaign_management_campaign cm
             LEFT JOIN silver.map_brand_campaign_to_campaign m
               ON {_normalized_sql('m.brand_campaign_id')} = %s
@@ -197,30 +220,33 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
                 OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
         ),
         campaign_source AS (
-            SELECT id, brand_campaign_id, brand_name, company_logo
+            SELECT *
             FROM campaign_row
-            WHERE rn = 1
         ),
         schedule_candidates AS (
             SELECT
                 sc.collateral_id,
-                sc.schedule_start_date,
-                sc.schedule_end_date,
+                COALESCE(sc.schedule_start_date, cs.campaign_start_date) AS schedule_start_date,
+                COALESCE(sc.schedule_end_date, cs.campaign_end_date) AS schedule_end_date,
                 sc.collateral_title,
-                CASE
-                    WHEN cs.brand_name IS NULL OR btrim(cs.brand_name) = '' OR lower(btrim(cs.brand_name)) = 'null'
-                    THEN NULL
-                    ELSE cs.brand_name
-                END AS brand_name,
+                COALESCE(
+                    NULLIF(btrim(cs.brand_name), ''),
+                    NULLIF(btrim(cs.company_name), ''),
+                    NULLIF(btrim(cs.campaign_name), '')
+                ) AS brand_name,
                 CASE
                     WHEN cs.company_logo IS NULL OR btrim(cs.company_logo) = '' OR lower(btrim(cs.company_logo)) = 'null'
                     THEN NULL
                     ELSE cs.company_logo
                 END AS company_logo,
+                cs.campaign_name,
+                cs.campaign_match_rank,
+                cs.source_updated_at,
                 CASE
-                    WHEN sc.schedule_start_date <= CURRENT_DATE AND sc.schedule_end_date >= CURRENT_DATE THEN 0
-                    WHEN sc.schedule_start_date <= CURRENT_DATE THEN 1
-                    WHEN sc.schedule_start_date > CURRENT_DATE THEN 2
+                    WHEN COALESCE(sc.schedule_start_date, cs.campaign_start_date) <= CURRENT_DATE
+                     AND COALESCE(sc.schedule_end_date, cs.campaign_end_date) >= CURRENT_DATE THEN 0
+                    WHEN COALESCE(sc.schedule_start_date, cs.campaign_start_date) <= CURRENT_DATE THEN 1
+                    WHEN COALESCE(sc.schedule_start_date, cs.campaign_start_date) > CURRENT_DATE THEN 2
                     ELSE 3
                 END AS schedule_rank
             FROM campaign_source cs
@@ -234,11 +260,57 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
             CASE WHEN schedule_start_date <= CURRENT_DATE THEN schedule_start_date END DESC NULLS LAST,
             CASE WHEN schedule_start_date > CURRENT_DATE THEN schedule_start_date END ASC NULLS LAST,
             schedule_end_date DESC NULLS LAST,
+            campaign_match_rank ASC,
+            source_updated_at DESC NULLS LAST,
             collateral_id DESC NULLS LAST
         LIMIT 50
         """,
         [lookup_key, lookup_key, lookup_key, lookup_key, lookup_key],
     )
+
+
+def _campaign_display_name(selected_campaign: str, brand_campaign_variants: list[str]) -> str | None:
+    brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
+    try:
+        rows = _fetch_dicts(
+            f"""
+            WITH candidates AS (
+                SELECT
+                    cm.brand_name,
+                    cm.company_name,
+                    cm.name AS campaign_name,
+                    COALESCE(NULLIF(cm.updated_at, ''), NULLIF(cm.created_at, '')) AS sort_ts
+                FROM bronze.campaign_management_campaign cm
+                WHERE {_normalized_sql('cm.brand_campaign_id')} IN ({brand_placeholders})
+                   OR {_normalized_sql('cm.id::text')} IN ({brand_placeholders})
+                UNION ALL
+                SELECT
+                    NULL::text AS brand_name,
+                    NULL::text AS company_name,
+                    cc.name AS campaign_name,
+                    COALESCE(NULLIF(cc.updated_at, ''), NULLIF(cc.created_at, '')) AS sort_ts
+                FROM bronze.campaign_campaign cc
+                JOIN silver.map_brand_campaign_to_campaign m
+                  ON NULLIF(btrim(m.campaign_id_resolved), '') = cc.id::text
+                WHERE {_normalized_sql('m.brand_campaign_id')} IN ({brand_placeholders})
+                   OR {_normalized_sql('cc.id::text')} IN ({brand_placeholders})
+            )
+            SELECT brand_name, company_name, campaign_name
+            FROM candidates
+            ORDER BY sort_ts DESC NULLS LAST
+            LIMIT 20
+            """,
+            [*brand_keys, *brand_keys, *brand_keys, *brand_keys],
+        )
+    except (ProgrammingError, OperationalError):
+        return None
+
+    for row in rows:
+        for key in ("brand_name", "company_name", "campaign_name"):
+            label = _clean_display_text(row.get(key))
+            if label:
+                return label
+    return None
 
 
 def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list[str]) -> int:
@@ -414,16 +486,18 @@ def _weekly_rows_for_current_collateral(
             doctors_consumed_unique,
             %s::numeric AS total_doctors_in_campaign,
             (%s::numeric / GREATEST((SELECT COUNT(*) FROM weeks), 1)::numeric) AS weekly_doctor_base,
-            LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_reached_unique / NULLIF((%s::numeric / GREATEST((SELECT COUNT(*) FROM weeks), 1)::numeric),0) END, 1.0) AS weekly_reached_pct,
+            LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF(%s::numeric,0) END, 1.0) AS weekly_reached_pct,
             CASE WHEN doctors_reached_unique=0 THEN 0 ELSE doctors_opened_unique::numeric / doctors_reached_unique END AS weekly_opened_pct,
             CASE WHEN doctors_opened_unique=0 THEN 0 ELSE doctors_consumed_unique::numeric / doctors_opened_unique END AS weekly_consumption_pct,
-            ((LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_reached_unique / NULLIF((%s::numeric / GREATEST((SELECT COUNT(*) FROM weeks), 1)::numeric),0) END, 1.0)
-            + CASE WHEN doctors_reached_unique=0 THEN 0 ELSE doctors_opened_unique::numeric / doctors_reached_unique END
-            + CASE WHEN doctors_opened_unique=0 THEN 0 ELSE doctors_consumed_unique::numeric / doctors_opened_unique END) / 3.0) * 100 AS weekly_health_score
+            (
+                LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF(%s::numeric,0) END, 1.0) * 0.5
+                + LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_opened_unique::numeric / NULLIF(%s::numeric,0) END, 1.0) * 0.25
+                + LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_consumed_unique::numeric / NULLIF(%s::numeric,0) END, 1.0) * 0.25
+            ) * 100 AS weekly_health_score
         FROM agg
         ORDER BY week_index
         """,
-        [*params, total_doctors, total_doctors, total_doctors, total_doctors, total_doctors, total_doctors],
+        [*params, *([total_doctors] * 10)],
     )
 
 
@@ -472,15 +546,24 @@ def _field_rep_insight_rows(
             LEFT JOIN bronze.campaign_fieldrep cfr
               ON cfr.id::text = ccf.field_rep_id::text
         ),
+        assigned_rep_keys AS (
+            SELECT field_rep_id, internal_rep_key AS rep_key
+            FROM assigned_reps
+            WHERE internal_rep_key <> ''
+            UNION
+            SELECT field_rep_id, external_rep_key AS rep_key
+            FROM assigned_reps
+            WHERE external_rep_key <> ''
+        ),
         assigned_doctors AS (
             SELECT
-                ar.field_rep_id,
+                ark.field_rep_id,
                 COUNT(DISTINCT d.doctor_identity_key) AS total_doctors_assigned
-            FROM assigned_reps ar
+            FROM assigned_rep_keys ark
             LEFT JOIN silver.dim_doctor d
-              ON {_normalized_sql('d.rep_id_normalized')} IN (ar.internal_rep_key, ar.external_rep_key)
-              OR {_normalized_sql('d.field_rep_id_resolved')} IN (ar.internal_rep_key, ar.external_rep_key)
-            GROUP BY ar.field_rep_id
+              ON {_normalized_sql('d.rep_id_normalized')} = ark.rep_key
+              OR {_normalized_sql('d.field_rep_id_resolved')} = ark.rep_key
+            GROUP BY ark.field_rep_id
         ),
         activity AS (
             SELECT
@@ -1109,6 +1192,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     row.get("collateral_id")
                     for row in schedule_rows
                     if row.get("schedule_rank") == primary_rank
+                    and row.get("schedule_start_date") == schedule_start_raw
+                    and row.get("schedule_end_date") == schedule_end_raw
                 ]
             )
             start = _format_schedule_date(primary_schedule.get("schedule_start_date"))
@@ -1116,7 +1201,11 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             if start and end:
                 schedule_text = f"{start} - {end}"
             collateral_name = primary_schedule.get("collateral_title") or collateral_name
-            brand_name = primary_schedule.get("brand_name") or brand_name
+            brand_name = (
+                _clean_display_text(primary_schedule.get("brand_name"))
+                or _clean_display_text(primary_schedule.get("campaign_name"))
+                or brand_name
+            )
             company_logo_url = _build_media_logo_url(primary_schedule.get("company_logo"))
 
         assigned_total_doctors = _assigned_doctor_count(requested_campaign, brand_campaign_variants)
@@ -1215,14 +1304,34 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 prev_week = prev_candidates[-1] if prev_candidates else None
 
             health_rows = data_weekly_rows or metric_rows
-            campaign_health = sum(_to_float(r.get("weekly_health_score")) for r in health_rows) / max(len(health_rows), 1)
-            weekly_health = _to_float(latest_week.get("weekly_health_score"))
-            wow_campaign = campaign_health - (
-                sum(_to_float(r.get("weekly_health_score")) for r in health_rows[:-1]) / max(len(health_rows[:-1]), 1)
-                if len(health_rows) > 1
-                else campaign_health
+            campaign_reached = sum(_to_float(r.get("doctors_reached_unique")) for r in health_rows)
+            campaign_opened = sum(_to_float(r.get("doctors_opened_unique")) for r in health_rows)
+            campaign_consumed = sum(_to_float(r.get("doctors_consumed_unique")) for r in health_rows)
+            campaign_health = _engagement_health_score(campaign_reached, campaign_opened, campaign_consumed, total_doctors)
+            weekly_health = _engagement_health_score(latest_reached, latest_opened, latest_consumed, total_doctors)
+
+            previous_health_rows = [
+                r for r in health_rows
+                if _to_int(r.get("week_index")) < current_week_idx
+            ]
+            previous_campaign_health = _engagement_health_score(
+                sum(_to_float(r.get("doctors_reached_unique")) for r in previous_health_rows),
+                sum(_to_float(r.get("doctors_opened_unique")) for r in previous_health_rows),
+                sum(_to_float(r.get("doctors_consumed_unique")) for r in previous_health_rows),
+                total_doctors,
+            ) if previous_health_rows else campaign_health
+            wow_campaign = campaign_health - previous_campaign_health
+            wow_weekly = (
+                weekly_health
+                - _engagement_health_score(
+                    _to_float(prev_week.get("doctors_reached_unique")),
+                    _to_float(prev_week.get("doctors_opened_unique")),
+                    _to_float(prev_week.get("doctors_consumed_unique")),
+                    total_doctors,
+                )
+                if prev_week
+                else 0.0
             )
-            wow_weekly = weekly_health - _to_float(prev_week.get("weekly_health_score")) if prev_week else 0.0
 
             bridge_base_exists = _table_exists("silver", "bridge_brand_campaign_doctor_base")
             base_state_sql = "NULLIF(btrim(base.state_normalized), '')," if bridge_base_exists else ""
@@ -1357,7 +1466,6 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                       + (COALESCE(a.opened,0) / NULLIF(COALESCE(a.opened,0),0))) / 3.0) * 100
                   END ASC,
                   su.state_normalized ASC
-                LIMIT 3
                 """,
                 [
                     selected_campaign,
@@ -1427,7 +1535,15 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     ],
                 }
 
-            weekly_best = max(health_rows, key=lambda r: _to_float(r.get("weekly_health_score")))
+            weekly_best = max(
+                health_rows,
+                key=lambda r: _engagement_health_score(
+                    _to_float(r.get("doctors_reached_unique")),
+                    _to_float(r.get("doctors_opened_unique")),
+                    _to_float(r.get("doctors_consumed_unique")),
+                    total_doctors,
+                ),
+            )
             bench_rows = _fetch_dicts(
                 """
                 SELECT avg_campaign_health_score
@@ -1500,10 +1616,10 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                                 CASE WHEN x.opened=0 THEN 0 ELSE (x.video::numeric / x.opened) * 100 END AS video_pct,
                                 CASE WHEN x.opened=0 THEN 0 ELSE (x.pdf::numeric / x.opened) * 100 END AS pdf_pct,
                                 (
-                                  CASE WHEN d.total_doctors=0 THEN 0 ELSE (x.reached::numeric / d.total_doctors) END
-                                  + CASE WHEN x.reached=0 THEN 0 ELSE (x.opened::numeric / x.reached) END
-                                  + CASE WHEN x.opened=0 THEN 0 ELSE ((GREATEST(x.video, x.pdf))::numeric / x.opened) END
-                                ) / 3.0 * 100 AS health_score
+                                  CASE WHEN d.total_doctors=0 THEN 0 ELSE LEAST(x.reached::numeric / d.total_doctors, 1.0) END * 0.5
+                                  + CASE WHEN d.total_doctors=0 THEN 0 ELSE LEAST(x.opened::numeric / d.total_doctors, 1.0) END * 0.25
+                                  + CASE WHEN d.total_doctors=0 THEN 0 ELSE LEAST((GREATEST(x.video, x.pdf))::numeric / d.total_doctors, 1.0) END * 0.25
+                                ) * 100 AS health_score
                             FROM campaign_actions x
                             JOIN campaign_doctor_base d ON d.brand_campaign_id = x.brand_campaign_id
                         )
@@ -1555,9 +1671,10 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             }
 
         field_rep_insights = _field_rep_insight_rows(requested_campaign, brand_campaign_variants, current_collateral_ids)
+        field_rep_assigned_total = sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights)
         field_rep_summary = {
             "total_reps": len(field_rep_insights),
-            "total_doctors_assigned": assigned_total_doctors or sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights),
+            "total_doctors_assigned": field_rep_assigned_total or assigned_total_doctors,
             "doctors_sent": sum(_to_int(row.get("doctors_sent")) for row in field_rep_insights),
             "doctors_viewed": sum(_to_int(row.get("doctors_viewed")) for row in field_rep_insights),
             "doctors_video_played": sum(_to_int(row.get("doctors_video_played")) for row in field_rep_insights),
@@ -1584,9 +1701,9 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     ]
 
     if selected_campaign:
-        if not brand_name or brand_name == "Apex":
-            brand_name = f"Brand {selected_campaign[:8]}"
-        brand_logo_text = (brand_name or selected_campaign).strip()
+        metadata_name = _campaign_display_name(selected_campaign, brand_campaign_variants) if "brand_campaign_variants" in locals() else None
+        brand_name = metadata_name if brand_name == "Apex" and metadata_name else (_clean_display_text(brand_name) or metadata_name or "Apex")
+        brand_logo_text = brand_name.strip()
 
     return {
         "selected_campaign": selected_campaign,
