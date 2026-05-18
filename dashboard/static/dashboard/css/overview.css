@@ -55,6 +55,8 @@ select{min-width:360px;padding:8px;border:1px solid var(--line);border-radius:6p
 .panel-title-row{display:flex;justify-content:space-between;align-items:center}
 .panel-title-row h3{margin:0}
 .panel-title-row a{color:#2563eb;font-size:13px;text-decoration:none;font-weight:600}
+.link-button{border:0;background:transparent;color:#2563eb;font-size:13px;text-decoration:none;font-weight:700;cursor:pointer;padding:4px 0}
+.field-rep-panel-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 .state-row{display:flex;justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:8px;background:#fafbfd}
 .state-row p{margin:3px 0;font-size:13px}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700}
