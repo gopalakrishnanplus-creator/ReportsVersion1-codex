@@ -82,12 +82,13 @@
   function setFieldRepPanel(open) {
     if (!fieldRepTile || !fieldRepPanel) return;
     fieldRepPanel.classList.toggle('hidden', !open);
+    document.body.classList.toggle('modal-open', open);
     fieldRepTile.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (fieldRepToggle) {
       fieldRepToggle.textContent = open ? 'Hide insights' : 'View all reps';
     }
     if (open) {
-      fieldRepPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      fieldRepClose?.focus();
     }
   }
 
@@ -108,13 +109,27 @@
       setFieldRepPanel(false);
     });
   }
+  if (fieldRepPanel) {
+    fieldRepPanel.addEventListener('click', (event) => {
+      if (event.target === fieldRepPanel) {
+        setFieldRepPanel(false);
+      }
+    });
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && fieldRepPanel && !fieldRepPanel.classList.contains('hidden')) {
+      setFieldRepPanel(false);
+    }
+  });
 
   const stateViewAll = document.getElementById('state-view-all');
+  const stateList = document.getElementById('state-list');
   if (stateViewAll) {
     stateViewAll.addEventListener('click', () => {
       const extraRows = document.querySelectorAll('.state-row-extra');
       const shouldOpen = stateViewAll.getAttribute('aria-expanded') !== 'true';
       extraRows.forEach((row) => row.classList.toggle('hidden', !shouldOpen));
+      stateList?.classList.toggle('expanded', shouldOpen);
       stateViewAll.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
       stateViewAll.textContent = shouldOpen ? 'Show Less' : 'View All';
     });
