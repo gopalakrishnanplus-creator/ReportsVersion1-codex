@@ -81,6 +81,11 @@ def _engagement_health_score(reached: float, opened: float, consumed: float, tot
     return ((reached_component * 0.5) + (opened_component * 0.25) + (consumed_component * 0.25)) * 100.0
 
 
+def _first_display_word(value: Any) -> str:
+    text = _clean_display_text(value) or ""
+    return text.split()[0] if text.split() else ""
+
+
 def _format_schedule_date(value: Any) -> str | None:
     if value is None:
         return None
@@ -1703,7 +1708,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     if selected_campaign:
         metadata_name = _campaign_display_name(selected_campaign, brand_campaign_variants) if "brand_campaign_variants" in locals() else None
         brand_name = metadata_name if brand_name == "Apex" and metadata_name else (_clean_display_text(brand_name) or metadata_name or "Apex")
-        brand_logo_text = brand_name.strip()
+        brand_logo_text = _first_display_word(brand_name) or brand_name.strip()
 
     return {
         "selected_campaign": selected_campaign,

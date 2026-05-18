@@ -243,7 +243,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         context = {
             "selected_campaign": "demo",
             "brand_name": "Demo Brand",
-            "brand_logo_text": "Demo Brand",
+            "brand_logo_text": "Demo",
             "company_logo_url": None,
             "selected_schema": "gold_campaign_demo",
             "weekly_rows": [],
@@ -309,7 +309,9 @@ class DashboardAccessViewTests(SimpleTestCase):
             response = self.client.get("/campaign/demo/")
 
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<div class="brand-logo">Demo</div>', html=True)
         self.assertContains(response, "Field Representative Insights")
+        self.assertContains(response, 'role="dialog"')
         self.assertContains(response, "Field Rep ID")
         self.assertContains(response, "Download Excel")
         self.assertContains(response, "Asha Mehta")

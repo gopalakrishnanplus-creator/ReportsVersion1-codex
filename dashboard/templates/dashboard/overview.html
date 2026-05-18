@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>In-Clinic Sharing Dashboard</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260518a">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260518b">
 </head>
 <body>
   <main id="report-root" class="dashboard">
@@ -14,7 +14,7 @@
         {% if company_logo_url %}
         <img class="brand-logo-image" src="{{ company_logo_url }}" alt="{{ brand_name }} logo" loading="lazy">
         {% else %}
-        <div class="brand-logo">{{ brand_logo_text|slice:":6" }}</div>
+        <div class="brand-logo">{{ brand_logo_text }}</div>
         {% endif %}
         <div>
           <p class="brand-sub">{{ brand_name }}</p>
@@ -72,12 +72,13 @@
       <article id="state_panel" class="card side-panel">
         <div class="panel-title-row">
           <h3>States Requiring Attention</h3>
-          {% if state_attention|length > 3 %}
+          {% if state_attention|length > 5 %}
           <button type="button" id="state-view-all" class="link-button" aria-expanded="false">View All</button>
           {% endif %}
         </div>
+        <div id="state-list" class="state-list">
         {% for s in state_attention %}
-          <div class="state-row{% if forloop.counter > 3 %} state-row-extra hidden{% endif %}">
+          <div class="state-row{% if forloop.counter > 5 %} state-row-extra hidden{% endif %}">
             <div>
               <strong>{{ s.state }}</strong>
               <p>Open: {{ s.open_pct }}%</p>
@@ -90,6 +91,7 @@
         {% empty %}
           <p class="subtext">No state data available.</p>
         {% endfor %}
+        </div>
       </article>
 
       <article id="field_rep_tile" class="card side-panel field-rep-tile" role="button" tabindex="0" aria-controls="field_rep_insights_panel" aria-expanded="false">
@@ -137,46 +139,48 @@
       </article>
     </section>
 
-    <section id="field_rep_insights_panel" class="card field-rep-panel hidden" aria-live="polite">
-      <div class="panel-title-row">
-        <div>
-          <h3>Field Representative Insights</h3>
-          <p class="subtext">Doctor assignment and current collateral engagement by field representative.</p>
+    <section id="field_rep_insights_panel" class="field-rep-modal hidden" role="dialog" aria-modal="true" aria-labelledby="field-rep-modal-title">
+      <div class="card field-rep-dialog">
+        <div class="panel-title-row">
+          <div>
+            <h3 id="field-rep-modal-title">Field Representative Insights</h3>
+            <p class="subtext">Doctor assignment and current collateral engagement by field representative.</p>
+          </div>
+          <div class="field-rep-panel-actions">
+            <button type="button" id="field-rep-excel-btn" class="ghost-btn">Download Excel</button>
+            <button type="button" id="field-rep-close" class="ghost-btn">Hide Insights</button>
+          </div>
         </div>
-        <div class="field-rep-panel-actions">
-          <button type="button" id="field-rep-excel-btn" class="ghost-btn">Download Excel</button>
-          <button type="button" id="field-rep-close" class="ghost-btn">Hide Insights</button>
-        </div>
-      </div>
-      <div class="table-wrap">
-        <table id="field-rep-insights-table">
-          <thead>
-            <tr>
-              <th>Field Rep ID</th>
-              <th>Field Representative</th>
-              <th>Doctors Assigned</th>
-              <th>Collateral Sent</th>
-              <th>Viewed</th>
-              <th>Video Played</th>
-              <th>PDF / Collateral Saved</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for rep in field_rep_insights %}
+        <div class="table-wrap field-rep-table-wrap">
+          <table id="field-rep-insights-table">
+            <thead>
               <tr>
-                <td>{{ rep.field_rep_id }}</td>
-                <td>{{ rep.field_rep_name }}</td>
-                <td>{{ rep.total_doctors_assigned }}</td>
-                <td>{{ rep.doctors_sent }}</td>
-                <td>{{ rep.doctors_viewed }}</td>
-                <td>{{ rep.doctors_video_played }}</td>
-                <td>{{ rep.doctors_pdf_downloaded }}</td>
+                <th>Field Rep ID</th>
+                <th>Field Representative</th>
+                <th>Doctors Assigned</th>
+                <th>Collateral Sent</th>
+                <th>Viewed</th>
+                <th>Video Played</th>
+                <th>PDF / Collateral Saved</th>
               </tr>
-            {% empty %}
-              <tr><td colspan="7">No field representative assignment data available.</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {% for rep in field_rep_insights %}
+                <tr>
+                  <td>{{ rep.field_rep_id }}</td>
+                  <td>{{ rep.field_rep_name }}</td>
+                  <td>{{ rep.total_doctors_assigned }}</td>
+                  <td>{{ rep.doctors_sent }}</td>
+                  <td>{{ rep.doctors_viewed }}</td>
+                  <td>{{ rep.doctors_video_played }}</td>
+                  <td>{{ rep.doctors_pdf_downloaded }}</td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="7">No field representative assignment data available.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
 
@@ -239,6 +243,6 @@
   {{ video_pct_series|json_script:"trend-video" }}
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260518a"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260518b"></script>
 </body>
 </html>
