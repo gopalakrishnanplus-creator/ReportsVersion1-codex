@@ -537,6 +537,10 @@ def _field_rep_insight_rows(
             SELECT DISTINCT
                 ccf.field_rep_id::text AS field_rep_id,
                 COALESCE(
+                    NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''),
+                    NULLIF(btrim(ccf.field_rep_id::text), '')
+                ) AS field_rep_display_id,
+                COALESCE(
                     NULLIF(btrim(cfr.full_name), ''),
                     NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''),
                     NULLIF(btrim(ccf.field_rep_id::text), ''),
@@ -613,7 +617,7 @@ def _field_rep_insight_rows(
             GROUP BY rep_key
         )
         SELECT
-            ar.field_rep_id,
+            COALESCE(NULLIF(ar.field_rep_display_id, ''), ar.field_rep_id) AS field_rep_id,
             ar.field_rep_name,
             ar.state_normalized,
             COALESCE(ad.total_doctors_assigned, 0)::int AS total_doctors_assigned,
@@ -1214,11 +1218,14 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             company_logo_url = _build_media_logo_url(primary_schedule.get("company_logo"))
 
         assigned_total_doctors = _assigned_doctor_count(requested_campaign, brand_campaign_variants)
+        field_rep_insights = _field_rep_insight_rows(requested_campaign, brand_campaign_variants, current_collateral_ids)
+        field_rep_assigned_total = sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights)
+        reporting_total_doctors = field_rep_assigned_total or assigned_total_doctors
         all_weekly_rows = _weekly_rows_for_current_collateral(
             requested_campaign,
             brand_campaign_variants,
             current_collateral_ids,
-            assigned_total_doctors,
+            reporting_total_doctors,
             schedule_start_raw,
             schedule_end_raw,
         )
@@ -1226,6 +1233,9 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             fallback_weekly_rows = _fetch_dicts(f"SELECT * FROM {selected_schema}.kpi_weekly_summary ORDER BY week_index")
             if fallback_weekly_rows:
                 all_weekly_rows = fallback_weekly_rows
+        if reporting_total_doctors:
+            for row in all_weekly_rows:
+                row["total_doctors_in_campaign"] = reporting_total_doctors
         data_weekly_rows = [r for r in all_weekly_rows if _row_has_week_data(r)]
         metric_weekly_rows = data_weekly_rows or all_weekly_rows
 
@@ -1675,11 +1685,9 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 "week_of": f"Week {current_week_idx} ({latest_week.get('week_start_date')} to {latest_week.get('week_end_date')})",
             }
 
-        field_rep_insights = _field_rep_insight_rows(requested_campaign, brand_campaign_variants, current_collateral_ids)
-        field_rep_assigned_total = sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights)
         field_rep_summary = {
             "total_reps": len(field_rep_insights),
-            "total_doctors_assigned": field_rep_assigned_total or assigned_total_doctors,
+            "total_doctors_assigned": reporting_total_doctors,
             "doctors_sent": sum(_to_int(row.get("doctors_sent")) for row in field_rep_insights),
             "doctors_viewed": sum(_to_int(row.get("doctors_viewed")) for row in field_rep_insights),
             "doctors_video_played": sum(_to_int(row.get("doctors_video_played")) for row in field_rep_insights),
