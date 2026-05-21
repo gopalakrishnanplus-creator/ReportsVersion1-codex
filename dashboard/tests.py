@@ -105,6 +105,15 @@ class DashboardAccessViewTests(SimpleTestCase):
         score = dashboard.views._engagement_health_score(reached=5, opened=5, consumed=5, total_doctors=1000)
         self.assertAlmostEqual(score, 0.5, places=1)
 
+    def test_field_rep_insights_select_brand_supplied_rep_id_for_display(self):
+        with patch("dashboard.views._fetch_dicts", return_value=[]) as fetch_mock:
+            dashboard.views._field_rep_insight_rows("brand-1", ["brand-1"], ["9"])
+
+        sql = fetch_mock.call_args.args[0]
+        self.assertIn("brand_supplied_field_rep_id", sql)
+        self.assertIn("field_rep_display_id", sql)
+        self.assertIn("AS field_rep_id", sql)
+
     def test_reports_home_renders(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
