@@ -629,7 +629,13 @@ def _field_rep_insight_rows(
             COALESCE(NULLIF(ar.field_rep_display_id, ''), ar.field_rep_id) AS field_rep_id,
             ar.field_rep_name,
             ar.state_normalized,
-            COALESCE(ad.total_doctors_assigned, 0)::int AS total_doctors_assigned,
+            GREATEST(
+                COALESCE(ad.total_doctors_assigned, 0),
+                COALESCE(ab.doctors_sent, 0),
+                COALESCE(ab.doctors_viewed, 0),
+                COALESCE(ab.doctors_video_played, 0),
+                COALESCE(ab.doctors_pdf_downloaded, 0)
+            )::int AS total_doctors_assigned,
             COALESCE(ab.doctors_sent, 0)::int AS doctors_sent,
             COALESCE(ab.doctors_viewed, 0)::int AS doctors_viewed,
             COALESCE(ab.doctors_video_played, 0)::int AS doctors_video_played,
@@ -1228,7 +1234,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         assigned_total_doctors = _assigned_doctor_count(requested_campaign, brand_campaign_variants)
         field_rep_insights = _field_rep_insight_rows(requested_campaign, brand_campaign_variants, current_collateral_ids)
         field_rep_assigned_total = sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights)
-        reporting_total_doctors = field_rep_assigned_total or assigned_total_doctors
+        reporting_total_doctors = assigned_total_doctors or field_rep_assigned_total
         all_weekly_rows = _weekly_rows_for_current_collateral(
             requested_campaign,
             brand_campaign_variants,

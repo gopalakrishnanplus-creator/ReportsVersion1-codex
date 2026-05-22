@@ -116,6 +116,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("d.source", sql)
         self.assertNotIn("CASE WHEN COALESCE(ad.total_doctors_assigned, 0) > 0", sql)
         self.assertIn("activity_for_rep AS", sql)
+        self.assertIn("GREATEST(", sql)
+        self.assertIn("COALESCE(ab.doctors_sent, 0)", sql)
 
     def test_reports_home_renders(self):
         response = self.client.get("/")
