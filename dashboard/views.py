@@ -614,30 +614,29 @@ def _field_rep_insight_rows(
             WHERE {_normalized_sql('s.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_share}
         ),
-        activity_by_rep AS (
+        activity_for_rep AS (
             SELECT
-                rep_key,
-                COUNT(DISTINCT doctor_identity_key) FILTER (WHERE sent_flag = 1) AS doctors_sent,
-                COUNT(DISTINCT doctor_identity_key) FILTER (WHERE viewed_flag = 1) AS doctors_viewed,
-                COUNT(DISTINCT doctor_identity_key) FILTER (WHERE video_flag = 1) AS doctors_video_played,
-                COUNT(DISTINCT doctor_identity_key) FILTER (WHERE pdf_flag = 1) AS doctors_pdf_downloaded
-            FROM activity
-            WHERE rep_key <> ''
-            GROUP BY rep_key
+                ark.field_rep_id,
+                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE a.sent_flag = 1) AS doctors_sent,
+                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE a.viewed_flag = 1) AS doctors_viewed,
+                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE a.video_flag = 1) AS doctors_video_played,
+                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE a.pdf_flag = 1) AS doctors_pdf_downloaded
+            FROM assigned_rep_keys ark
+            LEFT JOIN activity a ON a.rep_key = ark.rep_key
+            GROUP BY ark.field_rep_id
         )
         SELECT
             COALESCE(NULLIF(ar.field_rep_display_id, ''), ar.field_rep_id) AS field_rep_id,
             ar.field_rep_name,
             ar.state_normalized,
             COALESCE(ad.total_doctors_assigned, 0)::int AS total_doctors_assigned,
-            CASE WHEN COALESCE(ad.total_doctors_assigned, 0) > 0 THEN COALESCE(ab.doctors_sent, 0) ELSE 0 END::int AS doctors_sent,
-            CASE WHEN COALESCE(ad.total_doctors_assigned, 0) > 0 THEN COALESCE(ab.doctors_viewed, 0) ELSE 0 END::int AS doctors_viewed,
-            CASE WHEN COALESCE(ad.total_doctors_assigned, 0) > 0 THEN COALESCE(ab.doctors_video_played, 0) ELSE 0 END::int AS doctors_video_played,
-            CASE WHEN COALESCE(ad.total_doctors_assigned, 0) > 0 THEN COALESCE(ab.doctors_pdf_downloaded, 0) ELSE 0 END::int AS doctors_pdf_downloaded
+            COALESCE(ab.doctors_sent, 0)::int AS doctors_sent,
+            COALESCE(ab.doctors_viewed, 0)::int AS doctors_viewed,
+            COALESCE(ab.doctors_video_played, 0)::int AS doctors_video_played,
+            COALESCE(ab.doctors_pdf_downloaded, 0)::int AS doctors_pdf_downloaded
         FROM assigned_reps ar
         LEFT JOIN assigned_doctors ad ON ad.field_rep_id = ar.field_rep_id
-        LEFT JOIN activity_by_rep ab
-          ON ab.rep_key IN (ar.internal_rep_key, ar.external_rep_key)
+        LEFT JOIN activity_for_rep ab ON ab.field_rep_id = ar.field_rep_id
         ORDER BY
             COALESCE(ab.doctors_sent, 0) DESC,
             COALESCE(ad.total_doctors_assigned, 0) DESC,
