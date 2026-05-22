@@ -144,7 +144,10 @@
         <div class="panel-title-row">
           <div>
             <h3 id="field-rep-modal-title">Field Representative Insights</h3>
-            <p class="subtext">Doctor assignment and current collateral engagement by field representative.</p>
+            <p class="subtext">Doctors Assigned is campaign-roster based. Engagement columns come from share and collateral transaction logs.</p>
+            {% if field_rep_summary.assignment_issue_count %}
+              <p class="data-warning">{{ field_rep_summary.assignment_issue_count }} rep{{ field_rep_summary.assignment_issue_count|pluralize }} have engagement that does not fully match the campaign doctor roster.</p>
+            {% endif %}
           </div>
           <div class="field-rep-panel-actions">
             <button type="button" id="field-rep-excel-btn" class="ghost-btn">Download Excel</button>
@@ -162,6 +165,7 @@
                 <th>Viewed</th>
                 <th>Video Played</th>
                 <th>PDF / Collateral Saved</th>
+                <th>Data Note</th>
               </tr>
             </thead>
             <tbody>
@@ -174,9 +178,10 @@
                   <td>{{ rep.doctors_viewed }}</td>
                   <td>{{ rep.doctors_video_played }}</td>
                   <td>{{ rep.doctors_pdf_downloaded }}</td>
+                  <td class="data-note">{{ rep.assignment_note|default:"-" }}</td>
                 </tr>
               {% empty %}
-                <tr><td colspan="7">No field representative assignment data available.</td></tr>
+                <tr><td colspan="8">No field representative assignment data available.</td></tr>
               {% endfor %}
             </tbody>
           </table>

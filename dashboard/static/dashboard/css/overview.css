@@ -40,6 +40,8 @@ select{min-width:360px;padding:8px;border:1px solid var(--line);border-radius:6p
 .wow.down{color:var(--red)}
 .subtext{color:var(--muted);margin:4px 0;font-size:13px}
 .caption{margin:6px 0 0;color:#4b5563;font-size:14px}
+.data-warning{display:inline-block;margin:6px 0 0;padding:6px 9px;border:1px solid #f0d39a;border-radius:8px;background:#fff8e6;color:#8a5a00;font-size:12px;font-weight:700}
+.data-note{max-width:260px;color:#6b4e16;font-size:12px;line-height:1.35}
 .side-panel{grid-column:3/span 1;min-height:190px}
 .action-panel{grid-column:4/span 1;background:#fffdf2}
 .field-rep-tile{grid-column:4/span 1;background:linear-gradient(180deg,#f4f9ff 0%,#ffffff 100%);cursor:pointer}

@@ -629,17 +629,24 @@ def _field_rep_insight_rows(
             COALESCE(NULLIF(ar.field_rep_display_id, ''), ar.field_rep_id) AS field_rep_id,
             ar.field_rep_name,
             ar.state_normalized,
-            GREATEST(
-                COALESCE(ad.total_doctors_assigned, 0),
-                COALESCE(ab.doctors_sent, 0),
-                COALESCE(ab.doctors_viewed, 0),
-                COALESCE(ab.doctors_video_played, 0),
-                COALESCE(ab.doctors_pdf_downloaded, 0)
-            )::int AS total_doctors_assigned,
+            COALESCE(ad.total_doctors_assigned, 0)::int AS total_doctors_assigned,
             COALESCE(ab.doctors_sent, 0)::int AS doctors_sent,
             COALESCE(ab.doctors_viewed, 0)::int AS doctors_viewed,
             COALESCE(ab.doctors_video_played, 0)::int AS doctors_video_played,
-            COALESCE(ab.doctors_pdf_downloaded, 0)::int AS doctors_pdf_downloaded
+            COALESCE(ab.doctors_pdf_downloaded, 0)::int AS doctors_pdf_downloaded,
+            CASE
+                WHEN COALESCE(ad.total_doctors_assigned, 0) = 0
+                 AND (
+                    COALESCE(ab.doctors_sent, 0) > 0
+                    OR COALESCE(ab.doctors_viewed, 0) > 0
+                    OR COALESCE(ab.doctors_video_played, 0) > 0
+                    OR COALESCE(ab.doctors_pdf_downloaded, 0) > 0
+                 )
+                THEN 'No campaign doctor roster match; engagement comes from share/transaction logs.'
+                WHEN COALESCE(ab.doctors_sent, 0) > COALESCE(ad.total_doctors_assigned, 0)
+                THEN 'Engagement exceeds campaign roster matches; check doctor roster or rep mapping.'
+                ELSE ''
+            END AS assignment_note
         FROM assigned_reps ar
         LEFT JOIN assigned_doctors ad ON ad.field_rep_id = ar.field_rep_id
         LEFT JOIN activity_for_rep ab ON ab.field_rep_id = ar.field_rep_id
@@ -1147,6 +1154,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         "doctors_viewed": 0,
         "doctors_video_played": 0,
         "doctors_pdf_downloaded": 0,
+        "assignment_issue_count": 0,
     }
 
     action_panel = {
@@ -1706,6 +1714,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             "doctors_viewed": sum(_to_int(row.get("doctors_viewed")) for row in field_rep_insights),
             "doctors_video_played": sum(_to_int(row.get("doctors_video_played")) for row in field_rep_insights),
             "doctors_pdf_downloaded": sum(_to_int(row.get("doctors_pdf_downloaded")) for row in field_rep_insights),
+            "assignment_issue_count": sum(1 for row in field_rep_insights if row.get("assignment_note")),
         }
 
     except Exception as exc:
