@@ -175,6 +175,7 @@ def build_silver(run_id: str) -> None:
             created_at::text AS created_at_ts,
             updated_at::text AS updated_at_ts,
             campaign_id,
+            source_table,
             COALESCE(NULLIF(source_field_rep_id,''), NULLIF(brand_supplied_field_rep_id,''), id::text) AS source_field_rep_id,
             NOW()::text AS _silver_updated_at,
             'PASS'::text AS _dq_status,
