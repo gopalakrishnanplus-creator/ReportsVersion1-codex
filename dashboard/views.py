@@ -190,6 +190,113 @@ def _candidate_campaign_ids_cte(brand_key_placeholders: str) -> str:
     """
 
 
+def _optional_table_exists(schema: str, table: str) -> bool:
+    try:
+        return _table_exists(schema, table)
+    except Exception:
+        return False
+
+
+def _field_rep_alias_sql_parts() -> tuple[str, str, list[str]]:
+    has_auth_user = _optional_table_exists("bronze", "auth_user")
+    has_local_user = _optional_table_exists("bronze", "user_management_user")
+    has_legacy_rep = _optional_table_exists("bronze", "sharing_management_fieldrepresentative")
+
+    joins: list[str] = []
+    select_parts: list[str] = []
+    key_columns = [
+        "auth_email_key",
+        "auth_username_key",
+        "local_user_id_key",
+        "local_field_id_key",
+        "local_email_key",
+        "local_username_key",
+        "legacy_rep_id_key",
+        "legacy_field_id_key",
+        "legacy_email_key",
+        "legacy_gmail_key",
+        "legacy_whatsapp_key",
+    ]
+
+    if has_auth_user:
+        joins.append("LEFT JOIN bronze.auth_user au ON au.id::text = cfr.user_id::text")
+        select_parts.extend(
+            [
+                f"{_normalized_sql('au.email')} AS auth_email_key",
+                f"{_normalized_sql('au.username')} AS auth_username_key",
+            ]
+        )
+        auth_email_match = f" OR ({_normalized_sql('uu.email')} <> '' AND {_normalized_sql('uu.email')} = {_normalized_sql('au.email')})"
+        auth_username_match = f" OR ({_normalized_sql('uu.username')} <> '' AND {_normalized_sql('uu.username')} = {_normalized_sql('au.username')})"
+        legacy_auth_email_match = (
+            f" OR ({_normalized_sql('sfr.email')} <> '' AND {_normalized_sql('sfr.email')} = {_normalized_sql('au.email')})"
+            f" OR ({_normalized_sql('sfr.gmail')} <> '' AND {_normalized_sql('sfr.gmail')} = {_normalized_sql('au.email')})"
+        )
+    else:
+        select_parts.extend(["''::text AS auth_email_key", "''::text AS auth_username_key"])
+        auth_email_match = ""
+        auth_username_match = ""
+        legacy_auth_email_match = ""
+
+    if has_local_user:
+        joins.append(
+            f"""
+            LEFT JOIN bronze.user_management_user uu
+              ON ({_normalized_sql('uu.field_id')} <> '' AND {_normalized_sql('uu.field_id')} = {_normalized_sql('cfr.brand_supplied_field_rep_id')})
+              OR ({_normalized_sql('uu.id::text')} <> '' AND {_normalized_sql('uu.id::text')} = {_normalized_sql('ccf.field_rep_id::text')})
+              {auth_email_match}
+              {auth_username_match}
+            """
+        )
+        select_parts.extend(
+            [
+                f"{_normalized_sql('uu.id::text')} AS local_user_id_key",
+                f"{_normalized_sql('uu.field_id')} AS local_field_id_key",
+                f"{_normalized_sql('uu.email')} AS local_email_key",
+                f"{_normalized_sql('uu.username')} AS local_username_key",
+            ]
+        )
+    else:
+        select_parts.extend(
+            [
+                "''::text AS local_user_id_key",
+                "''::text AS local_field_id_key",
+                "''::text AS local_email_key",
+                "''::text AS local_username_key",
+            ]
+        )
+
+    if has_legacy_rep:
+        joins.append(
+            f"""
+            LEFT JOIN bronze.sharing_management_fieldrepresentative sfr
+              ON ({_normalized_sql('sfr.field_id')} <> '' AND {_normalized_sql('sfr.field_id')} = {_normalized_sql('cfr.brand_supplied_field_rep_id')})
+              {legacy_auth_email_match}
+            """
+        )
+        select_parts.extend(
+            [
+                f"{_normalized_sql('sfr.id::text')} AS legacy_rep_id_key",
+                f"{_normalized_sql('sfr.field_id')} AS legacy_field_id_key",
+                f"{_normalized_sql('sfr.email')} AS legacy_email_key",
+                f"{_normalized_sql('sfr.gmail')} AS legacy_gmail_key",
+                f"{_normalized_sql('sfr.whatsapp_number')} AS legacy_whatsapp_key",
+            ]
+        )
+    else:
+        select_parts.extend(
+            [
+                "''::text AS legacy_rep_id_key",
+                "''::text AS legacy_field_id_key",
+                "''::text AS legacy_email_key",
+                "''::text AS legacy_gmail_key",
+                "''::text AS legacy_whatsapp_key",
+            ]
+        )
+
+    return "\n".join(joins), ",\n                " + ",\n                ".join(select_parts), key_columns
+
+
 def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
     lookup_key = _normalize_lookup_key(selected_campaign)
     return _fetch_dicts(
@@ -321,24 +428,33 @@ def _campaign_display_name(selected_campaign: str, brand_campaign_variants: list
 def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list[str]) -> int:
     brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
     candidate_cte = _candidate_campaign_ids_cte(brand_placeholders)
+    alias_joins, alias_selects, alias_key_columns = _field_rep_alias_sql_parts()
+    alias_key_unions = "\n                ".join(
+        f"UNION ALL SELECT {column} AS rep_key FROM assigned_reps" for column in alias_key_columns
+    )
     params = [selected_campaign, *brand_keys, *brand_keys, _normalize_lookup_key(selected_campaign)]
     rows = _fetch_dicts(
         f"""
         WITH {candidate_cte},
+        assigned_reps AS (
+            SELECT DISTINCT
+                ccf.field_rep_id::text AS field_rep_id,
+                {_normalized_sql('ccf.field_rep_id::text')} AS internal_rep_key,
+                {_normalized_sql('cfr.brand_supplied_field_rep_id')} AS external_rep_key
+                {alias_selects}
+            FROM bronze.campaign_campaignfieldrep ccf
+            JOIN candidate_campaign_ids ci
+              ON {_normalized_sql('ccf.campaign_id')} = {_normalized_sql('ci.candidate_campaign_id')}
+            LEFT JOIN bronze.campaign_fieldrep cfr
+              ON cfr.id::text = ccf.field_rep_id::text
+            {alias_joins}
+        ),
         assigned_rep_keys AS (
             SELECT DISTINCT rep_key
             FROM (
-                SELECT {_normalized_sql('ccf.field_rep_id::text')} AS rep_key
-                FROM bronze.campaign_campaignfieldrep ccf
-                JOIN candidate_campaign_ids ci
-                  ON {_normalized_sql('ccf.campaign_id')} = {_normalized_sql('ci.candidate_campaign_id')}
-                UNION ALL
-                SELECT {_normalized_sql('cfr.brand_supplied_field_rep_id')} AS rep_key
-                FROM bronze.campaign_campaignfieldrep ccf
-                JOIN candidate_campaign_ids ci
-                  ON {_normalized_sql('ccf.campaign_id')} = {_normalized_sql('ci.candidate_campaign_id')}
-                LEFT JOIN bronze.campaign_fieldrep cfr
-                  ON cfr.id::text = ccf.field_rep_id::text
+                SELECT internal_rep_key AS rep_key FROM assigned_reps
+                UNION ALL SELECT external_rep_key AS rep_key FROM assigned_reps
+                {alias_key_unions}
             ) keys
             WHERE rep_key <> ''
         ),
@@ -348,8 +464,6 @@ def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list
             JOIN silver.dim_doctor d
               ON {_normalized_sql('d.rep_id_normalized')} = ar.rep_key
               OR {_normalized_sql('d.field_rep_id_resolved')} = ar.rep_key
-            JOIN candidate_campaign_ids ci
-              ON {_normalized_sql('d.source')} = {_normalized_sql('ci.candidate_campaign_id')}
         ),
         declared_counts AS (
             SELECT MAX(
@@ -522,6 +636,17 @@ def _field_rep_insight_rows(
         collateral_filter_tx = f"AND tx.collateral_id::text IN ({collateral_placeholders})"
         collateral_filter_share = f"AND s.collateral_id::text IN ({collateral_placeholders})"
 
+    alias_joins, alias_selects, alias_key_columns = _field_rep_alias_sql_parts()
+    alias_key_unions = "\n            ".join(
+        f"""
+            UNION
+            SELECT field_rep_id, {column} AS rep_key
+            FROM assigned_reps
+            WHERE {column} <> ''
+        """.rstrip()
+        for column in alias_key_columns
+    )
+
     params = [
         selected_campaign,
         *brand_keys,
@@ -551,11 +676,13 @@ def _field_rep_insight_rows(
                 {_normalized_sql('ccf.field_rep_id::text')} AS internal_rep_key,
                 {_normalized_sql('cfr.brand_supplied_field_rep_id')} AS external_rep_key,
                 COALESCE(NULLIF(initcap(btrim(cfr.state)), ''), 'UNKNOWN') AS state_normalized
+                {alias_selects}
             FROM bronze.campaign_campaignfieldrep ccf
             JOIN candidate_campaign_ids ci
               ON {_normalized_sql('ccf.campaign_id')} = {_normalized_sql('ci.candidate_campaign_id')}
             LEFT JOIN bronze.campaign_fieldrep cfr
               ON cfr.id::text = ccf.field_rep_id::text
+            {alias_joins}
         ),
         assigned_rep_keys AS (
             SELECT field_rep_id, internal_rep_key AS rep_key
@@ -565,6 +692,7 @@ def _field_rep_insight_rows(
             SELECT field_rep_id, external_rep_key AS rep_key
             FROM assigned_reps
             WHERE external_rep_key <> ''
+            {alias_key_unions}
         ),
         assigned_doctors AS (
             SELECT
@@ -575,11 +703,6 @@ def _field_rep_insight_rows(
               ON (
                   {_normalized_sql('d.rep_id_normalized')} = ark.rep_key
                   OR {_normalized_sql('d.field_rep_id_resolved')} = ark.rep_key
-              )
-             AND EXISTS (
-                  SELECT 1
-                  FROM candidate_campaign_ids ci
-                  WHERE {_normalized_sql('d.source')} = {_normalized_sql('ci.candidate_campaign_id')}
               )
             GROUP BY ark.field_rep_id
         ),

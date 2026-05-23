@@ -13,46 +13,144 @@ def build_silver(run_id: str) -> None:
         CREATE TABLE silver.dim_field_rep AS
         WITH unified AS (
             SELECT
-                id::text AS id,
-                NULLIF(btrim(full_name), '') AS full_name,
-                NULLIF(btrim(phone_number), '') AS phone_number,
-                NULLIF(btrim(brand_supplied_field_rep_id), '') AS brand_supplied_field_rep_id,
-                CASE WHEN lower(COALESCE(is_active,'')) IN ('1','true','t','yes') THEN 'true' ELSE 'false' END AS is_active,
-                NULLIF(btrim(password_hash), '') AS password_hash,
-                created_at,
-                updated_at,
-                brand_id,
-                user_id,
-                NULLIF(btrim(state), '') AS state,
+                cfr.id::text AS id,
+                COALESCE(
+                    NULLIF(btrim(cfr.full_name), ''),
+                    NULLIF(btrim(concat_ws(' ', NULLIF(au.first_name, ''), NULLIF(au.last_name, ''))), ''),
+                    NULLIF(btrim(au.username), '')
+                ) AS full_name,
+                NULLIF(btrim(cfr.phone_number), '') AS phone_number,
+                NULLIF(btrim(cfr.brand_supplied_field_rep_id), '') AS brand_supplied_field_rep_id,
+                CASE WHEN lower(COALESCE(cfr.is_active,'')) IN ('1','true','t','yes') THEN 'true' ELSE 'false' END AS is_active,
+                NULLIF(btrim(cfr.password_hash), '') AS password_hash,
+                cfr.created_at,
+                cfr.updated_at,
+                cfr.brand_id,
+                cfr.user_id,
+                NULLIF(btrim(cfr.state), '') AS state,
+                NULLIF(btrim(au.email), '') AS email,
                 NULL::text AS campaign_id,
-                'campaign_fieldrep'::text AS source_table
-            FROM bronze.campaign_fieldrep
+                'campaign_fieldrep'::text AS source_table,
+                COALESCE(
+                    NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''),
+                    NULLIF(btrim(cfr.id::text), ''),
+                    NULLIF(btrim(au.username), '')
+                ) AS source_field_rep_id
+            FROM bronze.campaign_fieldrep cfr
+            LEFT JOIN bronze.auth_user au
+              ON au.id::text = cfr.user_id::text
             UNION ALL
             SELECT
-                ccf.id::text AS id,
-                NULL::text AS full_name,
-                NULL::text AS phone_number,
-                NULLIF(btrim(ccf.field_rep_id), '') AS brand_supplied_field_rep_id,
+                ccf.field_rep_id::text AS id,
+                COALESCE(
+                    NULLIF(btrim(cfr.full_name), ''),
+                    NULLIF(btrim(concat_ws(' ', NULLIF(au.first_name, ''), NULLIF(au.last_name, ''))), ''),
+                    NULLIF(btrim(au.username), '')
+                ) AS full_name,
+                NULLIF(btrim(cfr.phone_number), '') AS phone_number,
+                COALESCE(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), NULLIF(btrim(ccf.field_rep_id), '')) AS brand_supplied_field_rep_id,
                 'true'::text AS is_active,
-                NULL::text AS password_hash,
+                NULLIF(btrim(cfr.password_hash), '') AS password_hash,
                 ccf.created_at,
-                NULL::text AS updated_at,
-                NULL::text AS brand_id,
-                NULL::text AS user_id,
+                cfr.updated_at,
+                cfr.brand_id,
+                cfr.user_id,
                 NULLIF(btrim(cfr.state), '') AS state,
+                NULLIF(btrim(au.email), '') AS email,
                 NULLIF(btrim(ccf.campaign_id), '') AS campaign_id,
-                'campaign_campaignfieldrep'::text AS source_table
+                'campaign_campaignfieldrep'::text AS source_table,
+                COALESCE(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), NULLIF(btrim(ccf.field_rep_id), '')) AS source_field_rep_id
             FROM bronze.campaign_campaignfieldrep ccf
             LEFT JOIN bronze.campaign_fieldrep cfr
               ON cfr.id::text = ccf.field_rep_id::text
+            LEFT JOIN bronze.auth_user au
+              ON au.id::text = cfr.user_id::text
+            UNION ALL
+            SELECT
+                u.id::text AS id,
+                COALESCE(
+                    NULLIF(btrim(concat_ws(' ', NULLIF(u.first_name, ''), NULLIF(u.last_name, ''))), ''),
+                    NULLIF(btrim(u.username), ''),
+                    NULLIF(btrim(u.email), '')
+                ) AS full_name,
+                NULLIF(btrim(u.phone_number), '') AS phone_number,
+                NULLIF(btrim(u.field_id), '') AS brand_supplied_field_rep_id,
+                CASE
+                    WHEN lower(COALESCE(u.is_active, u.active, '')) IN ('1','true','t','yes') THEN 'true'
+                    ELSE 'false'
+                END AS is_active,
+                NULL::text AS password_hash,
+                u.date_joined AS created_at,
+                u.last_login AS updated_at,
+                NULL::text AS brand_id,
+                u.id::text AS user_id,
+                NULL::text AS state,
+                NULLIF(btrim(u.email), '') AS email,
+                NULL::text AS campaign_id,
+                'user_management_user'::text AS source_table,
+                COALESCE(NULLIF(btrim(u.field_id), ''), NULLIF(btrim(u.id::text), ''), NULLIF(btrim(u.email), ''), NULLIF(btrim(u.username), '')) AS source_field_rep_id
+            FROM bronze.user_management_user u
+            UNION ALL
+            SELECT
+                sfr.id::text AS id,
+                COALESCE(NULLIF(btrim(sfr.email), ''), NULLIF(btrim(sfr.gmail), ''), NULLIF(btrim(sfr.field_id), '')) AS full_name,
+                NULLIF(btrim(sfr.whatsapp_number), '') AS phone_number,
+                NULLIF(btrim(sfr.field_id), '') AS brand_supplied_field_rep_id,
+                CASE WHEN lower(COALESCE(sfr.is_active,'')) IN ('1','true','t','yes') THEN 'true' ELSE 'false' END AS is_active,
+                NULL::text AS password_hash,
+                sfr.created_at,
+                sfr.updated_at,
+                NULL::text AS brand_id,
+                NULL::text AS user_id,
+                NULL::text AS state,
+                COALESCE(NULLIF(btrim(sfr.email), ''), NULLIF(btrim(sfr.gmail), '')) AS email,
+                NULL::text AS campaign_id,
+                'sharing_management_fieldrepresentative'::text AS source_table,
+                COALESCE(
+                    NULLIF(btrim(sfr.field_id), ''),
+                    NULLIF(btrim(sfr.id::text), ''),
+                    NULLIF(btrim(sfr.email), ''),
+                    NULLIF(btrim(sfr.gmail), ''),
+                    NULLIF(btrim(sfr.whatsapp_number), '')
+                ) AS source_field_rep_id
+            FROM bronze.sharing_management_fieldrepresentative sfr
+            UNION ALL
+            SELECT
+                au.id::text AS id,
+                COALESCE(
+                    NULLIF(btrim(concat_ws(' ', NULLIF(au.first_name, ''), NULLIF(au.last_name, ''))), ''),
+                    NULLIF(btrim(au.username), ''),
+                    NULLIF(btrim(au.email), '')
+                ) AS full_name,
+                NULL::text AS phone_number,
+                NULLIF(btrim(au.username), '') AS brand_supplied_field_rep_id,
+                CASE WHEN lower(COALESCE(au.is_active,'')) IN ('1','true','t','yes') THEN 'true' ELSE 'false' END AS is_active,
+                NULL::text AS password_hash,
+                au.date_joined AS created_at,
+                au.last_login AS updated_at,
+                NULL::text AS brand_id,
+                au.id::text AS user_id,
+                NULL::text AS state,
+                NULLIF(btrim(au.email), '') AS email,
+                NULL::text AS campaign_id,
+                'auth_user'::text AS source_table,
+                COALESCE(NULLIF(btrim(au.username), ''), NULLIF(btrim(au.id::text), ''), NULLIF(btrim(au.email), '')) AS source_field_rep_id
+            FROM bronze.auth_user au
         ),
         ranked AS (
             SELECT
                 *,
                 ROW_NUMBER() OVER (
-                    PARTITION BY lower(regexp_replace(COALESCE(NULLIF(btrim(brand_supplied_field_rep_id),''), btrim(id)), '[^a-zA-Z0-9]', '', 'g'))
+                    PARTITION BY lower(regexp_replace(COALESCE(NULLIF(btrim(source_field_rep_id),''), NULLIF(btrim(brand_supplied_field_rep_id),''), btrim(id)), '[^a-zA-Z0-9]', '', 'g'))
                     ORDER BY
                         CASE WHEN state IS NULL OR lower(state) = 'null' THEN 1 ELSE 0 END,
+                        CASE source_table
+                            WHEN 'campaign_fieldrep' THEN 0
+                            WHEN 'campaign_campaignfieldrep' THEN 1
+                            WHEN 'sharing_management_fieldrepresentative' THEN 2
+                            WHEN 'user_management_user' THEN 3
+                            ELSE 4
+                        END,
                         COALESCE(NULLIF(updated_at,''), created_at) DESC NULLS LAST,
                         id DESC
                 ) AS rn
@@ -71,13 +169,13 @@ def build_silver(run_id: str) -> None:
             user_id,
             state,
             regexp_replace(COALESCE(phone_number,''), '[^0-9+]', '', 'g') AS field_rep_phone_normalized,
-            NULL::text AS field_rep_email_best,
+            email AS field_rep_email_best,
             COALESCE(NULLIF(initcap(trim(state)), ''), 'UNKNOWN') AS state_normalized,
             CASE WHEN lower(COALESCE(is_active,'')) IN ('1','true','t','yes') THEN 'true' ELSE 'false' END AS is_active_flag,
             created_at::text AS created_at_ts,
             updated_at::text AS updated_at_ts,
             campaign_id,
-            COALESCE(NULLIF(brand_supplied_field_rep_id,''), id::text) AS source_field_rep_id,
+            COALESCE(NULLIF(source_field_rep_id,''), NULLIF(brand_supplied_field_rep_id,''), id::text) AS source_field_rep_id,
             NOW()::text AS _silver_updated_at,
             'PASS'::text AS _dq_status,
             NULL::text AS _dq_errors
@@ -90,25 +188,78 @@ def build_silver(run_id: str) -> None:
     execute(
         """
         CREATE TABLE silver.dim_doctor AS
+        WITH unified AS (
+            SELECT
+                d.id::text AS id,
+                NULLIF(btrim(d.name), '') AS name,
+                NULLIF(btrim(d.phone), '') AS phone,
+                NULLIF(btrim(d.rep_id), '') AS rep_id,
+                NULLIF(btrim(d.source), '') AS source,
+                'doctor_viewer_doctor'::text AS source_table
+            FROM bronze.doctor_viewer_doctor d
+        ),
+        normalized AS (
+            SELECT
+                *,
+                regexp_replace(COALESCE(phone,''), '[^0-9+]', '', 'g') AS doctor_phone_normalized,
+                lower(regexp_replace(COALESCE(rep_id,''), '[^a-zA-Z0-9]', '', 'g')) AS rep_key
+            FROM unified
+        )
         SELECT
-            d.id,
-            d.name,
-            d.phone,
-            d.rep_id,
-            d.source,
-            regexp_replace(COALESCE(d.phone,''), '[^0-9+]', '', 'g') AS doctor_phone_normalized,
-            'doctor_id'::text AS doctor_identity_source,
-            md5(COALESCE(d.id, regexp_replace(COALESCE(d.phone,''), '[^0-9+]', '', 'g'))) AS doctor_identity_key,
-            d.rep_id AS rep_id_normalized,
+            n.id,
+            n.name,
+            n.phone,
+            n.rep_id,
+            n.source,
+            n.doctor_phone_normalized,
+            CASE WHEN NULLIF(n.doctor_phone_normalized, '') IS NOT NULL THEN 'phone' ELSE n.source_table END AS doctor_identity_source,
+            md5(COALESCE(NULLIF(n.doctor_phone_normalized, ''), n.source_table || ':' || COALESCE(n.id, ''))) AS doctor_identity_key,
+            n.rep_id AS rep_id_normalized,
             fr.id AS field_rep_id_resolved,
             COALESCE(fr.state_normalized, 'UNKNOWN') AS state_normalized,
             NOW()::text AS _silver_updated_at,
             'PASS'::text AS _dq_status,
             NULL::text AS _dq_errors
-        FROM bronze.doctor_viewer_doctor d
-        LEFT JOIN silver.dim_field_rep fr
-          ON lower(COALESCE(NULLIF(btrim(fr.source_field_rep_id),''), btrim(fr.id::text)))
-           = lower(NULLIF(btrim(d.rep_id), ''))
+        FROM normalized n
+        LEFT JOIN LATERAL (
+            SELECT *
+            FROM silver.dim_field_rep fr
+            WHERE n.rep_key <> ''
+              AND n.rep_key IN (
+                lower(regexp_replace(COALESCE(NULLIF(btrim(fr.source_field_rep_id), ''), ''), '[^a-zA-Z0-9]', '', 'g')),
+                lower(regexp_replace(COALESCE(NULLIF(btrim(fr.brand_supplied_field_rep_id), ''), ''), '[^a-zA-Z0-9]', '', 'g')),
+                lower(regexp_replace(COALESCE(NULLIF(btrim(fr.id::text), ''), ''), '[^a-zA-Z0-9]', '', 'g')),
+                lower(regexp_replace(COALESCE(NULLIF(btrim(fr.field_rep_email_best), ''), ''), '[^a-zA-Z0-9]', '', 'g'))
+              )
+            ORDER BY
+                CASE fr.source_table
+                    WHEN 'campaign_fieldrep' THEN 0
+                    WHEN 'campaign_campaignfieldrep' THEN 1
+                    WHEN 'sharing_management_fieldrepresentative' THEN 2
+                    WHEN 'user_management_user' THEN 3
+                    ELSE 4
+                END,
+                fr.updated_at_ts DESC NULLS LAST,
+                fr.id DESC
+            LIMIT 1
+        ) fr ON TRUE
+        """
+    )
+
+    execute("DROP TABLE IF EXISTS silver.dim_prefilled_doctor;")
+    execute(
+        """
+        CREATE TABLE silver.dim_prefilled_doctor AS
+        SELECT
+            id,
+            NULLIF(btrim(full_name), '') AS full_name,
+            NULLIF(btrim(email), '') AS email,
+            NULLIF(btrim(phone), '') AS phone,
+            regexp_replace(COALESCE(phone,''), '[^0-9+]', '', 'g') AS doctor_phone_normalized,
+            NULLIF(btrim(specialty), '') AS specialty,
+            NULLIF(btrim(city), '') AS city,
+            NOW()::text AS _silver_updated_at
+        FROM bronze.prefilled_doctor
         """
     )
 
@@ -254,16 +405,92 @@ def build_silver(run_id: str) -> None:
     execute(
         """
         CREATE TABLE silver.bridge_brand_campaign_doctor_base AS
-        WITH campaign_rep_state AS (
+        WITH campaign_rep_aliases AS (
             SELECT DISTINCT
                 m.brand_campaign_id,
-                lower(regexp_replace(btrim(ccf.field_rep_id::text), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
+                ccf.field_rep_id::text AS master_field_rep_id,
+                lower(regexp_replace(NULLIF(btrim(alias_value), ''), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
                 COALESCE(NULLIF(initcap(btrim(cfr.state)), ''), 'UNKNOWN') AS state_normalized
             FROM silver.map_brand_campaign_to_campaign m
             JOIN bronze.campaign_campaignfieldrep ccf
               ON NULLIF(btrim(ccf.campaign_id), '') = NULLIF(btrim(m.campaign_id_resolved), '')
             LEFT JOIN bronze.campaign_fieldrep cfr
               ON cfr.id::text = ccf.field_rep_id::text
+            LEFT JOIN bronze.auth_user au
+              ON au.id::text = cfr.user_id::text
+            LEFT JOIN bronze.user_management_user uu
+              ON lower(regexp_replace(NULLIF(btrim(uu.field_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+                 = lower(regexp_replace(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+              OR lower(regexp_replace(NULLIF(btrim(uu.email), ''), '[^a-zA-Z0-9]', '', 'g'))
+                 = lower(regexp_replace(NULLIF(btrim(au.email), ''), '[^a-zA-Z0-9]', '', 'g'))
+            LEFT JOIN bronze.sharing_management_fieldrepresentative sfr
+              ON lower(regexp_replace(NULLIF(btrim(sfr.field_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+                 = lower(regexp_replace(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+              OR lower(regexp_replace(NULLIF(btrim(sfr.email), ''), '[^a-zA-Z0-9]', '', 'g'))
+                 = lower(regexp_replace(NULLIF(btrim(au.email), ''), '[^a-zA-Z0-9]', '', 'g'))
+            CROSS JOIN LATERAL (
+                VALUES
+                    (ccf.field_rep_id::text),
+                    (cfr.id::text),
+                    (cfr.brand_supplied_field_rep_id),
+                    (cfr.user_id),
+                    (au.username),
+                    (au.email),
+                    (uu.id::text),
+                    (uu.field_id),
+                    (uu.username),
+                    (uu.email),
+                    (sfr.id::text),
+                    (sfr.field_id),
+                    (sfr.email),
+                    (sfr.gmail),
+                    (sfr.whatsapp_number)
+            ) aliases(alias_value)
+            WHERE NULLIF(btrim(alias_value), '') IS NOT NULL
+            UNION ALL
+            SELECT DISTINCT
+                m.brand_campaign_id,
+                ca.field_rep_id::text AS master_field_rep_id,
+                lower(regexp_replace(NULLIF(btrim(alias_value), ''), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
+                'UNKNOWN'::text AS state_normalized
+            FROM silver.map_brand_campaign_to_campaign m
+            JOIN bronze.campaign_management_campaignassignment ca
+              ON NULLIF(btrim(ca.campaign_id), '') = NULLIF(btrim(m.campaign_id_resolved), '')
+            LEFT JOIN bronze.user_management_user uu
+              ON uu.id::text = ca.field_rep_id::text
+            CROSS JOIN LATERAL (
+                VALUES
+                    (ca.field_rep_id::text),
+                    (uu.id::text),
+                    (uu.field_id),
+                    (uu.username),
+                    (uu.email)
+            ) aliases(alias_value)
+            WHERE NULLIF(btrim(alias_value), '') IS NOT NULL
+            UNION ALL
+            SELECT DISTINCT
+                m.brand_campaign_id,
+                afc.field_rep_id::text AS master_field_rep_id,
+                lower(regexp_replace(NULLIF(btrim(alias_value), ''), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
+                'UNKNOWN'::text AS state_normalized
+            FROM silver.map_brand_campaign_to_campaign m
+            JOIN bronze.admin_dashboard_fieldrepcampaign afc
+              ON NULLIF(btrim(afc.campaign_id), '') = NULLIF(btrim(m.campaign_id_resolved), '')
+            LEFT JOIN bronze.user_management_user uu
+              ON uu.id::text = afc.field_rep_id::text
+            CROSS JOIN LATERAL (
+                VALUES
+                    (afc.field_rep_id::text),
+                    (uu.id::text),
+                    (uu.field_id),
+                    (uu.username),
+                    (uu.email)
+            ) aliases(alias_value)
+            WHERE NULLIF(btrim(alias_value), '') IS NOT NULL
+        ),
+        campaign_rep_state AS (
+            SELECT DISTINCT brand_campaign_id, rep_key, state_normalized
+            FROM campaign_rep_aliases
         )
         SELECT DISTINCT
             x.brand_campaign_id,
@@ -282,27 +509,16 @@ def build_silver(run_id: str) -> None:
             NULL::text AS _dq_errors
         FROM (
             SELECT
-                m.brand_campaign_id,
+                cra.brand_campaign_id,
                 d.doctor_identity_key,
-                ccf.field_rep_id::text AS field_rep_id_resolved,
+                cra.master_field_rep_id AS field_rep_id_resolved,
                 'ASSIGNED_TO_CAMPAIGN_REP'::text AS inclusion_reason
-            FROM silver.map_brand_campaign_to_campaign m
-            JOIN bronze.campaign_campaignfieldrep ccf
-              ON lower(regexp_replace(NULLIF(btrim(ccf.campaign_id), ''), '[^a-zA-Z0-9]', '', 'g'))
-               = lower(regexp_replace(NULLIF(btrim(m.campaign_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
-            LEFT JOIN bronze.campaign_fieldrep cfr
-              ON cfr.id::text = ccf.field_rep_id::text
+            FROM campaign_rep_aliases cra
             JOIN silver.dim_doctor d
               ON lower(regexp_replace(NULLIF(btrim(d.rep_id_normalized), ''), '[^a-zA-Z0-9]', '', 'g'))
-                 IN (
-                    lower(regexp_replace(NULLIF(btrim(ccf.field_rep_id::text), ''), '[^a-zA-Z0-9]', '', 'g')),
-                    lower(regexp_replace(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), '[^a-zA-Z0-9]', '', 'g'))
-                 )
+                 = cra.rep_key
               OR lower(regexp_replace(NULLIF(btrim(d.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
-                 IN (
-                    lower(regexp_replace(NULLIF(btrim(ccf.field_rep_id::text), ''), '[^a-zA-Z0-9]', '', 'g')),
-                    lower(regexp_replace(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), '[^a-zA-Z0-9]', '', 'g'))
-                 )
+                 = cra.rep_key
             UNION
             SELECT
                 t.brand_campaign_id,

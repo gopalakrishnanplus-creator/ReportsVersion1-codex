@@ -340,24 +340,36 @@ Major responsibilities:
 #### mysql_server_1 tables
 1. `campaign_fieldrep`
    - `id, full_name, phone_number, brand_supplied_field_rep_id, is_active, password_hash, created_at, updated_at, brand_id, user_id, state`
-2. `campaign_campaignfieldrep`
+2. `auth_user`
+   - field-rep auth/email metadata used to enrich master field-rep identity
+3. `campaign_campaignfieldrep`
    - `state, id, field_rep_id, created_at, campaign_id`
-3. `campaign_campaign`
+4. `campaign_campaign`
    - `updated_at, system_rfa, system_pe, system_ic, status, start_date, register_message, num_doctors_supported, name, id, end_date, doctor_recruitment_link, created_at, contact_person_phone, contact_person_name, contact_person_email, brand_manager_password_encrypted, brand_manager_login_token, brand_manager_login_link, brand_manager_email, brand_id, banner_target_url, banner_small_url, banner_small_key, banner_large_url, banner_large_key, add_to_campaign_message`
 
 #### mysql_server_2 tables
 1. `campaign_management_campaign`
    - `id, name, brand_name, start_date, end_date, description, status, created_at, updated_at, created_by_id, brand_campaign_id, brand_logo, company_logo, company_name, contract, incharge_contact, incharge_designation, incharge_name, items_per_clinic_per_year, num_doctors, printing_excel, printing_required`
-2. `collateral_management_campaigncollateral`
+2. `campaign_management_campaignassignment`
+   - local InClinic campaign-to-user assignment table: `id, assigned_on, campaign_id, field_rep_id`
+3. `admin_dashboard_fieldrepcampaign`
+   - alternate local campaign-to-user assignment table: `id, assigned_at, campaign_id, field_rep_id, uid`
+4. `collateral_management_campaigncollateral`
    - `id, start_date, end_date, created_at, updated_at, campaign_id, collateral_id`
-3. `collateral_management_collateral`
+5. `collateral_management_collateral`
    - `id, type, title, file, vimeo_url, content_id, upload_date, is_active, created_at, updated_at, banner_1, banner_2, campaign_id, created_by_id, description, purpose, doctor_name, webinar_date, webinar_description, webinar_title, webinar_url`
-4. `sharing_management_sharelog`
+6. `sharing_management_sharelog`
    - `id, share_channel, share_timestamp, message_text, created_at, updated_at, short_link_id, collateral_id, doctor_identifier, brand_campaign_id, field_rep_email, field_rep_id`
-5. `sharing_management_collateraltransaction`
+7. `sharing_management_collateraltransaction`
    - `id, transaction_id, brand_campaign_id, field_rep_id, field_rep_unique_id, doctor_name, doctor_number, doctor_unique_id, collateral_id, transaction_date, has_viewed, downloaded_pdf, pdf_completed, video_view_lt_50, video_view_gt_50, video_completed, pdf_total_pages, last_video_percentage, pdf_last_page, doctor_viewer_engagement_id, share_management_engagement_id, video_tracking_last_event_id, created_at, updated_at, sent_at, viewed_at, first_viewed_at, viewed_last_page_at, video_lt_50_at, video_gt_50_at, video_100_at, last_viewed_at, dv_engagement_id, field_rep_email, share_channel, sm_engagement_id, video_watch_percentage`
-6. `doctor_viewer_doctor`
+8. `doctor_viewer_doctor`
    - `id, name, phone, rep_id, source`
+9. `prefilled_doctor`
+   - prefilled/master doctor list used by InClinic app flows
+10. `user_management_user`
+   - local field-rep login/user metadata used by portal flows
+11. `sharing_management_fieldrepresentative`
+   - legacy/local field-rep identity table used by older share flows
 
 #### Audit columns injected in RAW
 `_ingestion_run_id, _ingested_at, _source_server, _source_table, _extract_started_at, _extract_ended_at, _record_hash, _is_deleted, _dq_status, _dq_errors`
