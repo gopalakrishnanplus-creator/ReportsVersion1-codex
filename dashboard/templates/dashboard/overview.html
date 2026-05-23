@@ -165,7 +165,6 @@
                 <th>Viewed</th>
                 <th>Video Played</th>
                 <th>PDF / Collateral Saved</th>
-                <th>Data Note</th>
               </tr>
             </thead>
             <tbody>
@@ -178,10 +177,9 @@
                   <td>{{ rep.doctors_viewed }}</td>
                   <td>{{ rep.doctors_video_played }}</td>
                   <td>{{ rep.doctors_pdf_downloaded }}</td>
-                  <td class="data-note">{{ rep.assignment_note|default:"-" }}</td>
                 </tr>
               {% empty %}
-                <tr><td colspan="8">No field representative assignment data available.</td></tr>
+                <tr><td colspan="7">No field representative assignment data available.</td></tr>
               {% endfor %}
             </tbody>
           </table>

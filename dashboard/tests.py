@@ -118,6 +118,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("activity_for_rep AS", sql)
         self.assertNotIn("GREATEST(", sql)
         self.assertIn("assignment_note", sql)
+        self.assertIn("raw_assigned_reps AS", sql)
+        self.assertIn("GROUP BY field_rep_id", sql)
 
     def test_reports_home_renders(self):
         response = self.client.get("/")
@@ -283,6 +285,7 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "doctors_viewed": 20,
                     "doctors_video_played": 12,
                     "doctors_pdf_downloaded": 8,
+                    "assignment_note": "Hidden diagnostic note",
                 }
             ],
             "collateral_cards": {
@@ -330,6 +333,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Download Excel")
         self.assertContains(response, "Asha Mehta")
         self.assertContains(response, "FR-101")
+        self.assertNotContains(response, "Data Note")
+        self.assertNotContains(response, "Hidden diagnostic note")
         self.assertNotContains(response, "Action Required This Week")
         self.assertNotContains(response, "Weekly KPI Table")
         self.assertNotContains(response, "Back to Menu")
