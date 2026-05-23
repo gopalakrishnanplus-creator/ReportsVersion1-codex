@@ -132,7 +132,7 @@ class DashboardAccessViewTests(SimpleTestCase):
                 ["brand-1"],
                 "gold_campaign_brand_1",
                 latest_week,
-                bridge_base_exists=False,
+                bridge_base_exists=True,
             )
 
         sql = fetch_mock.call_args.args[0]
@@ -143,6 +143,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("video_gt_50_first_ts", sql)
         self.assertIn("pdf_download_first_ts", sql)
         self.assertIn("effective_reached_ts::date BETWEEN", sql)
+        self.assertIn("lower(btrim(f.state_normalized)) IN ('null', 'none', 'unknown')", sql)
+        self.assertIn("lower(btrim(base.state_normalized)) IN ('null', 'none', 'unknown')", sql)
         self.assertNotIn("total_state,0)/4.0", sql)
 
     def test_reports_home_renders(self):
