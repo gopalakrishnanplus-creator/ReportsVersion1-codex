@@ -234,10 +234,16 @@ Delete from source:
 Do not delete from source:
 
 - `doctor_viewer_doctor`
+- `prefilled_doctor`
+- `user_management_user`
+- `sharing_management_fieldrepresentative`
 - `campaign_fieldrep`
+- `auth_user`
 - `campaign_campaignfieldrep`
 - `campaign_campaign`
 - `campaign_management_campaign`
+- `campaign_management_campaignassignment`
+- `admin_dashboard_fieldrepcampaign`
 - `collateral_management_campaigncollateral`
 - `collateral_management_collateral`
 - `sharing_management_sharelog`

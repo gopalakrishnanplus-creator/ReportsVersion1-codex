@@ -113,7 +113,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("brand_supplied_field_rep_id", sql)
         self.assertIn("field_rep_display_id", sql)
         self.assertIn("AS field_rep_id", sql)
-        self.assertIn("d.source", sql)
+        self.assertNotIn("d.source", sql)
         self.assertNotIn("CASE WHEN COALESCE(ad.total_doctors_assigned, 0) > 0", sql)
         self.assertIn("activity_for_rep AS", sql)
         self.assertNotIn("GREATEST(", sql)

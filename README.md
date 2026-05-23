@@ -43,14 +43,21 @@ Settings now auto-load variables from a local `.env` file at startup, so `python
 
 - **Server 1** (`MYSQL_SERVER1_*`, DB: `healthcare_forms_2`)
   - `campaign_fieldrep`
+  - `auth_user`
   - `campaign_campaignfieldrep`
   - `campaign_campaign`
 - **Server 2** (`MYSQL_SERVER2_*`, DB: `myproject_dev`)
   - `campaign_management_campaign`
+  - `campaign_management_campaignassignment`
+  - `admin_dashboard_fieldrepcampaign`
   - `collateral_management_campaigncollateral`
   - `collateral_management_collateral`
+  - `sharing_management_sharelog`
   - `sharing_management_collateraltransaction`
+  - `sharing_management_fieldrepresentative`
   - `doctor_viewer_doctor`
+  - `prefilled_doctor`
+  - `user_management_user`
 
 ## Quick local bootstrap
 
