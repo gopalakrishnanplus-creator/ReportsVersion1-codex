@@ -802,6 +802,172 @@ def _field_rep_insight_rows(
     )
 
 
+def _state_attention_source_rows(
+    selected_campaign: str,
+    brand_campaign_variants: list[str],
+    selected_schema: str,
+    latest_week: dict[str, Any],
+    bridge_base_exists: bool,
+) -> list[dict[str, Any]]:
+    brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
+    candidate_cte = _candidate_campaign_ids_cte(brand_placeholders)
+    alias_joins, alias_selects, alias_key_columns = _field_rep_alias_sql_parts()
+    alias_state_unions = "\n                    ".join(
+        f"""
+                    UNION
+                    SELECT {column} AS rep_key, state_normalized
+                    FROM raw_rep_state_campaign
+                    WHERE {column} <> ''
+        """.rstrip()
+        for column in alias_key_columns
+    )
+    base_state_sql = "NULLIF(btrim(base.state_normalized), '')," if bridge_base_exists else ""
+    base_join_sql = (
+        """
+                    LEFT JOIN silver.bridge_brand_campaign_doctor_base base
+                      ON base.brand_campaign_id = f.brand_campaign_id
+                     AND base.doctor_identity_key = f.doctor_identity_key
+        """
+        if bridge_base_exists
+        else ""
+    )
+    return _fetch_dicts(
+        f"""
+        WITH {candidate_cte},
+        raw_rep_state_campaign AS (
+            SELECT DISTINCT
+              lower(regexp_replace(btrim(ccf.field_rep_id::text), '[^a-zA-Z0-9]', '', 'g')) AS internal_rep_key,
+              {_normalized_sql('cfr.brand_supplied_field_rep_id')} AS external_rep_key,
+              initcap(btrim(cfr.state)) AS state_normalized
+              {alias_selects}
+            FROM bronze.campaign_campaignfieldrep ccf
+            JOIN candidate_campaign_ids ci
+              ON lower(regexp_replace(NULLIF(btrim(ccf.campaign_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+               = lower(regexp_replace(ci.candidate_campaign_id, '[^a-zA-Z0-9]', '', 'g'))
+            LEFT JOIN bronze.campaign_fieldrep cfr
+              ON cfr.id::text = ccf.field_rep_id::text
+            {alias_joins}
+            WHERE cfr.state IS NOT NULL
+              AND btrim(cfr.state) <> ''
+              AND lower(btrim(cfr.state)) <> 'null'
+        ),
+        rep_state_campaign AS (
+            SELECT internal_rep_key AS rep_key, state_normalized
+            FROM raw_rep_state_campaign
+            WHERE internal_rep_key <> ''
+            UNION
+            SELECT external_rep_key AS rep_key, state_normalized
+            FROM raw_rep_state_campaign
+            WHERE external_rep_key <> ''
+            {alias_state_unions}
+        ),
+        rep_state_global AS (
+            SELECT DISTINCT
+              lower(regexp_replace(COALESCE(NULLIF(btrim(brand_supplied_field_rep_id), ''), btrim(id::text)), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
+              initcap(btrim(state)) AS state_normalized
+            FROM bronze.campaign_fieldrep
+            WHERE state IS NOT NULL
+              AND btrim(state) <> ''
+              AND lower(btrim(state)) <> 'null'
+        ),
+        tx_rep AS (
+            SELECT DISTINCT ON (brand_campaign_id, doctor_identity_key)
+              brand_campaign_id,
+              doctor_identity_key,
+              field_rep_id::text AS field_rep_id_resolved
+            FROM silver.fact_collateral_transaction
+            WHERE COALESCE(NULLIF(btrim(field_rep_id), ''), NULL) IS NOT NULL
+            ORDER BY brand_campaign_id, doctor_identity_key, COALESCE(updated_at_ts, created_at_ts, transaction_date_ts) DESC, id DESC
+        ),
+        fact_enriched AS (
+            SELECT
+              f.doctor_identity_key,
+              COALESCE(
+                NULLIF(btrim(f.state_normalized), ''),
+                {base_state_sql}
+                NULLIF(btrim(d.state_normalized), ''),
+                NULLIF(btrim(fr.state_normalized), ''),
+                NULLIF(btrim(rsc_fact.state_normalized), ''),
+                NULLIF(btrim(rsg_fact.state_normalized), ''),
+                NULLIF(btrim(rsc_tx.state_normalized), ''),
+                NULLIF(btrim(rsg_tx.state_normalized), ''),
+                'UNKNOWN'
+              ) AS state_normalized,
+              COALESCE(
+                CASE WHEN f.reached_first_ts IS NULL OR btrim(f.reached_first_ts) = '' OR lower(btrim(f.reached_first_ts)) = 'null' THEN NULL ELSE f.reached_first_ts END,
+                CASE WHEN f.opened_first_ts IS NULL OR btrim(f.opened_first_ts) = '' OR lower(btrim(f.opened_first_ts)) = 'null' THEN NULL ELSE f.opened_first_ts END,
+                CASE WHEN f.video_gt_50_first_ts IS NULL OR btrim(f.video_gt_50_first_ts) = '' OR lower(btrim(f.video_gt_50_first_ts)) = 'null' THEN NULL ELSE f.video_gt_50_first_ts END,
+                CASE WHEN f.pdf_download_first_ts IS NULL OR btrim(f.pdf_download_first_ts) = '' OR lower(btrim(f.pdf_download_first_ts)) = 'null' THEN NULL ELSE f.pdf_download_first_ts END
+              ) AS effective_reached_ts,
+              CASE WHEN f.opened_first_ts IS NULL OR btrim(f.opened_first_ts) = '' OR lower(btrim(f.opened_first_ts)) = 'null' THEN NULL ELSE f.opened_first_ts END AS opened_first_ts
+            FROM {selected_schema}.fact_doctor_collateral_latest f
+            {base_join_sql}
+            LEFT JOIN silver.dim_doctor d
+              ON d.doctor_identity_key = f.doctor_identity_key
+            LEFT JOIN silver.dim_field_rep fr
+              ON lower(regexp_replace(COALESCE(NULLIF(btrim(fr.source_field_rep_id), ''), btrim(fr.id::text)), '[^a-zA-Z0-9]', '', 'g'))
+               = lower(regexp_replace(NULLIF(btrim(f.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
+            LEFT JOIN tx_rep tx
+              ON tx.brand_campaign_id = f.brand_campaign_id
+             AND tx.doctor_identity_key = f.doctor_identity_key
+            LEFT JOIN rep_state_campaign rsc_fact
+              ON rsc_fact.rep_key = lower(regexp_replace(NULLIF(btrim(f.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
+            LEFT JOIN rep_state_global rsg_fact
+              ON rsg_fact.rep_key = lower(regexp_replace(NULLIF(btrim(f.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
+            LEFT JOIN rep_state_campaign rsc_tx
+              ON rsc_tx.rep_key = lower(regexp_replace(NULLIF(btrim(tx.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
+            LEFT JOIN rep_state_global rsg_tx
+              ON rsg_tx.rep_key = lower(regexp_replace(NULLIF(btrim(tx.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
+        ),
+        state_universe AS (
+            SELECT DISTINCT state_normalized FROM rep_state_campaign
+            UNION
+            SELECT DISTINCT state_normalized FROM fact_enriched WHERE state_normalized <> 'UNKNOWN'
+        ),
+        agg AS (
+            SELECT
+              state_normalized,
+              COUNT(DISTINCT doctor_identity_key) FILTER (
+                WHERE effective_reached_ts IS NOT NULL
+                  AND effective_reached_ts::date BETWEEN %s::date AND %s::date
+              ) AS reached,
+              COUNT(DISTINCT doctor_identity_key) FILTER (
+                WHERE opened_first_ts IS NOT NULL
+                  AND opened_first_ts::date BETWEEN %s::date AND %s::date
+              ) AS opened,
+              COUNT(DISTINCT doctor_identity_key) AS total_state
+            FROM fact_enriched
+            GROUP BY 1
+        )
+        SELECT
+          su.state_normalized,
+          COALESCE(a.reached, 0) AS reached,
+          COALESCE(a.opened, 0) AS opened,
+          COALESCE(a.total_state, 0) AS total_state
+        FROM state_universe su
+        LEFT JOIN agg a ON a.state_normalized = su.state_normalized
+        ORDER BY
+          CASE
+            WHEN COALESCE(a.reached,0)=0 OR COALESCE(a.total_state,0)=0 THEN 0
+            ELSE ((LEAST((COALESCE(a.reached,0) / NULLIF(COALESCE(a.total_state,0),0)),1.0)
+              + (COALESCE(a.opened,0) / NULLIF(COALESCE(a.reached,0),0))
+              + (COALESCE(a.opened,0) / NULLIF(COALESCE(a.opened,0),0))) / 3.0) * 100
+          END ASC,
+          su.state_normalized ASC
+        """,
+        [
+            selected_campaign,
+            *brand_keys,
+            *brand_keys,
+            _normalize_lookup_key(selected_campaign),
+            latest_week.get("week_start_date"),
+            latest_week.get("week_end_date"),
+            latest_week.get("week_start_date"),
+            latest_week.get("week_end_date"),
+        ],
+    )
+
+
 def _build_media_logo_url(company_logo_path: Any) -> str | None:
     raw = str(company_logo_path or "").strip()
     if not raw or raw.lower() == "null":
@@ -1514,148 +1680,13 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             )
 
             bridge_base_exists = _table_exists("silver", "bridge_brand_campaign_doctor_base")
-            base_state_sql = "NULLIF(btrim(base.state_normalized), '')," if bridge_base_exists else ""
-            base_join_sql = (
-                """
-                    LEFT JOIN silver.bridge_brand_campaign_doctor_base base
-                      ON base.brand_campaign_id = f.brand_campaign_id
-                     AND base.doctor_identity_key = f.doctor_identity_key
-                """
-                if bridge_base_exists
-                else ""
-            )
             try:
-                state_rows = _fetch_dicts(
-                f"""
-                WITH campaign_ref AS (
-                    SELECT DISTINCT candidate_campaign_id
-                    FROM (
-                        SELECT NULLIF(btrim(%s), '') AS candidate_campaign_id
-                        UNION ALL
-                        SELECT NULLIF(btrim(m.campaign_id_resolved), '') AS candidate_campaign_id
-                        FROM silver.map_brand_campaign_to_campaign m
-                        WHERE lower(regexp_replace(btrim(m.brand_campaign_id), '[^a-zA-Z0-9]', '', 'g'))
-                              = lower(regexp_replace(btrim(%s), '[^a-zA-Z0-9]', '', 'g'))
-                        UNION ALL
-                        SELECT NULLIF(btrim(cc.id::text), '') AS candidate_campaign_id
-                        FROM bronze.campaign_campaign cc
-                        WHERE lower(regexp_replace(btrim(cc.id::text), '[^a-zA-Z0-9]', '', 'g'))
-                              = lower(regexp_replace(btrim(%s), '[^a-zA-Z0-9]', '', 'g'))
-                    ) q
-                    WHERE candidate_campaign_id IS NOT NULL
-                ),
-                rep_state_campaign AS (
-                    SELECT DISTINCT
-                      lower(regexp_replace(btrim(ccf.field_rep_id::text), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
-                      initcap(btrim(cfr.state)) AS state_normalized
-                    FROM bronze.campaign_campaignfieldrep ccf
-                    JOIN campaign_ref cr
-                      ON lower(regexp_replace(NULLIF(btrim(ccf.campaign_id), ''), '[^a-zA-Z0-9]', '', 'g'))
-                       = lower(regexp_replace(cr.candidate_campaign_id, '[^a-zA-Z0-9]', '', 'g'))
-                    LEFT JOIN bronze.campaign_fieldrep cfr
-                      ON cfr.id::text = ccf.field_rep_id::text
-                    WHERE cfr.state IS NOT NULL
-                      AND btrim(cfr.state) <> ''
-                      AND lower(btrim(cfr.state)) <> 'null'
-                ),
-                rep_state_global AS (
-                    SELECT DISTINCT
-                      lower(regexp_replace(COALESCE(NULLIF(btrim(brand_supplied_field_rep_id), ''), btrim(id::text)), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
-                      initcap(btrim(state)) AS state_normalized
-                    FROM bronze.campaign_fieldrep
-                    WHERE state IS NOT NULL
-                      AND btrim(state) <> ''
-                      AND lower(btrim(state)) <> 'null'
-                ),
-                tx_rep AS (
-                    SELECT DISTINCT ON (brand_campaign_id, doctor_identity_key)
-                      brand_campaign_id,
-                      doctor_identity_key,
-                      field_rep_id::text AS field_rep_id_resolved
-                    FROM silver.fact_collateral_transaction
-                    WHERE COALESCE(NULLIF(btrim(field_rep_id), ''), NULL) IS NOT NULL
-                    ORDER BY brand_campaign_id, doctor_identity_key, COALESCE(updated_at_ts, created_at_ts, transaction_date_ts) DESC, id DESC
-                ),
-                fact_enriched AS (
-                    SELECT
-                      f.doctor_identity_key,
-                      COALESCE(
-                        NULLIF(btrim(f.state_normalized), ''),
-                        {base_state_sql}
-                        NULLIF(btrim(d.state_normalized), ''),
-                        NULLIF(btrim(fr.state_normalized), ''),
-                        NULLIF(btrim(rsc_fact.state_normalized), ''),
-                        NULLIF(btrim(rsg_fact.state_normalized), ''),
-                        NULLIF(btrim(rsc_tx.state_normalized), ''),
-                        NULLIF(btrim(rsg_tx.state_normalized), ''),
-                        'UNKNOWN'
-                      ) AS state_normalized,
-                      f.reached_first_ts,
-                      f.opened_first_ts
-                    FROM {selected_schema}.fact_doctor_collateral_latest f
-                    {base_join_sql}
-                    LEFT JOIN silver.dim_doctor d
-                      ON d.doctor_identity_key = f.doctor_identity_key
-                    LEFT JOIN silver.dim_field_rep fr
-                      ON lower(regexp_replace(COALESCE(NULLIF(btrim(fr.source_field_rep_id), ''), btrim(fr.id::text)), '[^a-zA-Z0-9]', '', 'g'))
-                       = lower(regexp_replace(NULLIF(btrim(f.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
-                    LEFT JOIN tx_rep tx
-                      ON tx.brand_campaign_id = f.brand_campaign_id
-                     AND tx.doctor_identity_key = f.doctor_identity_key
-                    LEFT JOIN rep_state_campaign rsc_fact
-                      ON rsc_fact.rep_key = lower(regexp_replace(NULLIF(btrim(f.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
-                    LEFT JOIN rep_state_global rsg_fact
-                      ON rsg_fact.rep_key = lower(regexp_replace(NULLIF(btrim(f.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
-                    LEFT JOIN rep_state_campaign rsc_tx
-                      ON rsc_tx.rep_key = lower(regexp_replace(NULLIF(btrim(tx.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
-                    LEFT JOIN rep_state_global rsg_tx
-                      ON rsg_tx.rep_key = lower(regexp_replace(NULLIF(btrim(tx.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
-                ),
-                state_universe AS (
-                    SELECT DISTINCT state_normalized FROM rep_state_campaign
-                    UNION
-                    SELECT DISTINCT state_normalized FROM fact_enriched WHERE state_normalized <> 'UNKNOWN'
-                ),
-                agg AS (
-                    SELECT
-                      state_normalized,
-                      COUNT(DISTINCT doctor_identity_key) FILTER (
-                        WHERE reached_first_ts IS NOT NULL
-                          AND reached_first_ts::date BETWEEN %s::date AND %s::date
-                      ) AS reached,
-                      COUNT(DISTINCT doctor_identity_key) FILTER (
-                        WHERE opened_first_ts IS NOT NULL
-                          AND opened_first_ts::date BETWEEN %s::date AND %s::date
-                      ) AS opened,
-                      COUNT(DISTINCT doctor_identity_key) AS total_state
-                    FROM fact_enriched
-                    GROUP BY 1
-                )
-                SELECT
-                  su.state_normalized,
-                  COALESCE(a.reached, 0) AS reached,
-                  COALESCE(a.opened, 0) AS opened,
-                  COALESCE(a.total_state, 0) AS total_state
-                FROM state_universe su
-                LEFT JOIN agg a ON a.state_normalized = su.state_normalized
-                ORDER BY
-                  CASE
-                    WHEN COALESCE(a.reached,0)=0 OR COALESCE(a.total_state,0)=0 THEN 0
-                    ELSE ((LEAST((COALESCE(a.reached,0) / NULLIF((COALESCE(a.total_state,0)/4.0),0)),1.0)
-                      + (COALESCE(a.opened,0) / NULLIF(COALESCE(a.reached,0),0))
-                      + (COALESCE(a.opened,0) / NULLIF(COALESCE(a.opened,0),0))) / 3.0) * 100
-                  END ASC,
-                  su.state_normalized ASC
-                """,
-                [
-                    selected_campaign,
-                    selected_campaign,
-                    selected_campaign,
-                    latest_week.get("week_start_date"),
-                    latest_week.get("week_end_date"),
-                    latest_week.get("week_start_date"),
-                    latest_week.get("week_end_date"),
-                ],
+                state_rows = _state_attention_source_rows(
+                    requested_campaign,
+                    brand_campaign_variants,
+                    selected_schema,
+                    latest_week,
+                    bridge_base_exists,
                 )
             except (ProgrammingError, OperationalError):
                 state_rows = []
@@ -1665,7 +1696,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 reached = _to_float(row.get("reached"))
                 opened = _to_float(row.get("opened"))
                 total_state = _to_float(row.get("total_state"))
-                reached_pct = min(_safe_pct(reached, total_state / 4.0 if total_state else 0), 100.0)
+                reached_pct = min(_safe_pct(reached, total_state), 100.0)
                 open_pct = _safe_pct(opened, reached)
                 state_health = ((reached_pct / 100.0) + (open_pct / 100.0) + (open_pct / 100.0)) / 3.0 * 100
                 label = "Low" if state_health < 40 else "Medium" if state_health < 60 else "Good"

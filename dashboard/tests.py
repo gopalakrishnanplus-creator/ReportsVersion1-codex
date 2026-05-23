@@ -121,6 +121,30 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("raw_assigned_reps AS", sql)
         self.assertIn("GROUP BY field_rep_id", sql)
 
+    def test_state_attention_uses_rep_aliases_and_effective_reach(self):
+        latest_week = {"week_start_date": "2026-04-10", "week_end_date": "2026-04-16"}
+        with patch("dashboard.views._optional_table_exists", return_value=True), patch(
+            "dashboard.views._fetch_dicts",
+            return_value=[],
+        ) as fetch_mock:
+            dashboard.views._state_attention_source_rows(
+                "brand-1",
+                ["brand-1"],
+                "gold_campaign_brand_1",
+                latest_week,
+                bridge_base_exists=False,
+            )
+
+        sql = fetch_mock.call_args.args[0]
+        self.assertIn("raw_rep_state_campaign AS", sql)
+        self.assertIn("LEFT JOIN bronze.user_management_user uu", sql)
+        self.assertIn("LEFT JOIN bronze.sharing_management_fieldrepresentative sfr", sql)
+        self.assertIn("effective_reached_ts", sql)
+        self.assertIn("video_gt_50_first_ts", sql)
+        self.assertIn("pdf_download_first_ts", sql)
+        self.assertIn("effective_reached_ts::date BETWEEN", sql)
+        self.assertNotIn("total_state,0)/4.0", sql)
+
     def test_reports_home_renders(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
