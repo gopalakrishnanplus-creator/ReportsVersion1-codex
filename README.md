@@ -10,6 +10,10 @@ The SAPA dashboard is implemented as a separate app and ETL path. See [docs/ESAP
 - MySQL Server 1 configuration behavior
 - SAPA schema isolation from the legacy Inclinic report
 
+## InClinic dashboard metric definitions
+
+For a brand-manager-friendly explanation of every InClinic dashboard calculation, denominator, and reconciliation caveat, see [docs/INCLINIC_DASHBOARD_CALCULATION_NOTES.md](docs/INCLINIC_DASHBOARD_CALCULATION_NOTES.md).
+
 ## Implemented architecture
 
 - **RAW**: exact source replication in `raw_server1`/`raw_server2` with all source columns as text + ingestion metadata.
