@@ -641,7 +641,7 @@ def _field_rep_insight_rows(
         f"""
             UNION
             SELECT field_rep_id, {column} AS rep_key
-            FROM assigned_reps
+            FROM raw_assigned_reps
             WHERE {column} <> ''
         """.rstrip()
         for column in alias_key_columns
@@ -660,7 +660,7 @@ def _field_rep_insight_rows(
     return _fetch_dicts(
         f"""
         WITH {candidate_cte},
-        assigned_reps AS (
+        raw_assigned_reps AS (
             SELECT DISTINCT
                 ccf.field_rep_id::text AS field_rep_id,
                 COALESCE(
@@ -684,13 +684,33 @@ def _field_rep_insight_rows(
               ON cfr.id::text = ccf.field_rep_id::text
             {alias_joins}
         ),
+        assigned_reps AS (
+            SELECT
+                field_rep_id,
+                COALESCE(
+                    MAX(NULLIF(field_rep_display_id, '')),
+                    field_rep_id
+                ) AS field_rep_display_id,
+                COALESCE(
+                    MAX(NULLIF(field_rep_name, '')),
+                    MAX(NULLIF(field_rep_display_id, '')),
+                    field_rep_id,
+                    'Unknown Field Rep'
+                ) AS field_rep_name,
+                COALESCE(
+                    MAX(NULLIF(state_normalized, '')),
+                    'UNKNOWN'
+                ) AS state_normalized
+            FROM raw_assigned_reps
+            GROUP BY field_rep_id
+        ),
         assigned_rep_keys AS (
             SELECT field_rep_id, internal_rep_key AS rep_key
-            FROM assigned_reps
+            FROM raw_assigned_reps
             WHERE internal_rep_key <> ''
             UNION
             SELECT field_rep_id, external_rep_key AS rep_key
-            FROM assigned_reps
+            FROM raw_assigned_reps
             WHERE external_rep_key <> ''
             {alias_key_unions}
         ),
