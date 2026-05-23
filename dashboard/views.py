@@ -112,6 +112,14 @@ def _normalized_sql(column_sql: str) -> str:
     return f"lower(regexp_replace(COALESCE(btrim({column_sql}), ''), '[^a-zA-Z0-9]', '', 'g'))"
 
 
+def _valid_state_sql(column_sql: str) -> str:
+    return (
+        f"CASE WHEN {column_sql} IS NULL OR btrim({column_sql}) = '' "
+        f"OR lower(btrim({column_sql})) IN ('null', 'none', 'unknown') "
+        f"THEN NULL ELSE initcap(btrim({column_sql})) END"
+    )
+
+
 def _placeholders(values: list[Any]) -> str:
     return ", ".join(["%s"] * len(values))
 
@@ -821,7 +829,7 @@ def _state_attention_source_rows(
         """.rstrip()
         for column in alias_key_columns
     )
-    base_state_sql = "NULLIF(btrim(base.state_normalized), '')," if bridge_base_exists else ""
+    base_state_sql = f"{_valid_state_sql('base.state_normalized')}," if bridge_base_exists else ""
     base_join_sql = (
         """
                     LEFT JOIN silver.bridge_brand_campaign_doctor_base base
@@ -838,7 +846,7 @@ def _state_attention_source_rows(
             SELECT DISTINCT
               lower(regexp_replace(btrim(ccf.field_rep_id::text), '[^a-zA-Z0-9]', '', 'g')) AS internal_rep_key,
               {_normalized_sql('cfr.brand_supplied_field_rep_id')} AS external_rep_key,
-              initcap(btrim(cfr.state)) AS state_normalized
+              {_valid_state_sql('cfr.state')} AS state_normalized
               {alias_selects}
             FROM bronze.campaign_campaignfieldrep ccf
             JOIN candidate_campaign_ids ci
@@ -849,7 +857,7 @@ def _state_attention_source_rows(
             {alias_joins}
             WHERE cfr.state IS NOT NULL
               AND btrim(cfr.state) <> ''
-              AND lower(btrim(cfr.state)) <> 'null'
+              AND lower(btrim(cfr.state)) NOT IN ('null', 'none', 'unknown')
         ),
         rep_state_campaign AS (
             SELECT internal_rep_key AS rep_key, state_normalized
@@ -864,11 +872,11 @@ def _state_attention_source_rows(
         rep_state_global AS (
             SELECT DISTINCT
               lower(regexp_replace(COALESCE(NULLIF(btrim(brand_supplied_field_rep_id), ''), btrim(id::text)), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
-              initcap(btrim(state)) AS state_normalized
+              {_valid_state_sql('state')} AS state_normalized
             FROM bronze.campaign_fieldrep
             WHERE state IS NOT NULL
               AND btrim(state) <> ''
-              AND lower(btrim(state)) <> 'null'
+              AND lower(btrim(state)) NOT IN ('null', 'none', 'unknown')
         ),
         tx_rep AS (
             SELECT DISTINCT ON (brand_campaign_id, doctor_identity_key)
@@ -883,14 +891,14 @@ def _state_attention_source_rows(
             SELECT
               f.doctor_identity_key,
               COALESCE(
-                NULLIF(btrim(f.state_normalized), ''),
+                {_valid_state_sql('f.state_normalized')},
                 {base_state_sql}
-                NULLIF(btrim(d.state_normalized), ''),
-                NULLIF(btrim(fr.state_normalized), ''),
-                NULLIF(btrim(rsc_fact.state_normalized), ''),
-                NULLIF(btrim(rsg_fact.state_normalized), ''),
-                NULLIF(btrim(rsc_tx.state_normalized), ''),
-                NULLIF(btrim(rsg_tx.state_normalized), ''),
+                {_valid_state_sql('d.state_normalized')},
+                {_valid_state_sql('fr.state_normalized')},
+                {_valid_state_sql('rsc_fact.state_normalized')},
+                {_valid_state_sql('rsg_fact.state_normalized')},
+                {_valid_state_sql('rsc_tx.state_normalized')},
+                {_valid_state_sql('rsg_tx.state_normalized')},
                 'UNKNOWN'
               ) AS state_normalized,
               COALESCE(
@@ -922,7 +930,10 @@ def _state_attention_source_rows(
         state_universe AS (
             SELECT DISTINCT state_normalized FROM rep_state_campaign
             UNION
-            SELECT DISTINCT state_normalized FROM fact_enriched WHERE state_normalized <> 'UNKNOWN'
+            SELECT DISTINCT state_normalized
+            FROM fact_enriched
+            WHERE state_normalized IS NOT NULL
+              AND state_normalized <> 'UNKNOWN'
         ),
         agg AS (
             SELECT
