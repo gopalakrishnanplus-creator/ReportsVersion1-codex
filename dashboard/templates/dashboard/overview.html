@@ -77,8 +77,9 @@
           {% endif %}
         </div>
         <div id="state-list" class="state-list">
-        {% for s in state_attention %}
-          <div class="state-row{% if forloop.counter > 5 %} state-row-extra hidden{% endif %}">
+        {% with card_states=state_attention_card|default:state_attention %}
+        {% for s in card_states %}
+          <div class="state-row">
             <div>
               <strong>{{ s.state }}</strong>
               <p>Open: {{ s.open_pct }}%</p>
@@ -91,6 +92,7 @@
         {% empty %}
           <p class="subtext">No state data available.</p>
         {% endfor %}
+        {% endwith %}
         </div>
       </article>
 

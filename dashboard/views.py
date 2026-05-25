@@ -121,6 +121,30 @@ def _valid_state_sql(column_sql: str) -> str:
     )
 
 
+def _is_unknown_state(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"", "null", "none", "unknown"}
+
+
+def _display_state_name(value: Any) -> str:
+    return "Unknown" if _is_unknown_state(value) else str(value).strip()
+
+
+def _state_sort_key(item: dict[str, Any]) -> tuple[int, str]:
+    state = item.get("state")
+    return (1 if _is_unknown_state(state) else 0, str(state or "").strip().lower())
+
+
+def _state_attention_card_rows(state_attention: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
+    visible = list(state_attention[:limit])
+    unknown_row = next((row for row in state_attention if _is_unknown_state(row.get("state"))), None)
+    if unknown_row and unknown_row not in visible:
+        if len(visible) >= limit:
+            visible = visible[: max(limit - 1, 0)]
+        visible.append(unknown_row)
+    return visible
+
+
 def _placeholders(values: list[Any]) -> str:
     return ", ".join(["%s"] * len(values))
 
@@ -934,7 +958,6 @@ def _state_attention_source_rows(
             SELECT DISTINCT state_normalized
             FROM fact_enriched
             WHERE state_normalized IS NOT NULL
-              AND state_normalized <> 'UNKNOWN'
         ),
         agg AS (
             SELECT
@@ -1513,6 +1536,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     active_week_values: set[int] = set()
     error_message = None
     state_attention: list[dict[str, Any]] = []
+    state_attention_card: list[dict[str, Any]] = []
     schedule_text = "Schedule unavailable"
     collateral_name = "N/A"
     brand_name = "Apex"
@@ -1770,13 +1794,14 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 label = "Low" if state_health < 40 else "Medium" if state_health < 60 else "Good"
                 state_attention.append(
                     {
-                        "state": row.get("state_normalized"),
+                        "state": _display_state_name(row.get("state_normalized")),
                         "open_pct": round(open_pct, 1),
                         "reached_pct": round(reached_pct, 1),
                         "label": label,
                     }
                 )
-            state_attention.sort(key=lambda item: str(item.get("state") or "").lower())
+            state_attention.sort(key=_state_sort_key)
+            state_attention_card = _state_attention_card_rows(state_attention)
 
             weakest = min(
                 [
@@ -1987,6 +2012,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         "schedule_text": schedule_text,
         "collateral_name": collateral_name,
         "state_attention": state_attention,
+        "state_attention_card": state_attention_card,
         "action_panel": action_panel,
         "field_rep_insights": field_rep_insights,
         "field_rep_summary": field_rep_summary,
