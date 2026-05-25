@@ -150,3 +150,33 @@ You can override runtime values, for example:
 ```bash
 PROJECT_DIR=/var/www/ReportsVersion1 VENV_DIR=/var/www/venv ENV_FILE=/var/www/secrets/.env DJANGO_SETTINGS_MODULE=config.settings.prod RUN_ETL_ON_DEPLOY=1 RUN_ETL_CONTINUE_ON_ERROR=1 GUNICORN_SERVICE=gunicorn ./deploy.sh
 ```
+Campaign Doctor Total vs sum of field-rep assigned doctors
+
+These may differ because one doctor can be linked to more than one field rep, or the campaign total may come from the brand’s declared campaign size. Adding field-rep doctor counts can double-count shared/overlapping doctors.
+
+KPI Doctors Reached vs Field Rep Sent sum
+
+Doctors Reached is the campaign-level unique reach count. Field Rep Sent is counted per field rep. If the same doctor was sent collateral by two reps, the campaign KPI may count that doctor once, while field-rep totals may show activity under both reps.
+
+KPI Doctors Opened vs Field Rep Viewed sum
+
+Campaign Opened counts unique doctors at campaign level. Field Rep Viewed shows how many viewed under each rep. If the same doctor appears under multiple reps or interactions, the grouped rep total can differ.
+
+KPI Video Viewed >50% vs Field Rep Video Played
+
+The KPI is a campaign-level unique doctor count for video engagement. Field Rep Video Played is rep-level activity. It is useful for rep performance, but it is not always the same as campaign-wide unique video viewers.
+
+KPI PDF Downloads vs Field Rep PDF / Collateral Saved
+
+The KPI answers: “How many unique doctors downloaded/saved at campaign level?” The field-rep table answers: “How many doctors downloaded/saved under each rep?” Those are related, but grouped differently.
+
+KPI percentages vs weekly chart percentages
+
+KPI tiles usually show the selected/latest campaign view. Weekly chart percentages are split by week. A doctor’s action belongs to a specific week, so week-by-week percentages will not always visually match the overall KPI percentage.
+
+Campaign state percentages vs overall campaign percentages
+
+Overall campaign percentage looks at the whole campaign together. State percentage looks only at doctors/activity within each state. A state can perform very differently from the campaign average, so the percentages should not be expected to match.
+
+In plain terms: the KPI tiles show the campaign as one whole picture, while field-rep, weekly, and state views split the same campaign into smaller groups. Once data is split by rep, week, or state, the totals and percentages can naturally differ.
+
