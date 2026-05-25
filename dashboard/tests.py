@@ -148,7 +148,26 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("effective_reached_ts::date BETWEEN", sql)
         self.assertIn("lower(btrim(f.state_normalized)) IN ('null', 'none', 'unknown')", sql)
         self.assertIn("lower(btrim(base.state_normalized)) IN ('null', 'none', 'unknown')", sql)
+        self.assertNotIn("state_normalized <> 'UNKNOWN'", sql)
         self.assertNotIn("total_state,0)/4.0", sql)
+
+    def test_state_attention_groups_unknown_last_and_keeps_it_visible_on_card(self):
+        state_attention = [
+            {"state": "Gujarat", "open_pct": 0, "reached_pct": 0, "label": "Low"},
+            {"state": "Unknown", "open_pct": 20, "reached_pct": 35, "label": "Low"},
+            {"state": "Andhra Pradesh", "open_pct": 0, "reached_pct": 0, "label": "Low"},
+            {"state": "Bihar", "open_pct": 0, "reached_pct": 0, "label": "Low"},
+            {"state": "Delhi", "open_pct": 0, "reached_pct": 0, "label": "Low"},
+            {"state": "Karnataka", "open_pct": 0, "reached_pct": 0, "label": "Low"},
+        ]
+
+        state_attention.sort(key=dashboard.views._state_sort_key)
+        card_rows = dashboard.views._state_attention_card_rows(state_attention)
+
+        self.assertEqual([row["state"] for row in state_attention][-1], "Unknown")
+        self.assertEqual(len(card_rows), 5)
+        self.assertEqual(card_rows[-1]["state"], "Unknown")
+        self.assertNotIn("Karnataka", [row["state"] for row in card_rows])
 
     def test_reports_home_renders(self):
         response = self.client.get("/")
@@ -302,6 +321,14 @@ class DashboardAccessViewTests(SimpleTestCase):
                 {"state": "Gujarat", "open_pct": 1, "reached_pct": 2, "label": "Low"},
                 {"state": "Karnataka", "open_pct": 1, "reached_pct": 2, "label": "Low"},
                 {"state": "Maharashtra", "open_pct": 1, "reached_pct": 2, "label": "Low"},
+                {"state": "Unknown", "open_pct": 20, "reached_pct": 35, "label": "Low"},
+            ],
+            "state_attention_card": [
+                {"state": "Andhra Pradesh", "open_pct": 1, "reached_pct": 2, "label": "Low"},
+                {"state": "Bihar", "open_pct": 1, "reached_pct": 2, "label": "Low"},
+                {"state": "Delhi", "open_pct": 1, "reached_pct": 2, "label": "Low"},
+                {"state": "Gujarat", "open_pct": 1, "reached_pct": 2, "label": "Low"},
+                {"state": "Unknown", "open_pct": 20, "reached_pct": 35, "label": "Low"},
             ],
             "field_rep_summary": {
                 "total_reps": 1,
@@ -379,6 +406,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "/campaign/demo/collateral/11/field-rep-insights/")
         self.assertContains(response, "/campaign/demo/states/")
         self.assertContains(response, "Asha Mehta")
+        self.assertContains(response, "Unknown")
+        self.assertNotContains(response, "<strong>Karnataka</strong>", html=True)
         self.assertContains(response, "FR-101")
         self.assertNotContains(response, "Data Note")
         self.assertNotContains(response, "Hidden diagnostic note")
