@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>In-Clinic Sharing Dashboard</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260518b">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260525a">
 </head>
 <body>
   <main id="report-root" class="dashboard">
@@ -73,7 +73,7 @@
         <div class="panel-title-row">
           <h3>States Requiring Attention</h3>
           {% if state_attention|length > 5 %}
-          <button type="button" id="state-view-all" class="link-button" aria-expanded="false">View All</button>
+          <a href="{% url 'campaign-state-list' selected_campaign %}{% if selected_week %}?week={{ selected_week }}{% endif %}" class="link-button">View All</a>
           {% endif %}
         </div>
         <div id="state-list" class="state-list">
@@ -151,6 +151,7 @@
           </div>
           <div class="field-rep-panel-actions">
             <button type="button" id="field-rep-excel-btn" class="ghost-btn">Download Excel</button>
+            <button type="button" id="old-collaterals-btn" class="ghost-btn">Old Collaterals</button>
             <button type="button" id="field-rep-close" class="ghost-btn">Hide Insights</button>
           </div>
         </div>
@@ -183,6 +184,28 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="old_collaterals_panel" class="field-rep-modal hidden" role="dialog" aria-modal="true" aria-labelledby="old-collaterals-title">
+      <div class="card field-rep-dialog old-collateral-dialog">
+        <div class="panel-title-row">
+          <div>
+            <h3 id="old-collaterals-title">Old Collaterals</h3>
+            <p class="subtext">Select a previous collateral to open Field Representative Insights for that collateral only.</p>
+          </div>
+          <button type="button" id="old-collaterals-close" class="ghost-btn">Close</button>
+        </div>
+        <div class="old-collateral-list">
+          {% for collateral in old_collaterals %}
+            <a class="old-collateral-row" href="{{ collateral.url }}">
+              <strong>{{ collateral.name }}</strong>
+              <span>{{ collateral.schedule_text }}</span>
+            </a>
+          {% empty %}
+            <p class="subtext">No previous collaterals are available for this campaign.</p>
+          {% endfor %}
         </div>
       </div>
     </section>
@@ -246,6 +269,6 @@
   {{ video_pct_series|json_script:"trend-video" }}
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260518b"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260525a"></script>
 </body>
 </html>

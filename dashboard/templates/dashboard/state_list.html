@@ -1,0 +1,54 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>States Requiring Attention</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260525a">
+</head>
+<body>
+  <main class="dashboard detail-page">
+    <section class="card detail-header">
+      <div class="detail-title">
+        <p class="brand-sub">{{ brand_name }}</p>
+        <h1>States Requiring Attention</h1>
+        <p class="schedule">{{ collateral_name }}</p>
+        <p class="footnote">States are listed alphabetically. Percentages use the selected campaign/week context.</p>
+      </div>
+      <div class="detail-actions">
+        <a class="ghost-btn" href="{% url 'campaign-overview-specific' selected_campaign %}{% if selected_week %}?week={{ selected_week }}{% endif %}">Back to Dashboard</a>
+      </div>
+    </section>
+
+    {% if error_message %}
+      <section class="card">
+        <p class="error">Data issue: {{ error_message }}</p>
+      </section>
+    {% endif %}
+
+    <section class="card">
+      <div class="state-full-list">
+        {% for s in state_attention %}
+          <div class="state-full-row">
+            <strong>{{ s.state }}</strong>
+            <div>
+              <span class="metric-label">Reached</span>
+              <span class="metric-value">{{ s.reached_pct }}%</span>
+            </div>
+            <div>
+              <span class="metric-label">Open</span>
+              <span class="metric-value">{{ s.open_pct }}%</span>
+            </div>
+            <div>
+              <span class="badge {{ s.label|lower }}">{{ s.label }}</span>
+            </div>
+          </div>
+        {% empty %}
+          <p class="subtext">No state data available.</p>
+        {% endfor %}
+      </div>
+    </section>
+  </main>
+</body>
+</html>

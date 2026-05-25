@@ -120,6 +120,9 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("assignment_note", sql)
         self.assertIn("raw_assigned_reps AS", sql)
         self.assertIn("GROUP BY field_rep_id", sql)
+        self.assertIn("COALESCE(NULLIF(tx.doctor_phone_normalized, ''), tx.doctor_identity_key) AS doctor_key", sql)
+        self.assertIn("COALESCE(NULLIF(s.doctor_identifier_normalized, ''), s.doctor_identity_key) AS doctor_key", sql)
+        self.assertIn("COUNT(DISTINCT a.doctor_key)", sql)
 
     def test_state_attention_uses_rep_aliases_and_effective_reach(self):
         latest_week = {"week_start_date": "2026-04-10", "week_end_date": "2026-04-16"}
@@ -292,7 +295,14 @@ class DashboardAccessViewTests(SimpleTestCase):
             "error_message": None,
             "schedule_text": "May 01, 2026 - May 31, 2026",
             "collateral_name": "Current Collateral",
-            "state_attention": [],
+            "state_attention": [
+                {"state": "Andhra Pradesh", "open_pct": 1, "reached_pct": 2, "label": "Low"},
+                {"state": "Bihar", "open_pct": 1, "reached_pct": 2, "label": "Low"},
+                {"state": "Delhi", "open_pct": 1, "reached_pct": 2, "label": "Low"},
+                {"state": "Gujarat", "open_pct": 1, "reached_pct": 2, "label": "Low"},
+                {"state": "Karnataka", "open_pct": 1, "reached_pct": 2, "label": "Low"},
+                {"state": "Maharashtra", "open_pct": 1, "reached_pct": 2, "label": "Low"},
+            ],
             "field_rep_summary": {
                 "total_reps": 1,
                 "total_doctors_assigned": 120,
@@ -312,6 +322,14 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "doctors_video_played": 12,
                     "doctors_pdf_downloaded": 8,
                     "assignment_note": "Hidden diagnostic note",
+                }
+            ],
+            "old_collaterals": [
+                {
+                    "collateral_id": "11",
+                    "name": "Older Collateral",
+                    "schedule_text": "Apr 01, 2026 - Apr 09, 2026",
+                    "url": "/campaign/demo/collateral/11/field-rep-insights/",
                 }
             ],
             "collateral_cards": {
@@ -357,6 +375,9 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, 'role="dialog"')
         self.assertContains(response, "Field Rep ID")
         self.assertContains(response, "Download Excel")
+        self.assertContains(response, "Old Collaterals")
+        self.assertContains(response, "/campaign/demo/collateral/11/field-rep-insights/")
+        self.assertContains(response, "/campaign/demo/states/")
         self.assertContains(response, "Asha Mehta")
         self.assertContains(response, "FR-101")
         self.assertNotContains(response, "Data Note")
@@ -364,3 +385,80 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertNotContains(response, "Action Required This Week")
         self.assertNotContains(response, "Weekly KPI Table")
         self.assertNotContains(response, "Back to Menu")
+
+    def test_state_list_page_renders_full_state_view(self):
+        session = self.client.session
+        session["auth_demo"] = True
+        session.save()
+        self.client.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
+
+        context = {
+            "selected_campaign": "demo",
+            "brand_name": "Demo Brand",
+            "collateral_name": "Current Collateral",
+            "selected_week": None,
+            "error_message": None,
+            "state_attention": [
+                {"state": "Andhra Pradesh", "open_pct": 10, "reached_pct": 20, "label": "Low"},
+                {"state": "Maharashtra", "open_pct": 30, "reached_pct": 40, "label": "Medium"},
+            ],
+        }
+        with patch(
+            "dashboard.views.build_report_access",
+            return_value=type("Access", (), {"session_key": "auth_demo"})(),
+        ), patch("dashboard.views._build_report_context", return_value=context):
+            response = self.client.get("/campaign/demo/states/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "States Requiring Attention")
+        self.assertContains(response, "Andhra Pradesh")
+        self.assertContains(response, "Maharashtra")
+        self.assertNotContains(response, "state-row-extra")
+
+    def test_collateral_field_rep_page_renders_selected_collateral(self):
+        session = self.client.session
+        session["auth_demo"] = True
+        session.save()
+        self.client.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
+
+        context = {
+            "selected_campaign": "demo",
+            "selected_collateral_id": "11",
+            "brand_name": "Demo Brand",
+            "brand_logo_text": "Demo",
+            "company_logo_url": None,
+            "collateral_name": "Older Collateral",
+            "schedule_text": "Apr 01, 2026 - Apr 09, 2026",
+            "field_rep_summary": {
+                "total_reps": 1,
+                "total_doctors_assigned": 120,
+                "doctors_sent": 12,
+                "doctors_viewed": 4,
+                "doctors_video_played": 1,
+                "doctors_pdf_downloaded": 3,
+            },
+            "field_rep_insights": [
+                {
+                    "field_rep_id": "FR-101",
+                    "field_rep_name": "Asha Mehta",
+                    "total_doctors_assigned": 120,
+                    "doctors_sent": 12,
+                    "doctors_viewed": 4,
+                    "doctors_video_played": 1,
+                    "doctors_pdf_downloaded": 3,
+                }
+            ],
+            "old_collaterals": [],
+            "error_message": None,
+        }
+        with patch(
+            "dashboard.views.build_report_access",
+            return_value=type("Access", (), {"session_key": "auth_demo"})(),
+        ), patch("dashboard.views._build_collateral_field_rep_context", return_value=context):
+            response = self.client.get("/campaign/demo/collateral/11/field-rep-insights/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Older Collateral")
+        self.assertContains(response, "This page is filtered to collateral ID 11 only.")
+        self.assertContains(response, "Asha Mehta")
+        self.assertContains(response, "12")
