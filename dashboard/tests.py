@@ -136,17 +136,23 @@ class DashboardAccessViewTests(SimpleTestCase):
                 "gold_campaign_brand_1",
                 latest_week,
                 bridge_base_exists=True,
+                current_collateral_ids=["9"],
             )
 
         sql = fetch_mock.call_args.args[0]
         self.assertIn("raw_rep_state_campaign AS", sql)
         self.assertIn("LEFT JOIN bronze.user_management_user uu", sql)
         self.assertIn("LEFT JOIN bronze.sharing_management_fieldrepresentative sfr", sql)
-        self.assertIn("effective_reached_ts", sql)
+        self.assertIn("silver.doctor_action_first_seen", sql)
+        self.assertNotIn(".fact_doctor_collateral_latest", sql)
+        self.assertIn("a.collateral_id::text IN", sql)
+        self.assertIn("effective_reached_date", sql)
         self.assertIn("video_gt_50_first_ts", sql)
         self.assertIn("pdf_download_first_ts", sql)
-        self.assertIn("effective_reached_ts::date BETWEEN", sql)
-        self.assertIn("lower(btrim(f.state_normalized)) IN ('null', 'none', 'unknown')", sql)
+        self.assertIn("effective_reached_date BETWEEN", sql)
+        self.assertIn("roster_base AS", sql)
+        self.assertIn("event_enriched AS", sql)
+        self.assertIn("lower(btrim(d.state_normalized)) IN ('null', 'none', 'unknown')", sql)
         self.assertIn("lower(btrim(base.state_normalized)) IN ('null', 'none', 'unknown')", sql)
         self.assertNotIn("state_normalized <> 'UNKNOWN'", sql)
         self.assertNotIn("total_state,0)/4.0", sql)
