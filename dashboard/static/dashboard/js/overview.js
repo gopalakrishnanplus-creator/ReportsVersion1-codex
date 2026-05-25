@@ -122,19 +122,6 @@
     }
   });
 
-  const stateViewAll = document.getElementById('state-view-all');
-  const stateList = document.getElementById('state-list');
-  if (stateViewAll) {
-    stateViewAll.addEventListener('click', () => {
-      const extraRows = document.querySelectorAll('.state-row-extra');
-      const shouldOpen = stateViewAll.getAttribute('aria-expanded') !== 'true';
-      extraRows.forEach((row) => row.classList.toggle('hidden', !shouldOpen));
-      stateList?.classList.toggle('expanded', shouldOpen);
-      stateViewAll.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
-      stateViewAll.textContent = shouldOpen ? 'Show Less' : 'View All';
-    });
-  }
-
   function escapeExcelHtml(value) {
     return String(value || '')
       .replace(/&/g, '&amp;')
@@ -169,6 +156,44 @@
       URL.revokeObjectURL(url);
     });
   }
+
+  const oldCollateralsBtn = document.getElementById('old-collaterals-btn');
+  const oldCollateralsPanel = document.getElementById('old_collaterals_panel');
+  const oldCollateralsClose = document.getElementById('old-collaterals-close');
+
+  function setOldCollateralsPanel(open) {
+    if (!oldCollateralsPanel) return;
+    oldCollateralsPanel.classList.toggle('hidden', !open);
+    document.body.classList.toggle('modal-open', open || (fieldRepPanel && !fieldRepPanel.classList.contains('hidden')));
+    if (open) {
+      oldCollateralsClose?.focus();
+    }
+  }
+
+  if (oldCollateralsBtn) {
+    oldCollateralsBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      setOldCollateralsPanel(true);
+    });
+  }
+  if (oldCollateralsClose) {
+    oldCollateralsClose.addEventListener('click', (event) => {
+      event.stopPropagation();
+      setOldCollateralsPanel(false);
+    });
+  }
+  if (oldCollateralsPanel) {
+    oldCollateralsPanel.addEventListener('click', (event) => {
+      if (event.target === oldCollateralsPanel) {
+        setOldCollateralsPanel(false);
+      }
+    });
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && oldCollateralsPanel && !oldCollateralsPanel.classList.contains('hidden')) {
+      setOldCollateralsPanel(false);
+    }
+  });
 
   const downloadBtn = document.getElementById('download-pdf-btn');
   const reportRoot = document.getElementById('report-root');

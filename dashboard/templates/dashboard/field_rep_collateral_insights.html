@@ -1,0 +1,82 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Field Representative Insights</title>
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260525a">
+</head>
+<body>
+  <main class="dashboard detail-page">
+    <section class="card detail-header">
+      <div class="detail-title">
+        <p class="brand-sub">{{ brand_name }}</p>
+        <h1>Field Representative Insights</h1>
+        <p class="label">{{ collateral_name }}</p>
+        <p class="schedule">{{ schedule_text }}</p>
+        <p class="footnote">This page is filtered to collateral ID {{ selected_collateral_id }} only.</p>
+      </div>
+      <div class="detail-actions">
+        <a class="ghost-btn" href="{% url 'campaign-overview-specific' selected_campaign %}">Back to Dashboard</a>
+        <button type="button" id="field-rep-excel-btn" class="ghost-btn">Download Excel</button>
+      </div>
+    </section>
+
+    {% if error_message %}
+      <section class="card">
+        <p class="error">Data issue: {{ error_message }}</p>
+      </section>
+    {% endif %}
+
+    <section class="card">
+      <div class="field-rep-tile-metrics">
+        <div>
+          <strong>{{ field_rep_summary.total_reps }}</strong>
+          <span>Field Reps</span>
+        </div>
+        <div>
+          <strong>{{ field_rep_summary.total_doctors_assigned }}</strong>
+          <span>Doctors Assigned</span>
+        </div>
+      </div>
+      <p class="caption">Sent {{ field_rep_summary.doctors_sent }} · Viewed {{ field_rep_summary.doctors_viewed }} · Video {{ field_rep_summary.doctors_video_played }} · PDF {{ field_rep_summary.doctors_pdf_downloaded }}</p>
+    </section>
+
+    <section class="card">
+      <div class="table-wrap">
+        <table id="field-rep-insights-table" class="menu-table">
+          <thead>
+            <tr>
+              <th>Field Rep ID</th>
+              <th>Field Representative</th>
+              <th>Doctors Assigned</th>
+              <th>Collateral Sent</th>
+              <th>Viewed</th>
+              <th>Video Played</th>
+              <th>PDF / Collateral Saved</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for rep in field_rep_insights %}
+              <tr>
+                <td data-label="Field Rep ID">{{ rep.field_rep_id }}</td>
+                <td data-label="Field Representative">{{ rep.field_rep_name }}</td>
+                <td data-label="Doctors Assigned">{{ rep.total_doctors_assigned }}</td>
+                <td data-label="Collateral Sent">{{ rep.doctors_sent }}</td>
+                <td data-label="Viewed">{{ rep.doctors_viewed }}</td>
+                <td data-label="Video Played">{{ rep.doctors_video_played }}</td>
+                <td data-label="PDF / Collateral Saved">{{ rep.doctors_pdf_downloaded }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="7">No field representative assignment data available for this collateral.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260525a"></script>
+</body>
+</html>

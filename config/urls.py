@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.urls import include, path
-from dashboard.views import campaign_overview, menu_page, campaign_login, export_report, etl_debug_page, send_access_email_view, campaign_access_page, reports_home, campaign_performance_links_page, campaign_performance_page
+from dashboard.views import campaign_field_rep_collateral_insights, campaign_overview, campaign_state_list, menu_page, campaign_login, export_report, etl_debug_page, send_access_email_view, campaign_access_page, reports_home, campaign_performance_links_page, campaign_performance_page
 from dashboard.internal_data_admin import (
     internal_data_admin_bulk_delete,
     internal_data_admin_cleanup,
@@ -44,6 +44,8 @@ urlpatterns = [
     path("campaign/<str:brand_campaign_id>/access/", campaign_access_page, name="campaign-access"),
     path("campaign/<str:brand_campaign_id>/send-access-email/", send_access_email_view, name="campaign-send-access-email"),
     path("campaign/<str:brand_campaign_id>/performance/", campaign_performance_page, name="campaign-performance-page-legacy"),
+    path("campaign/<str:brand_campaign_id>/states/", campaign_state_list, name="campaign-state-list"),
+    path("campaign/<str:brand_campaign_id>/collateral/<str:collateral_id>/field-rep-insights/", campaign_field_rep_collateral_insights, name="campaign-field-rep-insights-collateral"),
     path("campaign/<str:brand_campaign_id>/", campaign_overview, name="campaign-overview-specific"),
     path("campaign/<str:brand_campaign_id>/export/", export_report, name="campaign-export"),
 ]

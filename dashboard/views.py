@@ -10,6 +10,7 @@ from django.db import connection
 from django.db.utils import OperationalError, ProgrammingError
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
+from django.urls import reverse
 
 from etl.utils.specs import SOURCE_TABLE_SPECS
 from reporting.access import absolute_url, access_email_history, authenticate_session, build_report_access, send_access_email, validate_credentials
@@ -737,7 +738,7 @@ def _field_rep_insight_rows(
         activity AS (
             SELECT
                 {_normalized_sql('tx.field_rep_id')} AS rep_key,
-                tx.doctor_identity_key,
+                COALESCE(NULLIF(tx.doctor_phone_normalized, ''), tx.doctor_identity_key) AS doctor_key,
                 1 AS sent_flag,
                 CASE WHEN tx.has_viewed_flag = '1' OR NULLIF(tx.opened_event_ts, '') IS NOT NULL THEN 1 ELSE 0 END AS viewed_flag,
                 CASE
@@ -756,7 +757,7 @@ def _field_rep_insight_rows(
             UNION ALL
             SELECT
                 {_normalized_sql('s.field_rep_id::text')} AS rep_key,
-                s.doctor_identity_key,
+                COALESCE(NULLIF(s.doctor_identifier_normalized, ''), s.doctor_identity_key) AS doctor_key,
                 1 AS sent_flag,
                 0 AS viewed_flag,
                 0 AS video_flag,
@@ -768,10 +769,10 @@ def _field_rep_insight_rows(
         activity_for_rep AS (
             SELECT
                 ark.field_rep_id,
-                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE a.sent_flag = 1) AS doctors_sent,
-                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE a.viewed_flag = 1) AS doctors_viewed,
-                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE a.video_flag = 1) AS doctors_video_played,
-                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE a.pdf_flag = 1) AS doctors_pdf_downloaded
+                COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.sent_flag = 1) AS doctors_sent,
+                COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.viewed_flag = 1) AS doctors_viewed,
+                COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.video_flag = 1) AS doctors_video_played,
+                COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.pdf_flag = 1) AS doctors_pdf_downloaded
             FROM assigned_rep_keys ark
             LEFT JOIN activity a ON a.rep_key = ark.rep_key
             GROUP BY ark.field_rep_id
@@ -986,6 +987,57 @@ def _build_media_logo_url(company_logo_path: Any) -> str | None:
     if raw.startswith(("http://", "https://")):
         return raw
     return f"https://inclinic.inditech.co.in/media/{raw.lstrip('/')}"
+
+
+def _format_field_rep_summary(field_rep_insights: list[dict[str, Any]], total_doctors: int = 0) -> dict[str, int]:
+    return {
+        "total_reps": len(field_rep_insights),
+        "total_doctors_assigned": total_doctors or sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights),
+        "doctors_sent": sum(_to_int(row.get("doctors_sent")) for row in field_rep_insights),
+        "doctors_viewed": sum(_to_int(row.get("doctors_viewed")) for row in field_rep_insights),
+        "doctors_video_played": sum(_to_int(row.get("doctors_video_played")) for row in field_rep_insights),
+        "doctors_pdf_downloaded": sum(_to_int(row.get("doctors_pdf_downloaded")) for row in field_rep_insights),
+        "assignment_issue_count": sum(1 for row in field_rep_insights if row.get("assignment_note")),
+    }
+
+
+def _collateral_display_name(row: dict[str, Any], fallback: str = "Collateral") -> str:
+    return _clean_display_text(row.get("collateral_title")) or _clean_display_text(row.get("campaign_name")) or fallback
+
+
+def _format_collateral_options(
+    schedule_rows: list[dict[str, Any]],
+    selected_campaign: str,
+    current_collateral_id: str | None,
+) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in schedule_rows:
+        collateral_id = str(row.get("collateral_id") or "").strip()
+        if not collateral_id or collateral_id in seen or collateral_id == str(current_collateral_id or ""):
+            continue
+        if _to_int(row.get("schedule_rank"), 3) == 2:
+            continue
+        seen.add(collateral_id)
+        start = _format_schedule_date(row.get("schedule_start_date"))
+        end = _format_schedule_date(row.get("schedule_end_date"))
+        options.append(
+            {
+                "collateral_id": collateral_id,
+                "name": _collateral_display_name(row, f"Collateral {collateral_id}"),
+                "schedule_text": f"{start} - {end}" if start and end else "Schedule unavailable",
+                "url": reverse(
+                    "campaign-field-rep-insights-collateral",
+                    kwargs={"brand_campaign_id": selected_campaign, "collateral_id": collateral_id},
+                ),
+            }
+        )
+    return sorted(options, key=lambda item: item["name"].lower())
+
+
+def _has_inclinic_campaign_access(request: HttpRequest, normalized_campaign_id: str) -> bool:
+    access = build_report_access("inclinic", normalized_campaign_id)
+    return bool(request.session.get(access.session_key) or request.session.get(f"auth_{normalized_campaign_id}"))
 
 
 def _campaign_list() -> list[dict[str, Any]]:
@@ -1467,6 +1519,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     brand_logo_text = "apex"
     company_logo_url = None
     field_rep_insights: list[dict[str, Any]] = []
+    old_collaterals: list[dict[str, str]] = []
+    current_field_rep_collateral_ids: list[str] = []
     field_rep_summary = {
         "total_reps": 0,
         "total_doctors_assigned": 0,
@@ -1535,6 +1589,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         schedule_end_raw = None
         if schedule_rows:
             primary_schedule = schedule_rows[0]
+            current_collateral_id = str(primary_schedule.get("collateral_id") or "").strip() or None
             primary_rank = primary_schedule.get("schedule_rank")
             schedule_start_raw = primary_schedule.get("schedule_start_date")
             schedule_end_raw = primary_schedule.get("schedule_end_date")
@@ -1547,6 +1602,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     and row.get("schedule_end_date") == schedule_end_raw
                 ]
             )
+            current_field_rep_collateral_ids = [current_collateral_id] if current_collateral_id else current_collateral_ids[:1]
+            old_collaterals = _format_collateral_options(schedule_rows, requested_campaign, current_collateral_id)
             start = _format_schedule_date(primary_schedule.get("schedule_start_date"))
             end = _format_schedule_date(primary_schedule.get("schedule_end_date"))
             if start and end:
@@ -1560,7 +1617,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             company_logo_url = _build_media_logo_url(primary_schedule.get("company_logo"))
 
         assigned_total_doctors = _assigned_doctor_count(requested_campaign, brand_campaign_variants)
-        field_rep_insights = _field_rep_insight_rows(requested_campaign, brand_campaign_variants, current_collateral_ids)
+        field_rep_insights = _field_rep_insight_rows(requested_campaign, brand_campaign_variants, current_field_rep_collateral_ids)
         field_rep_assigned_total = sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights)
         reporting_total_doctors = assigned_total_doctors or field_rep_assigned_total
         all_weekly_rows = _weekly_rows_for_current_collateral(
@@ -1719,6 +1776,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                         "label": label,
                     }
                 )
+            state_attention.sort(key=lambda item: str(item.get("state") or "").lower())
 
             weakest = min(
                 [
@@ -1892,15 +1950,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 "week_of": f"Week {current_week_idx} ({latest_week.get('week_start_date')} to {latest_week.get('week_end_date')})",
             }
 
-        field_rep_summary = {
-            "total_reps": len(field_rep_insights),
-            "total_doctors_assigned": reporting_total_doctors,
-            "doctors_sent": sum(_to_int(row.get("doctors_sent")) for row in field_rep_insights),
-            "doctors_viewed": sum(_to_int(row.get("doctors_viewed")) for row in field_rep_insights),
-            "doctors_video_played": sum(_to_int(row.get("doctors_video_played")) for row in field_rep_insights),
-            "doctors_pdf_downloaded": sum(_to_int(row.get("doctors_pdf_downloaded")) for row in field_rep_insights),
-            "assignment_issue_count": sum(1 for row in field_rep_insights if row.get("assignment_note")),
-        }
+        field_rep_summary = _format_field_rep_summary(field_rep_insights, reporting_total_doctors)
 
     except Exception as exc:
         error_message = str(exc)
@@ -1940,6 +1990,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         "action_panel": action_panel,
         "field_rep_insights": field_rep_insights,
         "field_rep_summary": field_rep_summary,
+        "old_collaterals": old_collaterals,
+        "current_field_rep_collateral_id": current_field_rep_collateral_ids[0] if current_field_rep_collateral_ids else "",
         "collateral_cards": collateral_cards,
         "trend_labels": trend_labels,
         "reached_pct_series": [round(v, 1) for v in reached_pct_series],
@@ -1952,13 +2004,77 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     }
 
 
+def _build_collateral_field_rep_context(selected_campaign: str, collateral_id: str) -> dict[str, Any]:
+    requested_campaign = _normalize_campaign_id(selected_campaign)
+    selected_collateral_id = str(collateral_id or "").strip()
+    context: dict[str, Any] = {
+        "selected_campaign": requested_campaign,
+        "selected_collateral_id": selected_collateral_id,
+        "brand_name": "Apex",
+        "brand_logo_text": "apex",
+        "company_logo_url": None,
+        "collateral_name": f"Collateral {selected_collateral_id}" if selected_collateral_id else "Collateral",
+        "schedule_text": "Schedule unavailable",
+        "field_rep_insights": [],
+        "field_rep_summary": _format_field_rep_summary([]),
+        "old_collaterals": [],
+        "error_message": None,
+    }
+    try:
+        lookup_key = _normalize_lookup_key(requested_campaign)
+        schema_rows = _fetch_dicts(
+            f"""
+            SELECT brand_campaign_id, gold_schema_name
+            FROM gold_global.campaign_registry
+            WHERE {_normalized_sql('brand_campaign_id')} = %s
+            ORDER BY
+                CASE WHEN btrim(brand_campaign_id) = btrim(%s) THEN 0 ELSE 1 END,
+                last_seen_ts DESC NULLS LAST,
+                brand_campaign_id
+            LIMIT 1
+            """,
+            [lookup_key, requested_campaign],
+        )
+        if not schema_rows:
+            context["error_message"] = f"Campaign schema not found for {requested_campaign}"
+            return context
+
+        selected_campaign_resolved = _normalize_campaign_id(schema_rows[0]["brand_campaign_id"])
+        brand_campaign_variants = _unique_non_empty([selected_campaign_resolved, *_campaign_brand_variants(requested_campaign)])
+        schedule_rows = _current_schedule_rows(requested_campaign)
+        selected_row = next((row for row in schedule_rows if str(row.get("collateral_id") or "").strip() == selected_collateral_id), {})
+        if selected_row:
+            context["collateral_name"] = _collateral_display_name(selected_row, context["collateral_name"])
+            start = _format_schedule_date(selected_row.get("schedule_start_date"))
+            end = _format_schedule_date(selected_row.get("schedule_end_date"))
+            if start and end:
+                context["schedule_text"] = f"{start} - {end}"
+            context["brand_name"] = (
+                _clean_display_text(selected_row.get("brand_name"))
+                or _clean_display_text(selected_row.get("campaign_name"))
+                or context["brand_name"]
+            )
+            context["company_logo_url"] = _build_media_logo_url(selected_row.get("company_logo"))
+        metadata_name = _campaign_display_name(selected_campaign_resolved, brand_campaign_variants)
+        context["brand_name"] = _clean_display_text(context["brand_name"]) or metadata_name or "Apex"
+        context["brand_logo_text"] = _first_display_word(context["brand_name"]) or context["brand_name"].strip()
+        context["old_collaterals"] = _format_collateral_options(schedule_rows, requested_campaign, selected_collateral_id)
+
+        field_rep_insights = _field_rep_insight_rows(requested_campaign, brand_campaign_variants, [selected_collateral_id])
+        total_doctors = _assigned_doctor_count(requested_campaign, brand_campaign_variants)
+        context["field_rep_insights"] = field_rep_insights
+        context["field_rep_summary"] = _format_field_rep_summary(field_rep_insights, total_doctors)
+    except Exception as exc:
+        context["error_message"] = str(exc)
+    return context
+
+
 def campaign_overview(request: HttpRequest, brand_campaign_id: str | None = None):
     if not brand_campaign_id:
         return redirect("menu")
 
     normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
-    access = build_report_access("inclinic", normalized_campaign_id)
-    if not request.session.get(access.session_key) and not request.session.get(f"auth_{normalized_campaign_id}"):
+    if not _has_inclinic_campaign_access(request, normalized_campaign_id):
         return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
 
     week = request.GET.get("week")
@@ -1970,8 +2086,7 @@ def campaign_overview(request: HttpRequest, brand_campaign_id: str | None = None
 
 def export_report(request: HttpRequest, brand_campaign_id: str):
     normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
-    access = build_report_access("inclinic", normalized_campaign_id)
-    if not request.session.get(access.session_key) and not request.session.get(f"auth_{normalized_campaign_id}"):
+    if not _has_inclinic_campaign_access(request, normalized_campaign_id):
         return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
 
     week = request.GET.get("week")
@@ -1979,3 +2094,21 @@ def export_report(request: HttpRequest, brand_campaign_id: str):
     context = _build_report_context(normalized_campaign_id, week_filter)
     context["export_mode"] = True
     return render(request, "dashboard/overview.html", context)
+
+
+def campaign_field_rep_collateral_insights(request: HttpRequest, brand_campaign_id: str, collateral_id: str):
+    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
+    if not _has_inclinic_campaign_access(request, normalized_campaign_id):
+        return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
+    context = _build_collateral_field_rep_context(normalized_campaign_id, collateral_id)
+    return render(request, "dashboard/field_rep_collateral_insights.html", context)
+
+
+def campaign_state_list(request: HttpRequest, brand_campaign_id: str):
+    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
+    if not _has_inclinic_campaign_access(request, normalized_campaign_id):
+        return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
+    week = request.GET.get("week")
+    week_filter = _to_int(week) if week else None
+    context = _build_report_context(normalized_campaign_id, week_filter)
+    return render(request, "dashboard/state_list.html", context)

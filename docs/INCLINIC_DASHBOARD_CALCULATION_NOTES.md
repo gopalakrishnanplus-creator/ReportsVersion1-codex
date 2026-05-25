@@ -1,6 +1,6 @@
 # InClinic Dashboard Calculation Notes
 
-This note explains the dashboard calculations in plain business language. It is meant for campaign brand managers and client discussions, not for database or engineering review.
+This note explains the dashboard calculations in plain business language. It is meant for campaign brand managers and client discussions, not for engineering review.
 
 Use this note as the baseline before changing any dashboard number. If a client wants a different number, first confirm which definition below they want changed.
 
@@ -523,6 +523,14 @@ Simple meaning:
 Collateral Sent = unique doctors for whom that field rep has send/share activity.
 ```
 
+Collateral-specific rule:
+
+```text
+The count is limited to the currently opened collateral.
+Old collateral activity is not mixed into the current collateral view.
+If the same doctor receives the same collateral multiple times from the same field rep, it still counts as one.
+```
+
 Important caveat:
 
 ```text
@@ -622,19 +630,7 @@ Simple meaning:
 The Excel download exports the visible Field Representative Insights list.
 ```
 
-Current exported values:
-
-```text
-Field Rep ID.
-Field Representative.
-Doctors Assigned.
-Collateral Sent.
-Viewed.
-Video Played.
-PDF / Collateral Saved.
-```
-
-The dashboard itself does not add separate sum formula columns.
+The dashboard itself does not add separate sum formulas.
 
 If extra sum fields appear after download:
 
@@ -663,6 +659,14 @@ Benchmark card:
 ```text
 Uses recent campaign history as a global benchmark.
 It is not brand-specific unless the benchmark rule is changed.
+```
+
+Old Collaterals:
+
+```text
+The Old Collaterals option opens earlier campaign collaterals.
+Selecting one opens Field Representative Insights for that collateral only.
+Current and old collateral activity should not be mixed.
 ```
 
 Benchmark health:
