@@ -13,11 +13,11 @@
 <section class="ida-band">
   <div>
     <h2>Dry-run, archive, validate</h2>
-    <p class="ida-muted">Find exact duplicate RAW source payloads, archive every removed row, and verify that unique RAW records plus downstream report table counts stay unchanged.</p>
+    <p class="ida-muted">Find exact duplicate RAW source payloads, archive removed rows in table-sized batches, and verify that unique RAW records plus downstream report table counts stay unchanged.</p>
   </div>
   <div class="ida-safety-note">
     <strong>Protected mutation path</strong>
-    <span>GET requests only preview. The archive/delete action requires a reason and exact confirmation phrase, then runs in one transaction.</span>
+    <span>GET requests only preview. Each archive/delete POST handles one RAW table batch of up to {{ batch_size }} rows to avoid web timeouts.</span>
   </div>
 </section>
 
@@ -46,6 +46,10 @@
   <div class="ida-summary-tile">
     <span>Report tables validated</span>
     <strong>{{ report_snapshot.table_count }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Batch size</span>
+    <strong>{{ batch_size }}</strong>
   </div>
 </section>
 
@@ -134,7 +138,7 @@
           <th>Rows to archive/delete</th>
           <th>Groups</th>
           <th>Source columns</th>
-          <th>Keep rule</th>
+          <th>Batch action</th>
         </tr>
       </thead>
       <tbody>
@@ -150,7 +154,7 @@
           <td>{{ row.duplicate_rows }}</td>
           <td>{{ row.duplicate_groups }}</td>
           <td>{{ row.source_column_count }}</td>
-          <td>Latest ingest kept</td>
+          <td>{% if row.duplicate_rows %}Select below{% else %}None needed{% endif %}</td>
           {% endif %}
         </tr>
         {% empty %}
@@ -165,8 +169,8 @@
   <div class="ida-table-meta">
     <div>
       <p class="ida-eyebrow">Archive before delete</p>
-      <h2>Execute exact RAW dedupe</h2>
-      <p class="ida-muted">Rows are archived to <code>ops.raw_duplicate_archive</code> before deletion. Validation must pass or the whole transaction rolls back.</p>
+      <h2>Execute one RAW table batch</h2>
+      <p class="ida-muted">Rows are archived to <code>ops.raw_duplicate_archive</code> before deletion. Each click processes at most {{ batch_size }} duplicate rows from one table, then validates and returns quickly.</p>
     </div>
     <div class="ida-safety-note">
       <strong>Confirmation phrase</strong>
@@ -176,8 +180,17 @@
 
   <form class="ida-form ida-cleanup-execute" method="post" action="{% url 'internal-data-admin-raw-dedupe' %}">
     {% csrf_token %}
-    <input type="hidden" name="dedupe_action" value="execute">
+    <input type="hidden" name="dedupe_action" value="execute_table">
     <input type="hidden" name="system" value="{{ selected_system }}">
+    <label>
+      <span>RAW table batch</span>
+      <select name="target_table_ref" required {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>
+        <option value="">Choose a table with duplicates</option>
+        {% for row in plan.duplicate_rows %}
+        <option value="{{ row.schema }}.{{ row.table }}">{{ row.schema }}.{{ row.table }} - {{ row.duplicate_rows }} duplicate rows remaining</option>
+        {% endfor %}
+      </select>
+    </label>
     <label>
       <span>Reason for RAW dedupe</span>
       <input type="text" name="reason" placeholder="Example: remove repeated source ingests after dry-run validation" required {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>
@@ -186,7 +199,7 @@
       <span>Type this exact phrase: <code>{{ phrase }}</code></span>
       <input type="text" name="confirmation" autocomplete="off" required {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>
     </label>
-    <button class="ida-button ida-button-danger" type="submit" {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>Archive and Remove Exact Duplicates</button>
+    <button class="ida-button ida-button-danger" type="submit" {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>Archive Next Table Batch</button>
   </form>
 </section>
 {% endblock %}

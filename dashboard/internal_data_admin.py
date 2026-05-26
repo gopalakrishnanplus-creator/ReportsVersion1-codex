@@ -30,6 +30,7 @@ AUDIT_SCHEMA = "ops"
 AUDIT_TABLE = "internal_dashboard_audit"
 RAW_DEDUPE_ARCHIVE_TABLE = "raw_duplicate_archive"
 RAW_DEDUPE_CONFIRM_PREFIX = "ARCHIVE RAW DUPLICATES"
+RAW_DEDUPE_BATCH_SIZE = 20000
 RAW_AUDIT_COLUMN_NAMES = frozenset(
     {
         "_ingestion_run_id",
@@ -600,6 +601,10 @@ def _raw_dedupe_system_options(selected_system: str) -> list[dict[str, Any]]:
     return options
 
 
+def _raw_dedupe_target_allowed(selected_system: str, schema: str, table: str) -> bool:
+    return any(ref["schema"] == schema and ref["name"] == table for ref in _raw_dedupe_target_refs(selected_system))
+
+
 def _raw_dedupe_target_refs(selected_system: str) -> list[dict[str, str]]:
     refs = _raw_table_refs()
     if selected_system == "all":
@@ -607,22 +612,9 @@ def _raw_dedupe_target_refs(selected_system: str) -> list[dict[str, str]]:
     return [ref for ref in refs if _system_key_for_schema(ref["schema"]) == selected_system]
 
 
-def _raw_dedupe_report_refs(selected_system: str) -> list[dict[str, str]]:
-    refs: list[dict[str, str]] = []
-    for ref in _managed_table_refs():
-        schema = ref["schema"]
-        layer_key = _layer_key_for_schema(schema)
-        if layer_key not in {"bronze", "silver", "gold"}:
-            continue
-        if selected_system != "all" and _system_key_for_schema(schema) != selected_system:
-            continue
-        refs.append(ref)
-    return refs
-
-
-def _raw_dedupe_plan(selected_system: str) -> dict[str, Any]:
+def _raw_dedupe_plan_for_refs(refs: list[dict[str, str]]) -> dict[str, Any]:
     table_rows: list[dict[str, Any]] = []
-    for ref in _raw_dedupe_target_refs(selected_system):
+    for ref in refs:
         info = _table_info(ref["schema"], ref["name"])
         profile = _system_profile_for_schema(info.schema)
         row = {
@@ -656,7 +648,6 @@ def _raw_dedupe_plan(selected_system: str) -> dict[str, Any]:
     ready_rows = [row for row in table_rows if row.get("error") is None]
     duplicate_rows = [row for row in ready_rows if int(row.get("duplicate_rows") or 0) > 0]
     return {
-        "selected_system": selected_system,
         "rows": table_rows,
         "duplicate_rows": duplicate_rows,
         "table_count": len(table_rows),
@@ -666,6 +657,27 @@ def _raw_dedupe_plan(selected_system: str) -> dict[str, Any]:
         "duplicate_row_count": sum(int(row.get("duplicate_rows") or 0) for row in ready_rows),
         "duplicate_group_count": sum(int(row.get("duplicate_groups") or 0) for row in ready_rows),
         "has_errors": any(row.get("error") for row in table_rows),
+    }
+
+
+def _raw_dedupe_report_refs(selected_system: str) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for ref in _managed_table_refs():
+        schema = ref["schema"]
+        layer_key = _layer_key_for_schema(schema)
+        if layer_key not in {"bronze", "silver", "gold"}:
+            continue
+        if selected_system != "all" and _system_key_for_schema(schema) != selected_system:
+            continue
+        refs.append(ref)
+    return refs
+
+
+def _raw_dedupe_plan(selected_system: str) -> dict[str, Any]:
+    plan = _raw_dedupe_plan_for_refs(_raw_dedupe_target_refs(selected_system))
+    return {
+        **plan,
+        "selected_system": selected_system,
     }
 
 
@@ -768,7 +780,13 @@ def _nullable_source_column_sql(info: TableInfo, column: str) -> sql.Composable:
     return sql.SQL("NULL::text")
 
 
-def _archive_and_delete_raw_duplicates_for_table(info: TableInfo, run_id: str, reason: str, actor: str) -> dict[str, Any]:
+def _archive_and_delete_raw_duplicates_for_table(
+    info: TableInfo,
+    run_id: str,
+    reason: str,
+    actor: str,
+    max_rows: int | None = None,
+) -> dict[str, Any]:
     source_columns = _source_fingerprint_columns(info)
     if not source_columns:
         raise DatabaseError(f"{info.schema}.{info.name} has no source columns to compare safely.")
@@ -804,6 +822,8 @@ def _archive_and_delete_raw_duplicates_for_table(info: TableInfo, run_id: str, r
                 SELECT *
                 FROM ranked
                 WHERE dedupe_rank > 1
+                ORDER BY duplicate_group_size DESC, source_ctid
+                LIMIT %s
                 """
             ).format(
                 payload_sql,
@@ -812,7 +832,8 @@ def _archive_and_delete_raw_duplicates_for_table(info: TableInfo, run_id: str, r
                 payload_sql,
                 sql.Identifier(info.schema),
                 sql.Identifier(info.name),
-            )
+            ),
+            [max_rows or RAW_DEDUPE_BATCH_SIZE],
         )
         cursor.execute("SELECT COUNT(*) FROM pg_temp.raw_dedupe_to_delete")
         planned_delete_count = int(cursor.fetchone()[0])
@@ -985,20 +1006,27 @@ def _raw_dedupe_validation(
     }
 
 
-def _execute_raw_dedupe(selected_system: str, reason: str, actor: str) -> dict[str, Any]:
+def _execute_raw_dedupe(
+    selected_system: str,
+    reason: str,
+    actor: str,
+    target: tuple[str, str] | None = None,
+    max_rows: int | None = None,
+) -> dict[str, Any]:
     run_id = _raw_dedupe_run_id()
     action_rows: list[dict[str, Any]] = []
+    target_refs = [{"schema": target[0], "name": target[1]}] if target else _raw_dedupe_target_refs(selected_system)
     with transaction.atomic():
         _ensure_audit_table()
         _ensure_raw_dedupe_archive_table()
-        before_plan = _raw_dedupe_plan(selected_system)
+        before_plan = _raw_dedupe_plan_for_refs(target_refs)
         before_report = _raw_dedupe_report_snapshot(selected_system)
 
         for row in before_plan["duplicate_rows"]:
             info = _table_info(row["schema"], row["table"])
-            action_rows.append(_archive_and_delete_raw_duplicates_for_table(info, run_id, reason, actor))
+            action_rows.append(_archive_and_delete_raw_duplicates_for_table(info, run_id, reason, actor, max_rows=max_rows))
 
-        after_plan = _raw_dedupe_plan(selected_system)
+        after_plan = _raw_dedupe_plan_for_refs(target_refs)
         after_report = _raw_dedupe_report_snapshot(selected_system)
         validation = _raw_dedupe_validation(before_plan, after_plan, before_report, after_report, action_rows)
         if not validation["passed"]:
@@ -2061,12 +2089,21 @@ def internal_data_admin_raw_dedupe(request: HttpRequest) -> HttpResponse:
     if request.method == "POST":
         dedupe_action = request.POST.get("dedupe_action") or "preview"
         if dedupe_action == "execute":
+            messages.error(request, "Full-scope browser execution is disabled. Run one RAW table batch at a time to avoid web timeouts.")
+        if dedupe_action == "execute_table":
             confirmation = (request.POST.get("confirmation") or "").strip()
             reason = (request.POST.get("reason") or "").strip()
+            target_schema = (request.POST.get("target_schema") or "").strip()
+            target_table = (request.POST.get("target_table") or "").strip()
+            target_ref = (request.POST.get("target_table_ref") or "").strip()
+            if (not target_schema or not target_table) and "." in target_ref:
+                target_schema, target_table = target_ref.split(".", 1)
             if plan["duplicate_row_count"] <= 0:
                 messages.error(request, "RAW dedupe is blocked because the dry-run found no duplicate source rows.")
             elif plan["has_errors"]:
                 messages.error(request, "RAW dedupe is blocked until every RAW table in the selected scope can be inspected.")
+            elif not _raw_dedupe_target_allowed(selected_system, target_schema, target_table):
+                messages.error(request, "Choose a RAW table from the current dry-run scope before archiving duplicates.")
             elif confirmation != phrase:
                 messages.error(request, f'Type "{phrase}" to confirm RAW archive and dedupe.')
             elif len(reason) < 8:
@@ -2077,10 +2114,12 @@ def internal_data_admin_raw_dedupe(request: HttpRequest) -> HttpResponse:
                         selected_system,
                         reason,
                         request.session.get(SESSION_USER_KEY, "internal_admin"),
+                        target=(target_schema, target_table),
+                        max_rows=RAW_DEDUPE_BATCH_SIZE,
                     )
                     messages.success(
                         request,
-                        f"RAW dedupe archived and removed {result['deleted_count']} duplicate rows across {result['table_count']} tables.",
+                        f"RAW dedupe archived and removed {result['deleted_count']} duplicate rows from {target_schema}.{target_table}.",
                     )
                     plan = _raw_dedupe_plan(selected_system)
                     report_snapshot = _raw_dedupe_report_snapshot(selected_system)
@@ -2097,6 +2136,7 @@ def internal_data_admin_raw_dedupe(request: HttpRequest) -> HttpResponse:
             "report_snapshot": report_snapshot,
             "phrase": phrase,
             "result": result,
+            "batch_size": RAW_DEDUPE_BATCH_SIZE,
         },
     )
 
