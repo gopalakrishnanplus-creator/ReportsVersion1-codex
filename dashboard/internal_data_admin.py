@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import re
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.core import signing
 from django.db import DatabaseError, connection, transaction
-from django.http import Http404, HttpRequest, HttpResponse
+from django.http import Http404, HttpRequest, HttpResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils.crypto import constant_time_compare
@@ -24,8 +25,24 @@ SESSION_KEY = "internal_data_admin_authenticated"
 SESSION_USER_KEY = "internal_data_admin_username"
 ROW_TOKEN_SALT = "dashboard.internal-data-admin.row"
 PAGE_SIZE = 75
+RAW_EXPORT_BATCH_SIZE = 1000
 AUDIT_SCHEMA = "ops"
 AUDIT_TABLE = "internal_dashboard_audit"
+RAW_AUDIT_COLUMN_NAMES = frozenset(
+    {
+        "_ingestion_run_id",
+        "_ingested_at",
+        "_source_server",
+        "_source_system",
+        "_source_table",
+        "_extract_started_at",
+        "_extract_ended_at",
+        "_record_hash",
+        "_is_deleted",
+        "_dq_status",
+        "_dq_errors",
+    }
+)
 LAYER_ORDER = {
     "raw": 1,
     "bronze": 2,
@@ -118,6 +135,11 @@ class SystemProfile:
     cleanup_summary: str
     source_guidance: str
     cleanup_steps: list[str]
+
+
+class _CsvEcho:
+    def write(self, value: str) -> str:
+        return value
 
 
 SYSTEM_PROFILES = {
@@ -327,6 +349,14 @@ def _managed_table_refs() -> list[dict[str, str]]:
     return refs
 
 
+def _is_raw_table_ref(schema: str, table: str) -> bool:
+    return _is_managed_table(schema, table) and _layer_key_for_schema(schema) == "raw"
+
+
+def _raw_table_refs() -> list[dict[str, str]]:
+    return [row for row in _managed_table_refs() if _is_raw_table_ref(row["schema"], row["name"])]
+
+
 def _list_tables() -> list[dict[str, Any]]:
     tables: list[dict[str, Any]] = []
     for row in _managed_table_refs():
@@ -358,6 +388,195 @@ def _table_count(schema: str, table: str) -> int | None:
         return int(rows[0]["row_count"])
     except DatabaseError:
         return None
+
+
+def _source_fingerprint_columns(info: TableInfo) -> list[str]:
+    return [column.name for column in info.columns if column.name not in RAW_AUDIT_COLUMN_NAMES]
+
+
+def _raw_fingerprint_sql(info: TableInfo) -> sql.Composable:
+    source_columns = _source_fingerprint_columns(info)
+    if source_columns:
+        source_fingerprint = sql.SQL("md5(jsonb_build_array({})::text)").format(
+            sql.SQL(", ").join(sql.Identifier(column) for column in source_columns)
+        )
+    else:
+        source_fingerprint = sql.SQL("ctid::text")
+
+    column_names = {column.name for column in info.columns}
+    if "_record_hash" in column_names:
+        return sql.SQL("COALESCE(NULLIF({}, ''), {})").format(
+            sql.Identifier("_record_hash"),
+            source_fingerprint,
+        )
+    return source_fingerprint
+
+
+def _raw_table_stats(info: TableInfo) -> dict[str, Any]:
+    rows = _fetch_dicts(
+        sql.SQL(
+            """
+            WITH grouped AS (
+                SELECT {} AS row_fingerprint, COUNT(*)::bigint AS group_count
+                FROM {}.{}
+                GROUP BY 1
+            )
+            SELECT
+                COALESCE(SUM(group_count), 0)::bigint AS total_rows,
+                COUNT(*)::bigint AS unique_rows,
+                COALESCE(SUM(group_count - 1), 0)::bigint AS duplicate_rows,
+                COUNT(*) FILTER (WHERE group_count > 1)::bigint AS duplicate_groups,
+                COALESCE(MAX(group_count), 0)::bigint AS largest_duplicate_group
+            FROM grouped
+            """
+        ).format(
+            _raw_fingerprint_sql(info),
+            sql.Identifier(info.schema),
+            sql.Identifier(info.name),
+        )
+    )
+    stats = rows[0] if rows else {}
+    latest_ingested_at = None
+    if "_ingested_at" in {column.name for column in info.columns}:
+        latest_rows = _fetch_dicts(
+            sql.SQL("SELECT MAX(NULLIF({}, '')) AS latest_ingested_at FROM {}.{}").format(
+                sql.Identifier("_ingested_at"),
+                sql.Identifier(info.schema),
+                sql.Identifier(info.name),
+            )
+        )
+        latest_ingested_at = latest_rows[0]["latest_ingested_at"] if latest_rows else None
+
+    return {
+        "total_rows": int(stats.get("total_rows") or 0),
+        "unique_rows": int(stats.get("unique_rows") or 0),
+        "duplicate_rows": int(stats.get("duplicate_rows") or 0),
+        "duplicate_groups": int(stats.get("duplicate_groups") or 0),
+        "largest_duplicate_group": int(stats.get("largest_duplicate_group") or 0),
+        "latest_ingested_at": latest_ingested_at,
+    }
+
+
+def _raw_table_info(schema: str, table: str) -> TableInfo:
+    info = _table_info(schema, table)
+    if not _is_raw_table_ref(info.schema, info.name):
+        raise Http404("Only RAW tables can be downloaded from this page.")
+    return info
+
+
+def _raw_summary_cards() -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    for row in _raw_table_refs():
+        info = _table_info(row["schema"], row["name"])
+        profile = _system_profile_for_schema(info.schema)
+        card = {
+            "schema": info.schema,
+            "name": info.name,
+            "system_key": profile.key,
+            "system_label": profile.short_label,
+            "layer": _layer_for_schema(info.schema),
+            "view_href": reverse("internal-data-admin-table", args=[info.schema, info.name]),
+            "download_href": reverse("internal-data-admin-raw-download", args=[info.schema, info.name]),
+            "error": None,
+        }
+        try:
+            stats = _raw_table_stats(info)
+            card.update(stats)
+            card["has_duplicates"] = stats["duplicate_rows"] > 0
+        except DatabaseError as exc:
+            card.update(
+                {
+                    "total_rows": None,
+                    "unique_rows": None,
+                    "duplicate_rows": None,
+                    "duplicate_groups": None,
+                    "largest_duplicate_group": None,
+                    "latest_ingested_at": None,
+                    "has_duplicates": False,
+                    "error": str(exc),
+                }
+            )
+        cards.append(card)
+    return cards
+
+
+def _raw_summary_totals(cards: list[dict[str, Any]]) -> dict[str, int]:
+    ready_cards = [card for card in cards if card.get("error") is None]
+    return {
+        "table_count": len(cards),
+        "total_rows": sum(int(card.get("total_rows") or 0) for card in ready_cards),
+        "unique_rows": sum(int(card.get("unique_rows") or 0) for card in ready_cards),
+        "duplicate_rows": sum(int(card.get("duplicate_rows") or 0) for card in ready_cards),
+        "duplicate_tables": sum(1 for card in ready_cards if int(card.get("duplicate_rows") or 0) > 0),
+    }
+
+
+def _raw_system_cards(cards: list[dict[str, Any]], selected_system: str) -> list[dict[str, Any]]:
+    system_cards: list[dict[str, Any]] = [
+        {
+            "key": "all",
+            "label": "All RAW Tables",
+            "summary": "Every RAW source copy table.",
+            "table_count": len(cards),
+            "row_count": sum(int(card.get("total_rows") or 0) for card in cards if card.get("error") is None),
+            "duplicate_count": sum(int(card.get("duplicate_rows") or 0) for card in cards if card.get("error") is None),
+            "is_selected": selected_system == "all",
+            "href": reverse("internal-data-admin-raw-downloads"),
+        }
+    ]
+    for system_key in CLEANUP_SYSTEM_KEYS:
+        profile = SYSTEM_PROFILES[system_key]
+        profile_cards = [card for card in cards if card["system_key"] == system_key]
+        system_cards.append(
+            {
+                "key": system_key,
+                "label": profile.label,
+                "summary": profile.source_guidance,
+                "table_count": len(profile_cards),
+                "row_count": sum(int(card.get("total_rows") or 0) for card in profile_cards if card.get("error") is None),
+                "duplicate_count": sum(int(card.get("duplicate_rows") or 0) for card in profile_cards if card.get("error") is None),
+                "is_selected": selected_system == system_key,
+                "href": f"{reverse('internal-data-admin-raw-downloads')}?system={system_key}",
+            }
+        )
+    return system_cards
+
+
+def _csv_value(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _stream_table_csv(info: TableInfo):
+    pseudo_buffer = _CsvEcho()
+    writer = csv.writer(pseudo_buffer)
+    column_names = [column.name for column in info.columns]
+    yield writer.writerow(column_names)
+
+    query = sql.SQL("SELECT {} FROM {}.{} ORDER BY ctid").format(
+        sql.SQL(", ").join(sql.Identifier(column) for column in column_names),
+        sql.Identifier(info.schema),
+        sql.Identifier(info.name),
+    )
+    with connection.cursor() as cursor:
+        cursor.execute(query)
+        while True:
+            rows = cursor.fetchmany(RAW_EXPORT_BATCH_SIZE)
+            if not rows:
+                break
+            for row in rows:
+                yield writer.writerow([_csv_value(value) for value in row])
+
+
+def _raw_export_filename(schema: str, table: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{schema}.{table}.csv")
 
 
 def _table_info(schema: str, table: str) -> TableInfo:
@@ -1343,6 +1562,47 @@ def internal_data_admin_home(request: HttpRequest) -> HttpResponse:
             "actor": request.session.get(SESSION_USER_KEY, "internal_admin"),
         },
     )
+
+
+@never_cache
+def internal_data_admin_raw_downloads(request: HttpRequest) -> HttpResponse:
+    auth_redirect = _require_auth(request)
+    if auth_redirect:
+        return auth_redirect
+
+    selected_system = _selected_system(request)
+    all_cards = _raw_summary_cards()
+    visible_cards = (
+        all_cards
+        if selected_system == "all"
+        else [card for card in all_cards if card["system_key"] == selected_system]
+    )
+    return render(
+        request,
+        "dashboard/internal_data_admin/raw_downloads.html",
+        {
+            "summary_cards": visible_cards,
+            "totals": _raw_summary_totals(visible_cards),
+            "system_cards": _raw_system_cards(all_cards, selected_system),
+            "selected_system": selected_system,
+        },
+    )
+
+
+@never_cache
+def internal_data_admin_raw_download(request: HttpRequest, schema: str, table: str) -> HttpResponse:
+    auth_redirect = _require_auth(request)
+    if auth_redirect:
+        return auth_redirect
+
+    info = _raw_table_info(schema, table)
+    response = StreamingHttpResponse(
+        _stream_table_csv(info),
+        content_type="text/csv; charset=utf-8",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{_raw_export_filename(schema, table)}"'
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @never_cache

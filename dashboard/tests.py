@@ -9,14 +9,17 @@ from django.urls import resolve
 import dashboard.views
 from dashboard.internal_data_admin import (
     ColumnInfo,
+    RAW_AUDIT_COLUMN_NAMES,
     TableInfo,
     _batch_cleanup_confirmation_phrase,
     _cleanup_candidate_columns,
     _cleanup_inverse_match_condition,
+    _is_raw_table_ref,
     _is_relevant_schema,
     _layer_key_for_schema,
     _parse_campaign_ids,
     _selected_cleanup_systems,
+    _source_fingerprint_columns,
     _system_key_for_schema,
 )
 
@@ -34,6 +37,11 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/_internal/data-admin/").view_name, "internal-data-admin-home")
         self.assertEqual(resolve("/_internal/data-admin/login/").view_name, "internal-data-admin-login")
         self.assertEqual(resolve("/_internal/data-admin/cleanup/").view_name, "internal-data-admin-cleanup")
+        self.assertEqual(resolve("/_internal/data-admin/raw-downloads/").view_name, "internal-data-admin-raw-downloads")
+        self.assertEqual(
+            resolve("/_internal/data-admin/raw-downloads/raw_server1/campaign_fieldrep/download/").view_name,
+            "internal-data-admin-raw-download",
+        )
         self.assertEqual(resolve("/_internal/data-admin/bronze/campaign_campaign/").view_name, "internal-data-admin-table")
         self.assertEqual(resolve("/_internal/data-admin/bronze/campaign_campaign/bulk-delete/").view_name, "internal-data-admin-bulk-delete")
 
@@ -58,6 +66,20 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(_layer_key_for_schema("silver_sapa"), "silver")
         self.assertEqual(_layer_key_for_schema("gold_pe_campaign_demo"), "gold")
         self.assertEqual(_layer_key_for_schema("ops"), "other")
+
+    def test_raw_download_helpers_only_include_raw_source_columns(self):
+        columns = [
+            ColumnInfo("id", "text", False, 1, None, False, False),
+            ColumnInfo("campaign_id", "text", True, 2, None, False, False),
+            ColumnInfo("_record_hash", "text", True, 3, None, False, False),
+            ColumnInfo("_ingested_at", "text", True, 4, None, False, False),
+        ]
+        info = TableInfo("raw_server2", "sharing_management_sharelog", columns, [])
+
+        self.assertTrue(_is_raw_table_ref("raw_server2", "sharing_management_sharelog"))
+        self.assertFalse(_is_raw_table_ref("bronze", "sharing_management_sharelog"))
+        self.assertIn("_record_hash", RAW_AUDIT_COLUMN_NAMES)
+        self.assertEqual(_source_fingerprint_columns(info), ["id", "campaign_id"])
 
     def test_hierarchy_cleanup_uses_campaign_identity_columns_only(self):
         columns = [
@@ -228,6 +250,59 @@ class DashboardAccessViewTests(SimpleTestCase):
         response = self.client.get("/_internal/data-admin/")
         self.assertEqual(response.status_code, 302)
         self.assertIn("/_internal/data-admin/login/", response["Location"])
+
+    def test_internal_data_admin_raw_downloads_render_read_only_summary(self):
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin._raw_summary_cards",
+            return_value=[
+                {
+                    "schema": "raw_server2",
+                    "name": "sharing_management_sharelog",
+                    "system_key": "inclinic",
+                    "system_label": "Inclinic",
+                    "layer": "RAW source copy",
+                    "view_href": "/_internal/data-admin/raw_server2/sharing_management_sharelog/",
+                    "download_href": "/_internal/data-admin/raw-downloads/raw_server2/sharing_management_sharelog/download/",
+                    "error": None,
+                    "total_rows": 12,
+                    "unique_rows": 10,
+                    "duplicate_rows": 2,
+                    "duplicate_groups": 1,
+                    "largest_duplicate_group": 3,
+                    "latest_ingested_at": "2026-05-26T09:30:00+00:00",
+                    "has_duplicates": True,
+                }
+            ],
+        ):
+            response = self.client.get("/_internal/data-admin/raw-downloads/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "RAW Data Downloads")
+        self.assertContains(response, "Duplicate rows")
+        self.assertContains(response, "sharing_management_sharelog")
+        self.assertContains(response, "Download CSV")
+
+    def test_internal_data_admin_raw_download_streams_csv(self):
+        info = TableInfo(
+            "raw_server1",
+            "campaign_fieldrep",
+            [ColumnInfo("id", "text", False, 1, None, False, False)],
+            [],
+        )
+
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin._raw_table_info",
+            return_value=info,
+        ), patch(
+            "dashboard.internal_data_admin._stream_table_csv",
+            return_value=iter(["id\r\n", "1\r\n"]),
+        ):
+            response = self.client.get("/_internal/data-admin/raw-downloads/raw_server1/campaign_fieldrep/download/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
+        self.assertIn("raw_server1.campaign_fieldrep.csv", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"id\r\n1\r\n")
 
     def test_campaign_performance_page_renders_bootstrap_data(self):
         with patch(
