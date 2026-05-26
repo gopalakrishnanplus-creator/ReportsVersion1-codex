@@ -117,13 +117,14 @@ def _valid_state_sql(column_sql: str) -> str:
     return (
         f"CASE WHEN {column_sql} IS NULL OR btrim({column_sql}) = '' "
         f"OR lower(btrim({column_sql})) IN ('null', 'none', 'unknown') "
+        f"OR lower(btrim({column_sql})) IN ('united kingdom', 'uk', 'u.k.', 'u.k', 'u k') "
         f"THEN NULL ELSE initcap(btrim({column_sql})) END"
     )
 
 
 def _is_unknown_state(value: Any) -> bool:
     text = str(value or "").strip().lower()
-    return text in {"", "null", "none", "unknown"}
+    return text in {"", "null", "none", "unknown", "united kingdom", "uk", "u.k.", "u.k", "u k"}
 
 
 def _display_state_name(value: Any) -> str:
@@ -143,6 +144,25 @@ def _state_attention_card_rows(state_attention: list[dict[str, Any]], limit: int
             visible = visible[: max(limit - 1, 0)]
         visible.append(unknown_row)
     return visible
+
+
+def _aggregate_weekly_metric_rows(rows: list[dict[str, Any]], total_doctors: float) -> dict[str, Any]:
+    if not rows:
+        return {}
+    week_starts = [row.get("week_start_date") for row in rows if row.get("week_start_date")]
+    week_ends = [row.get("week_end_date") for row in rows if row.get("week_end_date")]
+    return {
+        "brand_campaign_id": rows[0].get("brand_campaign_id"),
+        "week_index": 0,
+        "week_start_date": min(week_starts) if week_starts else None,
+        "week_end_date": max(week_ends) if week_ends else None,
+        "doctors_reached_unique": sum(_to_float(row.get("doctors_reached_unique")) for row in rows),
+        "doctors_opened_unique": sum(_to_float(row.get("doctors_opened_unique")) for row in rows),
+        "video_viewed_50_unique": sum(_to_float(row.get("video_viewed_50_unique")) for row in rows),
+        "pdf_download_unique": sum(_to_float(row.get("pdf_download_unique")) for row in rows),
+        "doctors_consumed_unique": sum(_to_float(row.get("doctors_consumed_unique")) for row in rows),
+        "total_doctors_in_campaign": total_doctors or _to_float(rows[-1].get("total_doctors_in_campaign")),
+    }
 
 
 def _placeholders(values: list[Any]) -> str:
@@ -670,10 +690,25 @@ def _field_rep_insight_rows(
         collateral_filter_share = f"AND s.collateral_id::text IN ({collateral_placeholders})"
 
     alias_joins, alias_selects, alias_key_columns = _field_rep_alias_sql_parts()
+    alias_key_rank = {
+        "local_user_id_key": 10,
+        "legacy_rep_id_key": 20,
+        "internal_rep_key": 30,
+        "external_rep_key": 40,
+        "local_field_id_key": 45,
+        "legacy_field_id_key": 45,
+        "auth_email_key": 60,
+        "auth_username_key": 60,
+        "local_email_key": 60,
+        "local_username_key": 60,
+        "legacy_email_key": 60,
+        "legacy_gmail_key": 60,
+        "legacy_whatsapp_key": 60,
+    }
     alias_key_unions = "\n            ".join(
         f"""
             UNION
-            SELECT field_rep_id, {column} AS rep_key
+            SELECT field_rep_id, {column} AS rep_key, {alias_key_rank.get(column, 90)} AS match_rank
             FROM raw_assigned_reps
             WHERE {column} <> ''
         """.rstrip()
@@ -738,14 +773,30 @@ def _field_rep_insight_rows(
             GROUP BY field_rep_id
         ),
         assigned_rep_keys AS (
-            SELECT field_rep_id, internal_rep_key AS rep_key
+            SELECT field_rep_id, local_user_id_key AS rep_key, 10 AS match_rank
+            FROM raw_assigned_reps
+            WHERE local_user_id_key <> ''
+            UNION
+            SELECT field_rep_id, legacy_rep_id_key AS rep_key, 20 AS match_rank
+            FROM raw_assigned_reps
+            WHERE legacy_rep_id_key <> ''
+            UNION
+            SELECT field_rep_id, internal_rep_key AS rep_key, 30 AS match_rank
             FROM raw_assigned_reps
             WHERE internal_rep_key <> ''
             UNION
-            SELECT field_rep_id, external_rep_key AS rep_key
+            SELECT field_rep_id, external_rep_key AS rep_key, 40 AS match_rank
             FROM raw_assigned_reps
             WHERE external_rep_key <> ''
             {alias_key_unions}
+        ),
+        canonical_activity_rep AS (
+            SELECT DISTINCT ON (rep_key)
+                rep_key,
+                field_rep_id
+            FROM assigned_rep_keys
+            WHERE rep_key <> ''
+            ORDER BY rep_key, match_rank, field_rep_id
         ),
         assigned_doctors AS (
             SELECT
@@ -774,7 +825,12 @@ def _field_rep_insight_rows(
                       OR NULLIF(tx.video_100_at_ts, '') IS NOT NULL
                     THEN 1 ELSE 0
                 END AS video_flag,
-                CASE WHEN tx.downloaded_pdf_flag = '1' OR NULLIF(tx.pdf_download_event_ts, '') IS NOT NULL THEN 1 ELSE 0 END AS pdf_flag
+                CASE
+                    WHEN tx.downloaded_pdf_flag = '1'
+                      OR lower(COALESCE(tx.pdf_completed, '')) IN ('1', 'true', 't', 'yes')
+                      OR NULLIF(tx.viewed_last_page_at_ts, '') IS NOT NULL
+                    THEN 1 ELSE 0
+                END AS pdf_flag
             FROM silver.fact_collateral_transaction tx
             WHERE {_normalized_sql('tx.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_tx}
@@ -792,14 +848,14 @@ def _field_rep_insight_rows(
         ),
         activity_for_rep AS (
             SELECT
-                ark.field_rep_id,
+                car.field_rep_id,
                 COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.sent_flag = 1) AS doctors_sent,
                 COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.viewed_flag = 1) AS doctors_viewed,
                 COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.video_flag = 1) AS doctors_video_played,
                 COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.pdf_flag = 1) AS doctors_pdf_downloaded
-            FROM assigned_rep_keys ark
-            LEFT JOIN activity a ON a.rep_key = ark.rep_key
-            GROUP BY ark.field_rep_id
+            FROM canonical_activity_rep car
+            JOIN activity a ON a.rep_key = car.rep_key
+            GROUP BY car.field_rep_id
         )
         SELECT
             COALESCE(NULLIF(ar.field_rep_display_id, ''), ar.field_rep_id) AS field_rep_id,
@@ -1845,7 +1901,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 collateral_name = fallback_collateral[0].get("collateral_title") or collateral_name
 
         if metric_rows:
-            latest_week = metric_rows[-1]
+            latest_week = metric_rows[-1] if week_filter else _aggregate_weekly_metric_rows(metric_rows, reporting_total_doctors)
+            latest_data_week = (data_weekly_rows or all_weekly_rows or metric_rows)[-1]
             total_doctors = _to_float(latest_week.get("total_doctors_in_campaign"))
 
             latest_reached = _to_float(latest_week.get("doctors_reached_unique"))
@@ -1860,9 +1917,12 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             pdf_pct_opened = _safe_pct(latest_pdf, latest_opened)
             consumed_pct_opened = _safe_pct(latest_consumed, latest_opened)
 
-            current_week_idx = _to_int(latest_week.get("week_index"), 1)
+            current_week_idx = _to_int(
+                latest_week.get("week_index") if week_filter else latest_data_week.get("week_index"),
+                1,
+            )
             prev_week = None
-            if current_week_idx > 1:
+            if week_filter and current_week_idx > 1:
                 prev_candidates = [r for r in all_weekly_rows if _to_int(r.get("week_index")) == current_week_idx - 1]
                 prev_week = prev_candidates[-1] if prev_candidates else None
 
@@ -1892,7 +1952,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     _to_float(prev_week.get("doctors_consumed_unique")),
                     total_doctors,
                 )
-                if prev_week
+                if week_filter and prev_week
                 else 0.0
             )
 
@@ -1909,18 +1969,26 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             except (ProgrammingError, OperationalError):
                 state_rows = []
 
-            state_attention = []
+            state_buckets: dict[str, dict[str, float]] = {}
             for row in state_rows:
-                reached = _to_float(row.get("reached"))
-                opened = _to_float(row.get("opened"))
-                total_state = _to_float(row.get("total_state"))
+                state = _display_state_name(row.get("state_normalized"))
+                bucket = state_buckets.setdefault(state, {"reached": 0.0, "opened": 0.0, "total_state": 0.0})
+                bucket["reached"] += _to_float(row.get("reached"))
+                bucket["opened"] += _to_float(row.get("opened"))
+                bucket["total_state"] += _to_float(row.get("total_state"))
+
+            state_attention = []
+            for state, counts in state_buckets.items():
+                reached = counts["reached"]
+                opened = counts["opened"]
+                total_state = counts["total_state"]
                 reached_pct = min(_safe_pct(reached, total_state), 100.0)
                 open_pct = _safe_pct(opened, reached)
                 state_health = ((reached_pct / 100.0) + (open_pct / 100.0) + (open_pct / 100.0)) / 3.0 * 100
                 label = "Low" if state_health < 40 else "Medium" if state_health < 60 else "Good"
                 state_attention.append(
                     {
-                        "state": _display_state_name(row.get("state_normalized")),
+                        "state": state,
                         "open_pct": round(open_pct, 1),
                         "reached_pct": round(reached_pct, 1),
                         "label": label,
@@ -2098,7 +2166,11 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 "kpi_opened_pct": round(opened_pct_reached, 1),
                 "kpi_video_pct": round(video_pct_opened, 1),
                 "kpi_pdf_pct": round(pdf_pct_opened, 1),
-                "week_of": f"Week {current_week_idx} ({latest_week.get('week_start_date')} to {latest_week.get('week_end_date')})",
+                "week_of": (
+                    f"Week {current_week_idx} ({latest_week.get('week_start_date')} to {latest_week.get('week_end_date')})"
+                    if week_filter
+                    else f"All Weeks ({latest_week.get('week_start_date')} to {latest_week.get('week_end_date')})"
+                ),
             }
 
         field_rep_summary = _format_field_rep_summary(field_rep_insights, reporting_total_doctors)

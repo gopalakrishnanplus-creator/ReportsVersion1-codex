@@ -208,9 +208,13 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("assignment_note", sql)
         self.assertIn("raw_assigned_reps AS", sql)
         self.assertIn("GROUP BY field_rep_id", sql)
+        self.assertIn("canonical_activity_rep AS", sql)
+        self.assertIn("JOIN activity a ON a.rep_key = car.rep_key", sql)
         self.assertIn("COALESCE(NULLIF(tx.doctor_phone_normalized, ''), tx.doctor_identity_key) AS doctor_key", sql)
         self.assertIn("COALESCE(NULLIF(s.doctor_identifier_normalized, ''), s.doctor_identity_key) AS doctor_key", sql)
         self.assertIn("COUNT(DISTINCT a.doctor_key)", sql)
+        self.assertIn("lower(COALESCE(tx.pdf_completed", sql)
+        self.assertNotIn("tx.pdf_completed_flag", sql)
 
     def test_state_attention_uses_rep_aliases_and_effective_reach(self):
         latest_week = {"week_start_date": "2026-04-10", "week_end_date": "2026-04-16"}
@@ -262,6 +266,47 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(len(card_rows), 5)
         self.assertEqual(card_rows[-1]["state"], "Unknown")
         self.assertNotIn("Karnataka", [row["state"] for row in card_rows])
+
+    def test_united_kingdom_state_is_grouped_as_unknown(self):
+        self.assertEqual(dashboard.views._display_state_name("United Kingdom"), "Unknown")
+        self.assertEqual(dashboard.views._display_state_name("U.K"), "Unknown")
+
+    def test_all_weeks_metrics_are_aggregated_not_latest_week_only(self):
+        rows = [
+            {
+                "brand_campaign_id": "demo",
+                "week_index": 1,
+                "week_start_date": "2026-05-10",
+                "week_end_date": "2026-05-16",
+                "doctors_reached_unique": 5,
+                "doctors_opened_unique": 2,
+                "video_viewed_50_unique": 1,
+                "pdf_download_unique": 1,
+                "doctors_consumed_unique": 1,
+                "total_doctors_in_campaign": 100,
+            },
+            {
+                "brand_campaign_id": "demo",
+                "week_index": 2,
+                "week_start_date": "2026-05-17",
+                "week_end_date": "2026-05-23",
+                "doctors_reached_unique": 15,
+                "doctors_opened_unique": 4,
+                "video_viewed_50_unique": 2,
+                "pdf_download_unique": 3,
+                "doctors_consumed_unique": 4,
+                "total_doctors_in_campaign": 100,
+            },
+        ]
+
+        aggregated = dashboard.views._aggregate_weekly_metric_rows(rows, total_doctors=100)
+
+        self.assertEqual(aggregated["week_index"], 0)
+        self.assertEqual(aggregated["doctors_reached_unique"], 20)
+        self.assertEqual(aggregated["doctors_opened_unique"], 6)
+        self.assertEqual(aggregated["pdf_download_unique"], 4)
+        self.assertEqual(aggregated["week_start_date"], "2026-05-10")
+        self.assertEqual(aggregated["week_end_date"], "2026-05-23")
 
     def test_reports_home_renders(self):
         response = self.client.get("/")
@@ -633,7 +678,9 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "/campaign/demo/states/")
         self.assertContains(response, "Asha Mehta")
         self.assertContains(response, "Unknown")
+        self.assertContains(response, "page-loading")
         self.assertNotContains(response, "<strong>Karnataka</strong>", html=True)
+        self.assertNotContains(response, "Sent 30")
         self.assertContains(response, "FR-101")
         self.assertNotContains(response, "Data Note")
         self.assertNotContains(response, "Hidden diagnostic note")
@@ -668,6 +715,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "States Requiring Attention")
         self.assertContains(response, "Andhra Pradesh")
         self.assertContains(response, "Maharashtra")
+        self.assertContains(response, "page-loading")
         self.assertNotContains(response, "state-row-extra")
 
     def test_collateral_field_rep_page_renders_selected_collateral(self):
@@ -717,3 +765,5 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "This page is filtered to collateral ID 11 only.")
         self.assertContains(response, "Asha Mehta")
         self.assertContains(response, "12")
+        self.assertContains(response, "page-loading")
+        self.assertNotContains(response, "Sent 12")

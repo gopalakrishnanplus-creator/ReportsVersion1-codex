@@ -5,9 +5,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>In-Clinic Sharing Dashboard</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260525a">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260526a">
 </head>
 <body>
+  <div id="page-loading" class="page-loading hidden" aria-live="polite" aria-label="Loading page">
+    <div class="loading-spinner" aria-hidden="true"></div>
+    <span>Loading...</span>
+  </div>
   <main id="report-root" class="dashboard">
     <section id="header" class="card header-card">
       <div class="brand-block">
@@ -109,7 +113,6 @@
             <span>Doctors Assigned</span>
           </div>
         </div>
-        <p class="caption">Sent {{ field_rep_summary.doctors_sent }} · Viewed {{ field_rep_summary.doctors_viewed }} · Video {{ field_rep_summary.doctors_video_played }} · PDF {{ field_rep_summary.doctors_pdf_downloaded }}</p>
         <button type="button" id="field-rep-toggle" class="insight-toggle">View all reps</button>
       </article>
     </section>
@@ -271,6 +274,6 @@
   {{ video_pct_series|json_script:"trend-video" }}
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260525a"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260526a"></script>
 </body>
 </html>

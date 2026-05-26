@@ -1,4 +1,34 @@
 (function () {
+  const pageLoading = document.getElementById('page-loading');
+  function showPageLoading() {
+    pageLoading?.classList.remove('hidden');
+  }
+  function hidePageLoading() {
+    pageLoading?.classList.add('hidden');
+  }
+
+  window.addEventListener('pageshow', hidePageLoading);
+  document.querySelectorAll('a[href]').forEach((link) => {
+    link.addEventListener('click', (event) => {
+      const href = link.getAttribute('href') || '';
+      if (
+        event.defaultPrevented
+        || event.metaKey
+        || event.ctrlKey
+        || event.shiftKey
+        || event.altKey
+        || link.target
+        || link.hasAttribute('download')
+        || !href
+        || href.startsWith('#')
+        || href.startsWith('javascript:')
+      ) {
+        return;
+      }
+      showPageLoading();
+    });
+  });
+
   const labels = JSON.parse(document.getElementById('trend-labels')?.textContent || '[]');
   const opened = JSON.parse(document.getElementById('trend-opened')?.textContent || '[]');
   const reached = JSON.parse(document.getElementById('trend-reached')?.textContent || '[]');
@@ -71,7 +101,11 @@
   const weekForm = document.getElementById('week-filter-form');
   const weekSelect = document.getElementById('week-select');
   if (weekForm && weekSelect) {
-    weekSelect.addEventListener('change', () => weekForm.submit());
+    weekForm.addEventListener('submit', showPageLoading);
+    weekSelect.addEventListener('change', () => {
+      showPageLoading();
+      weekForm.submit();
+    });
   }
 
   const fieldRepTile = document.getElementById('field_rep_tile');
