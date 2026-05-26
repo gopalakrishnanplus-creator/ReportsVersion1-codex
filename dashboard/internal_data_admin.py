@@ -12,7 +12,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.core import signing
 from django.db import DatabaseError, connection, transaction
-from django.http import Http404, HttpRequest, HttpResponse, StreamingHttpResponse
+from django.http import Http404, HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils.crypto import constant_time_compare
@@ -646,7 +646,11 @@ def _raw_dedupe_plan_for_refs(refs: list[dict[str, str]]) -> dict[str, Any]:
         table_rows.append(row)
 
     ready_rows = [row for row in table_rows if row.get("error") is None]
-    duplicate_rows = [row for row in ready_rows if int(row.get("duplicate_rows") or 0) > 0]
+    duplicate_rows = sorted(
+        [row for row in ready_rows if int(row.get("duplicate_rows") or 0) > 0],
+        key=lambda row: int(row.get("duplicate_rows") or 0),
+        reverse=True,
+    )
     return {
         "rows": table_rows,
         "duplicate_rows": duplicate_rows,
@@ -658,6 +662,13 @@ def _raw_dedupe_plan_for_refs(refs: list[dict[str, str]]) -> dict[str, Any]:
         "duplicate_group_count": sum(int(row.get("duplicate_groups") or 0) for row in ready_rows),
         "has_errors": any(row.get("error") for row in table_rows),
     }
+
+
+def _raw_dedupe_next_row(plan: dict[str, Any]) -> dict[str, Any] | None:
+    duplicate_rows = plan.get("duplicate_rows") or []
+    if not duplicate_rows:
+        return None
+    return max(duplicate_rows, key=lambda row: int(row.get("duplicate_rows") or 0))
 
 
 def _raw_dedupe_report_refs(selected_system: str) -> list[dict[str, str]]:
@@ -1041,6 +1052,10 @@ def _execute_raw_dedupe(
         "rows": action_rows,
         "validation": validation,
     }
+
+
+def _raw_dedupe_json_error(message: str, status: int = 400) -> JsonResponse:
+    return JsonResponse({"ok": False, "message": message}, status=status)
 
 
 def _table_info(schema: str, table: str) -> TableInfo:
@@ -2088,6 +2103,56 @@ def internal_data_admin_raw_dedupe(request: HttpRequest) -> HttpResponse:
 
     if request.method == "POST":
         dedupe_action = request.POST.get("dedupe_action") or "preview"
+        if dedupe_action == "execute_next_batch":
+            confirmation = (request.POST.get("confirmation") or "").strip()
+            reason = (request.POST.get("reason") or "").strip()
+            if plan["has_errors"]:
+                return _raw_dedupe_json_error("RAW dedupe is blocked until every RAW table in the selected scope can be inspected.")
+            if confirmation != phrase:
+                return _raw_dedupe_json_error(f'Type "{phrase}" to confirm RAW archive and dedupe.')
+            if len(reason) < 8:
+                return _raw_dedupe_json_error("Please provide a clear reason before archiving and removing RAW duplicates.")
+            target_row = _raw_dedupe_next_row(plan)
+            if not target_row:
+                return JsonResponse(
+                    {
+                        "ok": True,
+                        "complete": True,
+                        "message": "No duplicate source rows remain in this scope.",
+                        "remaining_duplicate_rows": 0,
+                        "remaining_duplicate_tables": 0,
+                    }
+                )
+            target_schema = target_row["schema"]
+            target_table = target_row["table"]
+            try:
+                result = _execute_raw_dedupe(
+                    selected_system,
+                    reason,
+                    request.session.get(SESSION_USER_KEY, "internal_admin"),
+                    target=(target_schema, target_table),
+                    max_rows=RAW_DEDUPE_BATCH_SIZE,
+                )
+                plan = _raw_dedupe_plan(selected_system)
+                return JsonResponse(
+                    {
+                        "ok": True,
+                        "complete": plan["duplicate_row_count"] <= 0,
+                        "run_id": result["run_id"],
+                        "table": f"{target_schema}.{target_table}",
+                        "deleted_count": result["deleted_count"],
+                        "validation_passed": result["validation"]["passed"],
+                        "remaining_duplicate_rows": plan["duplicate_row_count"],
+                        "remaining_duplicate_tables": plan["duplicate_table_count"],
+                        "message": (
+                            f"Archived and removed {result['deleted_count']} rows from "
+                            f"{target_schema}.{target_table}."
+                        ),
+                    }
+                )
+            except DatabaseError as exc:
+                return _raw_dedupe_json_error(f"RAW dedupe failed and was rolled back: {exc}", status=500)
+
         if dedupe_action == "execute":
             messages.error(request, "Full-scope browser execution is disabled. Run one RAW table batch at a time to avoid web timeouts.")
         if dedupe_action == "execute_table":

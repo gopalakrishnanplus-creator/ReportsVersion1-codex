@@ -13,11 +13,11 @@
 <section class="ida-band">
   <div>
     <h2>Dry-run, archive, validate</h2>
-    <p class="ida-muted">Find exact duplicate RAW source payloads, archive removed rows in table-sized batches, and verify that unique RAW records plus downstream report table counts stay unchanged.</p>
+    <p class="ida-muted">Find exact duplicate RAW source payloads, archive removed rows in short batches, and auto-run table by table while validation keeps report counts unchanged.</p>
   </div>
   <div class="ida-safety-note">
     <strong>Protected mutation path</strong>
-    <span>GET requests only preview. Each archive/delete POST handles one RAW table batch of up to {{ batch_size }} rows to avoid web timeouts.</span>
+    <span>GET requests only preview. Auto cleanup sends one validated POST at a time, each up to {{ batch_size }} duplicate rows.</span>
   </div>
 </section>
 
@@ -169,8 +169,8 @@
   <div class="ida-table-meta">
     <div>
       <p class="ida-eyebrow">Archive before delete</p>
-      <h2>Execute one RAW table batch</h2>
-      <p class="ida-muted">Rows are archived to <code>ops.raw_duplicate_archive</code> before deletion. Each click processes at most {{ batch_size }} duplicate rows from one table, then validates and returns quickly.</p>
+      <h2>Execute RAW dedupe</h2>
+      <p class="ida-muted">Rows are archived to <code>ops.raw_duplicate_archive</code> before deletion. Auto cleanup keeps running short validated batches until the selected scope is clean.</p>
     </div>
     <div class="ida-safety-note">
       <strong>Confirmation phrase</strong>
@@ -178,13 +178,13 @@
     </div>
   </div>
 
-  <form class="ida-form ida-cleanup-execute" method="post" action="{% url 'internal-data-admin-raw-dedupe' %}">
+  <form id="raw-dedupe-form" class="ida-form ida-cleanup-execute" method="post" action="{% url 'internal-data-admin-raw-dedupe' %}">
     {% csrf_token %}
     <input type="hidden" name="dedupe_action" value="execute_table">
     <input type="hidden" name="system" value="{{ selected_system }}">
     <label>
       <span>RAW table batch</span>
-      <select name="target_table_ref" required {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>
+      <select name="target_table_ref" {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>
         <option value="">Choose a table with duplicates</option>
         {% for row in plan.duplicate_rows %}
         <option value="{{ row.schema }}.{{ row.table }}">{{ row.schema }}.{{ row.table }} - {{ row.duplicate_rows }} duplicate rows remaining</option>
@@ -199,7 +199,99 @@
       <span>Type this exact phrase: <code>{{ phrase }}</code></span>
       <input type="text" name="confirmation" autocomplete="off" required {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>
     </label>
-    <button class="ida-button ida-button-danger" type="submit" {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>Archive Next Table Batch</button>
+    <div class="ida-toolbar">
+      <button class="ida-button ida-button-danger" type="button" data-raw-dedupe-auto {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>Start Auto Cleanup</button>
+      <button class="ida-button ida-button-secondary" type="button" data-raw-dedupe-stop disabled>Stop</button>
+      <button class="ida-button ida-button-secondary" type="submit" {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>Archive Selected Table Batch</button>
+    </div>
   </form>
+  <div class="ida-dedupe-progress" data-raw-dedupe-progress aria-live="polite">
+    <strong>Idle</strong>
+    <span>Auto cleanup has not started.</span>
+  </div>
 </section>
+
+<script>
+(() => {
+  const form = document.getElementById("raw-dedupe-form");
+  if (!form) return;
+
+  const startButton = form.querySelector("[data-raw-dedupe-auto]");
+  const stopButton = form.querySelector("[data-raw-dedupe-stop]");
+  const progress = document.querySelector("[data-raw-dedupe-progress]");
+  let shouldStop = false;
+
+  const setProgress = (title, detail) => {
+    if (!progress) return;
+    progress.replaceChildren();
+    const strong = document.createElement("strong");
+    strong.textContent = title;
+    const span = document.createElement("span");
+    span.textContent = detail;
+    progress.append(strong, span);
+  };
+
+  const setRunning = (running) => {
+    if (startButton) startButton.disabled = running;
+    if (stopButton) stopButton.disabled = !running;
+  };
+
+  const postNextBatch = async () => {
+    const data = new FormData(form);
+    data.set("dedupe_action", "execute_next_batch");
+    data.delete("target_table_ref");
+
+    const response = await fetch(form.action, {
+      method: "POST",
+      body: data,
+      headers: {"X-Requested-With": "XMLHttpRequest"},
+      credentials: "same-origin"
+    });
+
+    const text = await response.text();
+    let payload = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch (error) {
+      throw new Error(`Server returned ${response.status}. Refresh and restart auto cleanup.`);
+    }
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message || "Auto cleanup stopped because a batch failed.");
+    }
+    return payload;
+  };
+
+  startButton?.addEventListener("click", async () => {
+    shouldStop = false;
+    setRunning(true);
+    setProgress("Running", "Starting first batch...");
+
+    try {
+      while (!shouldStop) {
+        const payload = await postNextBatch();
+        if (payload.complete) {
+          setProgress("Complete", payload.message || "No duplicate source rows remain.");
+          window.setTimeout(() => window.location.reload(), 1200);
+          return;
+        }
+        setProgress(
+          "Running",
+          `${payload.message} Remaining: ${payload.remaining_duplicate_rows} rows across ${payload.remaining_duplicate_tables} tables.`
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 450));
+      }
+      setProgress("Stopped", "Auto cleanup stopped by user. Refresh to see the latest dry-run totals.");
+    } catch (error) {
+      setProgress("Stopped", error.message);
+    } finally {
+      setRunning(false);
+    }
+  });
+
+  stopButton?.addEventListener("click", () => {
+    shouldStop = true;
+    setProgress("Stopping", "The current batch will finish, then auto cleanup will stop.");
+  });
+})();
+</script>
 {% endblock %}

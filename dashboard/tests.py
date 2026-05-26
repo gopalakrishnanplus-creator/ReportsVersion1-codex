@@ -459,6 +459,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Rows to archive/delete")
         self.assertContains(response, "campaign_campaignfieldrep")
         self.assertContains(response, "ARCHIVE RAW DUPLICATES INCLINIC")
+        self.assertContains(response, "Start Auto Cleanup")
 
     def test_internal_data_admin_raw_dedupe_execute_requires_confirmation(self):
         plan = {
@@ -559,6 +560,75 @@ class DashboardAccessViewTests(SimpleTestCase):
             max_rows=RAW_DEDUPE_BATCH_SIZE,
         )
         self.assertContains(response, "raw-dedupe-test")
+
+    def test_internal_data_admin_raw_dedupe_auto_executes_next_largest_batch_json(self):
+        plan = {
+            "selected_system": "inclinic",
+            "rows": [],
+            "duplicate_rows": [
+                {"schema": "raw_server1", "table": "small_table", "duplicate_rows": 2},
+                {"schema": "raw_server2", "table": "large_table", "duplicate_rows": 200},
+            ],
+            "table_count": 2,
+            "duplicate_table_count": 2,
+            "total_rows": 250,
+            "unique_rows": 48,
+            "duplicate_row_count": 202,
+            "duplicate_group_count": 2,
+            "has_errors": False,
+        }
+        after_plan = {**plan, "duplicate_rows": [], "duplicate_row_count": 0, "duplicate_table_count": 0}
+        snapshot = {"rows": [], "table_count": 4, "row_count": 99, "error_count": 0}
+        result = {
+            "run_id": "raw-dedupe-auto-test",
+            "archive_table": "ops.raw_duplicate_archive",
+            "deleted_count": 200,
+            "table_count": 1,
+            "validation": {
+                "passed": True,
+                "raw_unique_changed_count": 0,
+                "raw_total_mismatch_count": 0,
+                "report_row_count_before": 99,
+                "report_row_count_after": 99,
+                "report_table_count": 4,
+                "report_error_count": 0,
+                "report_changed_rows": [],
+            },
+        }
+
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin._raw_dedupe_plan",
+            side_effect=[plan, after_plan],
+        ), patch(
+            "dashboard.internal_data_admin._raw_dedupe_report_snapshot",
+            return_value=snapshot,
+        ), patch(
+            "dashboard.internal_data_admin._execute_raw_dedupe",
+            return_value=result,
+        ) as execute_mock:
+            response = self.client.post(
+                "/_internal/data-admin/raw-dedupe/",
+                {
+                    "dedupe_action": "execute_next_batch",
+                    "system": "inclinic",
+                    "reason": "cleanup repeated source ingests",
+                    "confirmation": "ARCHIVE RAW DUPLICATES INCLINIC",
+                },
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["complete"])
+        self.assertEqual(payload["table"], "raw_server2.large_table")
+        execute_mock.assert_called_once_with(
+            "inclinic",
+            "cleanup repeated source ingests",
+            "internal_admin",
+            target=("raw_server2", "large_table"),
+            max_rows=RAW_DEDUPE_BATCH_SIZE,
+        )
 
     def test_campaign_performance_page_renders_bootstrap_data(self):
         with patch(

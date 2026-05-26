@@ -58,7 +58,7 @@ Use the RAW dedupe workflow when repeated source ingests have created exact dupl
 http://127.0.0.1:8000/_internal/data-admin/raw-dedupe/
 ```
 
-The page is dry-run first. It compares source columns only, ignoring RAW audit columns such as `_ingested_at`, `_ingestion_run_id`, and `_record_hash`. Browser execution is table-batched to avoid nginx/Django request timeouts. Each click processes one RAW table batch, archives removed rows to `ops.raw_duplicate_archive`, deletes only extra exact copies, and rolls back unless validation proves:
+The page is dry-run first. It compares source columns only, ignoring RAW audit columns such as `_ingested_at`, `_ingestion_run_id`, and `_record_hash`. Browser execution is auto-batched to avoid nginx/Django request timeouts: click `Start Auto Cleanup` and the page will keep sending one short validated batch at a time. Each batch archives removed rows to `ops.raw_duplicate_archive`, deletes only extra exact copies, and rolls back unless validation proves:
 
 - RAW unique source-payload counts are unchanged.
 - RAW total-row reduction equals the archived/deleted duplicate count.
