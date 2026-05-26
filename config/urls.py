@@ -10,6 +10,8 @@ from dashboard.internal_data_admin import (
     internal_data_admin_login,
     internal_data_admin_logout,
     internal_data_admin_new,
+    internal_data_admin_raw_download,
+    internal_data_admin_raw_downloads,
     internal_data_admin_row,
     internal_data_admin_table,
 )
@@ -32,6 +34,8 @@ urlpatterns = [
     path("_internal/data-admin/login/", internal_data_admin_login, name="internal-data-admin-login"),
     path("_internal/data-admin/logout/", internal_data_admin_logout, name="internal-data-admin-logout"),
     path("_internal/data-admin/", internal_data_admin_home, name="internal-data-admin-home"),
+    path("_internal/data-admin/raw-downloads/", internal_data_admin_raw_downloads, name="internal-data-admin-raw-downloads"),
+    path("_internal/data-admin/raw-downloads/<str:schema>/<str:table>/download/", internal_data_admin_raw_download, name="internal-data-admin-raw-download"),
     path("_internal/data-admin/cleanup/", internal_data_admin_cleanup, name="internal-data-admin-cleanup"),
     path("_internal/data-admin/<str:schema>/<str:table>/new/", internal_data_admin_new, name="internal-data-admin-new"),
     path("_internal/data-admin/<str:schema>/<str:table>/bulk-delete/", internal_data_admin_bulk_delete, name="internal-data-admin-bulk-delete"),

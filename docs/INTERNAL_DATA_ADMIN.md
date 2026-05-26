@@ -40,6 +40,16 @@ Use the planner when clutter belongs to one campaign, source entity, or campaign
 http://127.0.0.1:8000/_internal/data-admin/cleanup/
 ```
 
+RAW data downloads:
+
+Use the read-only RAW downloads page when you need to reconcile source-level numbers outside the dashboard.
+
+```text
+http://127.0.0.1:8000/_internal/data-admin/raw-downloads/
+```
+
+Each RAW table tile shows total rows, unique rows, duplicate rows, duplicate groups, and a per-table CSV download. Duplicate counts use the RAW `_record_hash` when present and fall back to a source-column fingerprint without mutating the database.
+
 Select the system, choose the earliest layer to clear, and enter the campaign/entity key. The planner previews every matching table before deletion.
 
 - RAW means RAW, BRONZE, SILVER, and GOLD are included.

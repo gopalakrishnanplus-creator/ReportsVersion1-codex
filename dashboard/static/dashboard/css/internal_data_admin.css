@@ -488,6 +488,116 @@ code {
   margin: 14px 0;
 }
 
+.ida-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.ida-summary-tile {
+  display: grid;
+  gap: 6px;
+  min-height: 94px;
+  padding: 14px;
+  border: 1px solid var(--ida-line);
+  border-radius: 8px;
+  background: var(--ida-panel);
+}
+
+.ida-summary-tile span {
+  color: var(--ida-muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.ida-summary-tile strong {
+  color: var(--ida-blue-dark);
+  font-size: 28px;
+  line-height: 1.1;
+}
+
+.ida-summary-warning {
+  border-color: #edd085;
+  background: var(--ida-yellow-soft);
+}
+
+.ida-raw-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+.ida-raw-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--ida-line);
+  border-radius: 8px;
+  background: var(--ida-panel-soft);
+}
+
+.ida-raw-card-warning {
+  border-color: #edd085;
+}
+
+.ida-raw-card-head,
+.ida-raw-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ida-raw-card-head > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.ida-raw-card-head strong {
+  overflow-wrap: anywhere;
+}
+
+.ida-raw-card-head span:not(.ida-status) {
+  color: var(--ida-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ida-raw-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ida-raw-metrics div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #d5e1ef;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.ida-raw-metrics span {
+  display: block;
+  color: var(--ida-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.ida-raw-metrics strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--ida-text);
+  font-size: 18px;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
 .ida-cleanup-summary-grid > div {
   padding: 12px;
   border: 1px solid var(--ida-line);
@@ -632,5 +742,13 @@ code {
   .ida-bulk-bar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .ida-raw-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ida-raw-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

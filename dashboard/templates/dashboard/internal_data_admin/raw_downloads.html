@@ -1,0 +1,110 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}RAW Data Downloads{% endblock %}
+{% block heading %}RAW Data Downloads{% endblock %}
+
+{% block content %}
+<nav class="ida-toolbar">
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-home' %}">Back to Data Dashboard</a>
+</nav>
+
+<section class="ida-band">
+  <div>
+    <h2>Read-only RAW export workspace</h2>
+    <p class="ida-muted">Download CSV copies from RAW schemas and check table-level totals, unique rows, and duplicate rows before reconciling reports.</p>
+  </div>
+  <div class="ida-safety-note">
+    <strong>No mutation path</strong>
+    <span>This screen only runs SELECT queries and streams CSV files from the current PostgreSQL data.</span>
+  </div>
+</section>
+
+<section class="ida-system-grid" aria-label="RAW reporting systems">
+  {% for card in system_cards %}
+  <a class="ida-system-card {% if card.is_selected %}selected{% endif %}" href="{{ card.href }}">
+    <strong>{{ card.label }}</strong>
+    <span>{{ card.table_count }} tables / {{ card.row_count }} rows</span>
+    <small>{{ card.duplicate_count }} duplicate rows</small>
+  </a>
+  {% endfor %}
+</section>
+
+<section class="ida-summary-grid" aria-label="RAW totals">
+  <div class="ida-summary-tile">
+    <span>RAW tables</span>
+    <strong>{{ totals.table_count }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Total rows</span>
+    <strong>{{ totals.total_rows }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Unique rows</span>
+    <strong>{{ totals.unique_rows }}</strong>
+  </div>
+  <div class="ida-summary-tile {% if totals.duplicate_rows %}ida-summary-warning{% endif %}">
+    <span>Duplicate rows</span>
+    <strong>{{ totals.duplicate_rows }}</strong>
+  </div>
+</section>
+
+<section class="ida-section">
+  <div class="ida-section-heading">
+    <h2>RAW Table Summary</h2>
+    <span>{{ totals.duplicate_tables }} tables with duplicates</span>
+  </div>
+
+  <div class="ida-raw-grid">
+    {% for table in summary_cards %}
+    <article class="ida-raw-card {% if table.has_duplicates %}ida-raw-card-warning{% endif %}">
+      <div class="ida-raw-card-head">
+        <div>
+          <strong>{{ table.schema }}.{{ table.name }}</strong>
+          <span>{{ table.system_label }} / {{ table.layer }}</span>
+        </div>
+        {% if table.error %}
+        <span class="ida-status ida-status-blocked">Unavailable</span>
+        {% elif table.has_duplicates %}
+        <span class="ida-status ida-status-blocked">Duplicates</span>
+        {% else %}
+        <span class="ida-status ida-status-ready">Unique</span>
+        {% endif %}
+      </div>
+
+      {% if table.error %}
+      <p class="ida-muted">{{ table.error }}</p>
+      {% else %}
+      <div class="ida-raw-metrics">
+        <div>
+          <span>Total</span>
+          <strong>{{ table.total_rows }}</strong>
+        </div>
+        <div>
+          <span>Unique</span>
+          <strong>{{ table.unique_rows }}</strong>
+        </div>
+        <div>
+          <span>Duplicate</span>
+          <strong>{{ table.duplicate_rows }}</strong>
+        </div>
+        <div>
+          <span>Groups</span>
+          <strong>{{ table.duplicate_groups }}</strong>
+        </div>
+      </div>
+      <p class="ida-muted">Largest duplicate group: {{ table.largest_duplicate_group }}{% if table.latest_ingested_at %} / latest ingest: {{ table.latest_ingested_at }}{% endif %}</p>
+      {% endif %}
+
+      <div class="ida-raw-actions">
+        <a class="ida-button" href="{{ table.download_href }}">Download CSV</a>
+        <a class="ida-button ida-button-secondary" href="{{ table.view_href }}">View Rows</a>
+      </div>
+    </article>
+    {% empty %}
+    <div class="ida-panel">
+      <p>No RAW tables are available yet. Run the ETL pipeline first.</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
