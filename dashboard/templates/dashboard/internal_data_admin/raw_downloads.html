@@ -6,6 +6,7 @@
 {% block content %}
 <nav class="ida-toolbar">
   <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-home' %}">Back to Data Dashboard</a>
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-raw-dedupe' %}{% if selected_system != 'all' %}?system={{ selected_system }}{% endif %}">RAW Dedupe Workflow</a>
 </nav>
 
 <section class="ida-band">

@@ -4,7 +4,7 @@ import csv
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -28,6 +28,8 @@ PAGE_SIZE = 75
 RAW_EXPORT_BATCH_SIZE = 1000
 AUDIT_SCHEMA = "ops"
 AUDIT_TABLE = "internal_dashboard_audit"
+RAW_DEDUPE_ARCHIVE_TABLE = "raw_duplicate_archive"
+RAW_DEDUPE_CONFIRM_PREFIX = "ARCHIVE RAW DUPLICATES"
 RAW_AUDIT_COLUMN_NAMES = frozenset(
     {
         "_ingestion_run_id",
@@ -394,22 +396,17 @@ def _source_fingerprint_columns(info: TableInfo) -> list[str]:
     return [column.name for column in info.columns if column.name not in RAW_AUDIT_COLUMN_NAMES]
 
 
-def _raw_fingerprint_sql(info: TableInfo) -> sql.Composable:
+def _raw_payload_sql(info: TableInfo) -> sql.Composable:
     source_columns = _source_fingerprint_columns(info)
     if source_columns:
-        source_fingerprint = sql.SQL("md5(jsonb_build_array({})::text)").format(
+        return sql.SQL("jsonb_build_array({})").format(
             sql.SQL(", ").join(sql.Identifier(column) for column in source_columns)
         )
-    else:
-        source_fingerprint = sql.SQL("ctid::text")
+    return sql.SQL("jsonb_build_array(ctid::text)")
 
-    column_names = {column.name for column in info.columns}
-    if "_record_hash" in column_names:
-        return sql.SQL("COALESCE(NULLIF({}, ''), {})").format(
-            sql.Identifier("_record_hash"),
-            source_fingerprint,
-        )
-    return source_fingerprint
+
+def _raw_fingerprint_sql(info: TableInfo) -> sql.Composable:
+    return _raw_payload_sql(info)
 
 
 def _raw_table_stats(info: TableInfo) -> dict[str, Any]:
@@ -577,6 +574,445 @@ def _stream_table_csv(info: TableInfo):
 
 def _raw_export_filename(schema: str, table: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{schema}.{table}.csv")
+
+
+def _raw_dedupe_system_options(selected_system: str) -> list[dict[str, Any]]:
+    options = [
+        {
+            "key": "all",
+            "label": "All RAW Tables",
+            "summary": "Inspect exact duplicates across every RAW source copy.",
+            "is_selected": selected_system == "all",
+            "href": reverse("internal-data-admin-raw-dedupe"),
+        }
+    ]
+    for key in CLEANUP_SYSTEM_KEYS:
+        profile = SYSTEM_PROFILES[key]
+        options.append(
+            {
+                "key": key,
+                "label": profile.label,
+                "summary": profile.source_guidance,
+                "is_selected": selected_system == key,
+                "href": f"{reverse('internal-data-admin-raw-dedupe')}?system={key}",
+            }
+        )
+    return options
+
+
+def _raw_dedupe_target_refs(selected_system: str) -> list[dict[str, str]]:
+    refs = _raw_table_refs()
+    if selected_system == "all":
+        return refs
+    return [ref for ref in refs if _system_key_for_schema(ref["schema"]) == selected_system]
+
+
+def _raw_dedupe_report_refs(selected_system: str) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for ref in _managed_table_refs():
+        schema = ref["schema"]
+        layer_key = _layer_key_for_schema(schema)
+        if layer_key not in {"bronze", "silver", "gold"}:
+            continue
+        if selected_system != "all" and _system_key_for_schema(schema) != selected_system:
+            continue
+        refs.append(ref)
+    return refs
+
+
+def _raw_dedupe_plan(selected_system: str) -> dict[str, Any]:
+    table_rows: list[dict[str, Any]] = []
+    for ref in _raw_dedupe_target_refs(selected_system):
+        info = _table_info(ref["schema"], ref["name"])
+        profile = _system_profile_for_schema(info.schema)
+        row = {
+            "schema": info.schema,
+            "table": info.name,
+            "system_key": profile.key,
+            "system_label": profile.short_label,
+            "source_column_count": len(_source_fingerprint_columns(info)),
+            "view_href": reverse("internal-data-admin-table", args=[info.schema, info.name]),
+            "error": None,
+        }
+        try:
+            stats = _raw_table_stats(info)
+            row.update(stats)
+            row["has_duplicates"] = stats["duplicate_rows"] > 0
+        except DatabaseError as exc:
+            row.update(
+                {
+                    "total_rows": None,
+                    "unique_rows": None,
+                    "duplicate_rows": None,
+                    "duplicate_groups": None,
+                    "largest_duplicate_group": None,
+                    "latest_ingested_at": None,
+                    "has_duplicates": False,
+                    "error": str(exc),
+                }
+            )
+        table_rows.append(row)
+
+    ready_rows = [row for row in table_rows if row.get("error") is None]
+    duplicate_rows = [row for row in ready_rows if int(row.get("duplicate_rows") or 0) > 0]
+    return {
+        "selected_system": selected_system,
+        "rows": table_rows,
+        "duplicate_rows": duplicate_rows,
+        "table_count": len(table_rows),
+        "duplicate_table_count": len(duplicate_rows),
+        "total_rows": sum(int(row.get("total_rows") or 0) for row in ready_rows),
+        "unique_rows": sum(int(row.get("unique_rows") or 0) for row in ready_rows),
+        "duplicate_row_count": sum(int(row.get("duplicate_rows") or 0) for row in ready_rows),
+        "duplicate_group_count": sum(int(row.get("duplicate_groups") or 0) for row in ready_rows),
+        "has_errors": any(row.get("error") for row in table_rows),
+    }
+
+
+def _raw_dedupe_report_snapshot(selected_system: str) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for ref in _raw_dedupe_report_refs(selected_system):
+        schema = ref["schema"]
+        table = ref["name"]
+        profile = _system_profile_for_schema(schema)
+        layer_key = _layer_key_for_schema(schema)
+        snapshot = {
+            "schema": schema,
+            "table": table,
+            "system_key": profile.key,
+            "system_label": profile.short_label,
+            "layer_key": layer_key,
+            "layer_label": LAYER_LABELS.get(layer_key, layer_key.upper()),
+            "row_count": None,
+            "error": None,
+        }
+        try:
+            count_rows = _fetch_dicts(
+                sql.SQL("SELECT COUNT(*) AS row_count FROM {}.{}").format(
+                    sql.Identifier(schema),
+                    sql.Identifier(table),
+                )
+            )
+            snapshot["row_count"] = int(count_rows[0]["row_count"])
+        except DatabaseError as exc:
+            snapshot["error"] = str(exc)
+        rows.append(snapshot)
+
+    ready_rows = [row for row in rows if row.get("error") is None]
+    return {
+        "rows": rows,
+        "table_count": len(rows),
+        "row_count": sum(int(row.get("row_count") or 0) for row in ready_rows),
+        "error_count": len(rows) - len(ready_rows),
+    }
+
+
+def _raw_dedupe_confirmation_phrase(selected_system: str) -> str:
+    label = "ALL" if selected_system == "all" else selected_system.upper()
+    return f"{RAW_DEDUPE_CONFIRM_PREFIX} {label}"
+
+
+def _raw_dedupe_run_id() -> str:
+    return datetime.now(timezone.utc).strftime("raw-dedupe-%Y%m%dT%H%M%S%fZ")
+
+
+def _ensure_raw_dedupe_archive_table() -> None:
+    _execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(AUDIT_SCHEMA)))
+    _execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.{} (
+                id BIGSERIAL PRIMARY KEY,
+                dedupe_run_id TEXT NOT NULL,
+                archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                schema_name TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                source_payload JSONB NOT NULL,
+                source_columns JSONB NOT NULL,
+                source_ctid TEXT,
+                source_record_hash TEXT,
+                source_ingested_at TEXT,
+                source_ingestion_run_id TEXT,
+                dedupe_rank INTEGER,
+                duplicate_group_size BIGINT,
+                raw_row JSONB NOT NULL,
+                reason TEXT,
+                actor TEXT
+            )
+            """
+        ).format(sql.Identifier(AUDIT_SCHEMA), sql.Identifier(RAW_DEDUPE_ARCHIVE_TABLE))
+    )
+    _execute(
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS ops_raw_duplicate_archive_run_idx
+            ON {}.{} (dedupe_run_id, schema_name, table_name)
+            """
+        ).format(sql.Identifier(AUDIT_SCHEMA), sql.Identifier(RAW_DEDUPE_ARCHIVE_TABLE))
+    )
+
+
+def _raw_dedupe_order_sql(info: TableInfo) -> sql.SQL:
+    column_names = {column.name for column in info.columns}
+    parts: list[sql.Composable] = []
+    for column in ("_ingested_at", "_extract_ended_at", "_extract_started_at", "_ingestion_run_id"):
+        if column in column_names:
+            parts.append(sql.SQL("NULLIF({}, '') DESC NULLS LAST").format(sql.Identifier(column)))
+    parts.append(sql.SQL("ctid DESC"))
+    return sql.SQL(", ").join(parts)
+
+
+def _nullable_source_column_sql(info: TableInfo, column: str) -> sql.Composable:
+    if column in {info_column.name for info_column in info.columns}:
+        return sql.SQL("NULLIF(src.{}, '')").format(sql.Identifier(column))
+    return sql.SQL("NULL::text")
+
+
+def _archive_and_delete_raw_duplicates_for_table(info: TableInfo, run_id: str, reason: str, actor: str) -> dict[str, Any]:
+    source_columns = _source_fingerprint_columns(info)
+    if not source_columns:
+        raise DatabaseError(f"{info.schema}.{info.name} has no source columns to compare safely.")
+
+    payload_sql = _raw_payload_sql(info)
+    order_sql = _raw_dedupe_order_sql(info)
+    source_columns_json = json.dumps(source_columns)
+    record_hash_sql = _nullable_source_column_sql(info, "_record_hash")
+    ingested_at_sql = _nullable_source_column_sql(info, "_ingested_at")
+    ingestion_run_id_sql = _nullable_source_column_sql(info, "_ingestion_run_id")
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            sql.SQL("LOCK TABLE {}.{} IN SHARE ROW EXCLUSIVE MODE").format(
+                sql.Identifier(info.schema),
+                sql.Identifier(info.name),
+            )
+        )
+        cursor.execute("DROP TABLE IF EXISTS pg_temp.raw_dedupe_to_delete")
+        cursor.execute(
+            sql.SQL(
+                """
+                CREATE TEMP TABLE raw_dedupe_to_delete ON COMMIT DROP AS
+                WITH ranked AS (
+                    SELECT
+                        ctid AS raw_ctid,
+                        ctid::text AS source_ctid,
+                        {} AS source_payload,
+                        ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {}) AS dedupe_rank,
+                        COUNT(*) OVER (PARTITION BY {}) AS duplicate_group_size
+                    FROM {}.{}
+                )
+                SELECT *
+                FROM ranked
+                WHERE dedupe_rank > 1
+                """
+            ).format(
+                payload_sql,
+                payload_sql,
+                order_sql,
+                payload_sql,
+                sql.Identifier(info.schema),
+                sql.Identifier(info.name),
+            )
+        )
+        cursor.execute("SELECT COUNT(*) FROM pg_temp.raw_dedupe_to_delete")
+        planned_delete_count = int(cursor.fetchone()[0])
+        if planned_delete_count <= 0:
+            return {"schema": info.schema, "table": info.name, "archived_count": 0, "deleted_count": 0}
+
+        cursor.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.{}
+                  (
+                    dedupe_run_id,
+                    archived_at,
+                    schema_name,
+                    table_name,
+                    source_payload,
+                    source_columns,
+                    source_ctid,
+                    source_record_hash,
+                    source_ingested_at,
+                    source_ingestion_run_id,
+                    dedupe_rank,
+                    duplicate_group_size,
+                    raw_row,
+                    reason,
+                    actor
+                  )
+                SELECT
+                    %s,
+                    NOW(),
+                    %s,
+                    %s,
+                    d.source_payload,
+                    %s::jsonb,
+                    d.source_ctid,
+                    {},
+                    {},
+                    {},
+                    d.dedupe_rank,
+                    d.duplicate_group_size,
+                    to_jsonb(src),
+                    %s,
+                    %s
+                FROM {}.{} AS src
+                JOIN pg_temp.raw_dedupe_to_delete AS d
+                  ON src.ctid = d.raw_ctid
+                """
+            ).format(
+                sql.Identifier(AUDIT_SCHEMA),
+                sql.Identifier(RAW_DEDUPE_ARCHIVE_TABLE),
+                record_hash_sql,
+                ingested_at_sql,
+                ingestion_run_id_sql,
+                sql.Identifier(info.schema),
+                sql.Identifier(info.name),
+            ),
+            [run_id, info.schema, info.name, source_columns_json, reason, actor],
+        )
+        archived_count = cursor.rowcount if cursor.rowcount >= 0 else 0
+
+        cursor.execute(
+            sql.SQL(
+                """
+                DELETE FROM {}.{} AS src
+                USING pg_temp.raw_dedupe_to_delete AS d
+                WHERE src.ctid = d.raw_ctid
+                """
+            ).format(sql.Identifier(info.schema), sql.Identifier(info.name))
+        )
+        deleted_count = cursor.rowcount if cursor.rowcount >= 0 else 0
+
+    if archived_count != planned_delete_count or deleted_count != planned_delete_count:
+        raise DatabaseError(
+            f"RAW dedupe count mismatch for {info.schema}.{info.name}: "
+            f"planned {planned_delete_count}, archived {archived_count}, deleted {deleted_count}."
+        )
+
+    _audit(
+        "raw_dedupe_archive_delete",
+        TableInfo(schema=info.schema, name=info.name, columns=[], primary_key=[]),
+        {
+            "mode": "raw_exact_duplicate_dedupe",
+            "dedupe_run_id": run_id,
+            "archive_table": f"{AUDIT_SCHEMA}.{RAW_DEDUPE_ARCHIVE_TABLE}",
+        },
+        {
+            "source_columns": source_columns,
+            "planned_duplicate_rows": planned_delete_count,
+        },
+        {
+            "archived_count": archived_count,
+            "deleted_count": deleted_count,
+        },
+        reason,
+        actor,
+    )
+    return {
+        "schema": info.schema,
+        "table": info.name,
+        "archived_count": archived_count,
+        "deleted_count": deleted_count,
+    }
+
+
+def _raw_dedupe_validation(
+    before_plan: dict[str, Any],
+    after_plan: dict[str, Any],
+    before_report: dict[str, Any],
+    after_report: dict[str, Any],
+    action_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    before_raw = {(row["schema"], row["table"]): row for row in before_plan["rows"]}
+    after_raw = {(row["schema"], row["table"]): row for row in after_plan["rows"]}
+    raw_rows: list[dict[str, Any]] = []
+    for key, before in before_raw.items():
+        after = after_raw.get(key, {})
+        deleted_count = sum(
+            row["deleted_count"]
+            for row in action_rows
+            if row["schema"] == key[0] and row["table"] == key[1]
+        )
+        raw_rows.append(
+            {
+                "schema": key[0],
+                "table": key[1],
+                "before_total_rows": int(before.get("total_rows") or 0),
+                "after_total_rows": int(after.get("total_rows") or 0),
+                "before_unique_rows": int(before.get("unique_rows") or 0),
+                "after_unique_rows": int(after.get("unique_rows") or 0),
+                "before_duplicate_rows": int(before.get("duplicate_rows") or 0),
+                "after_duplicate_rows": int(after.get("duplicate_rows") or 0),
+                "deleted_count": deleted_count,
+                "unique_preserved": int(before.get("unique_rows") or 0) == int(after.get("unique_rows") or 0),
+                "total_delta_matches": int(before.get("total_rows") or 0) - int(after.get("total_rows") or 0) == deleted_count,
+            }
+        )
+
+    before_report_map = {(row["schema"], row["table"]): row for row in before_report["rows"]}
+    after_report_map = {(row["schema"], row["table"]): row for row in after_report["rows"]}
+    changed_report_rows: list[dict[str, Any]] = []
+    for key, before in before_report_map.items():
+        after = after_report_map.get(key)
+        if not after or before.get("row_count") != after.get("row_count") or before.get("error") != after.get("error"):
+            changed_report_rows.append(
+                {
+                    "schema": key[0],
+                    "table": key[1],
+                    "layer_label": before.get("layer_label"),
+                    "before_row_count": before.get("row_count"),
+                    "after_row_count": after.get("row_count") if after else None,
+                    "before_error": before.get("error"),
+                    "after_error": after.get("error") if after else "table missing after cleanup",
+                }
+            )
+
+    raw_unique_changed_count = sum(1 for row in raw_rows if not row["unique_preserved"])
+    raw_total_mismatch_count = sum(1 for row in raw_rows if not row["total_delta_matches"])
+    report_error_count = int(before_report.get("error_count") or 0) + int(after_report.get("error_count") or 0)
+    return {
+        "raw_rows": raw_rows,
+        "raw_unique_changed_count": raw_unique_changed_count,
+        "raw_total_mismatch_count": raw_total_mismatch_count,
+        "report_table_count": before_report["table_count"],
+        "report_row_count_before": before_report["row_count"],
+        "report_row_count_after": after_report["row_count"],
+        "report_error_count": report_error_count,
+        "report_changed_count": len(changed_report_rows),
+        "report_changed_rows": changed_report_rows,
+        "passed": raw_unique_changed_count == 0 and raw_total_mismatch_count == 0 and report_error_count == 0 and not changed_report_rows,
+    }
+
+
+def _execute_raw_dedupe(selected_system: str, reason: str, actor: str) -> dict[str, Any]:
+    run_id = _raw_dedupe_run_id()
+    action_rows: list[dict[str, Any]] = []
+    with transaction.atomic():
+        _ensure_audit_table()
+        _ensure_raw_dedupe_archive_table()
+        before_plan = _raw_dedupe_plan(selected_system)
+        before_report = _raw_dedupe_report_snapshot(selected_system)
+
+        for row in before_plan["duplicate_rows"]:
+            info = _table_info(row["schema"], row["table"])
+            action_rows.append(_archive_and_delete_raw_duplicates_for_table(info, run_id, reason, actor))
+
+        after_plan = _raw_dedupe_plan(selected_system)
+        after_report = _raw_dedupe_report_snapshot(selected_system)
+        validation = _raw_dedupe_validation(before_plan, after_plan, before_report, after_report, action_rows)
+        if not validation["passed"]:
+            raise DatabaseError("RAW dedupe validation failed; the archive/delete transaction was rolled back.")
+
+    return {
+        "run_id": run_id,
+        "archive_table": f"{AUDIT_SCHEMA}.{RAW_DEDUPE_ARCHIVE_TABLE}",
+        "archived_count": sum(row["archived_count"] for row in action_rows),
+        "deleted_count": sum(row["deleted_count"] for row in action_rows),
+        "table_count": sum(1 for row in action_rows if row["deleted_count"] > 0),
+        "rows": action_rows,
+        "validation": validation,
+    }
 
 
 def _table_info(schema: str, table: str) -> TableInfo:
@@ -1603,6 +2039,66 @@ def internal_data_admin_raw_download(request: HttpRequest, schema: str, table: s
     response["Content-Disposition"] = f'attachment; filename="{_raw_export_filename(schema, table)}"'
     response["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
+def internal_data_admin_raw_dedupe(request: HttpRequest) -> HttpResponse:
+    auth_redirect = _require_auth(request)
+    if auth_redirect:
+        return auth_redirect
+
+    values = request.POST if request.method == "POST" else request.GET
+    selected_system = (values.get("system") or "inclinic").strip().lower()
+    if selected_system not in {*CLEANUP_SYSTEM_KEYS, "all"}:
+        selected_system = "inclinic"
+
+    result = None
+    phrase = _raw_dedupe_confirmation_phrase(selected_system)
+    plan = _raw_dedupe_plan(selected_system)
+    report_snapshot = _raw_dedupe_report_snapshot(selected_system)
+
+    if request.method == "POST":
+        dedupe_action = request.POST.get("dedupe_action") or "preview"
+        if dedupe_action == "execute":
+            confirmation = (request.POST.get("confirmation") or "").strip()
+            reason = (request.POST.get("reason") or "").strip()
+            if plan["duplicate_row_count"] <= 0:
+                messages.error(request, "RAW dedupe is blocked because the dry-run found no duplicate source rows.")
+            elif plan["has_errors"]:
+                messages.error(request, "RAW dedupe is blocked until every RAW table in the selected scope can be inspected.")
+            elif confirmation != phrase:
+                messages.error(request, f'Type "{phrase}" to confirm RAW archive and dedupe.')
+            elif len(reason) < 8:
+                messages.error(request, "Please provide a clear reason before archiving and removing RAW duplicates.")
+            else:
+                try:
+                    result = _execute_raw_dedupe(
+                        selected_system,
+                        reason,
+                        request.session.get(SESSION_USER_KEY, "internal_admin"),
+                    )
+                    messages.success(
+                        request,
+                        f"RAW dedupe archived and removed {result['deleted_count']} duplicate rows across {result['table_count']} tables.",
+                    )
+                    plan = _raw_dedupe_plan(selected_system)
+                    report_snapshot = _raw_dedupe_report_snapshot(selected_system)
+                except DatabaseError as exc:
+                    messages.error(request, f"RAW dedupe failed and was rolled back: {exc}")
+
+    return render(
+        request,
+        "dashboard/internal_data_admin/raw_dedupe.html",
+        {
+            "system_options": _raw_dedupe_system_options(selected_system),
+            "selected_system": selected_system,
+            "plan": plan,
+            "report_snapshot": report_snapshot,
+            "phrase": phrase,
+            "result": result,
+        },
+    )
 
 
 @never_cache

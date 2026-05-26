@@ -323,6 +323,7 @@ def build_silver(run_id: str) -> None:
             d.id AS doctor_master_id_resolved,
             CASE WHEN lower(COALESCE(t.has_viewed,'')) IN ('1','true','t','yes') THEN '1' ELSE '0' END AS has_viewed_flag,
             CASE WHEN lower(COALESCE(t.downloaded_pdf,'')) IN ('1','true','t','yes') THEN '1' ELSE '0' END AS downloaded_pdf_flag,
+            CASE WHEN lower(COALESCE(t.pdf_completed,'')) IN ('1','true','t','yes') THEN '1' ELSE '0' END AS pdf_completed_flag,
             CASE
                 WHEN lower(COALESCE(t.video_view_gt_50,'')) IN ('1','true','t','yes') THEN '1'
                 WHEN NULLIF(t.last_video_percentage,'') IS NOT NULL AND t.last_video_percentage::float >= 50 THEN '1'
@@ -348,7 +349,13 @@ def build_silver(run_id: str) -> None:
             COALESCE(t.sent_at, t.transaction_date, t.created_at)::text AS reached_event_ts,
             COALESCE(t.first_viewed_at, t.viewed_at)::text AS opened_event_ts,
             COALESCE(t.video_gt_50_at, t.last_viewed_at, t.updated_at)::text AS video_gt_50_event_ts,
-            COALESCE(t.viewed_last_page_at, t.updated_at)::text AS pdf_download_event_ts,
+            CASE
+                WHEN lower(COALESCE(t.downloaded_pdf,'')) IN ('1','true','t','yes')
+                  OR lower(COALESCE(t.pdf_completed,'')) IN ('1','true','t','yes')
+                  OR t.viewed_last_page_at IS NOT NULL
+                THEN COALESCE(t.viewed_last_page_at, t.updated_at)
+                ELSE NULL
+            END::text AS pdf_download_event_ts,
             NOW()::text AS _silver_updated_at,
             '{run_id}'::text AS _as_of_run_id
         FROM bronze.sharing_management_collateraltransaction t
@@ -558,7 +565,11 @@ def build_silver(run_id: str) -> None:
                 MIN(NULLIF(reached_event_ts,'')) AS reached_first_tx_ts,
                 MIN(NULLIF(opened_event_ts,'')) AS opened_first_ts,
                 MIN(NULLIF(video_gt_50_event_ts,'')) FILTER (WHERE video_view_gt_50_flag='1') AS video_gt_50_first_ts,
-                MIN(NULLIF(COALESCE(viewed_last_page_at_ts, updated_at_ts),'')) FILTER (WHERE downloaded_pdf_flag='1') AS pdf_download_first_ts,
+                MIN(NULLIF(COALESCE(viewed_last_page_at_ts, updated_at_ts),'')) FILTER (
+                    WHERE downloaded_pdf_flag='1'
+                       OR pdf_completed_flag='1'
+                       OR NULLIF(viewed_last_page_at_ts,'') IS NOT NULL
+                ) AS pdf_download_first_ts,
                 MAX(COALESCE(NULLIF(updated_at_ts,''), NULLIF(last_viewed_at_ts,''))) AS last_activity_tx_ts
             FROM silver.fact_collateral_transaction
             GROUP BY brand_campaign_id, collateral_id, doctor_identity_key

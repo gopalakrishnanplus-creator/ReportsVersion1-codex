@@ -1,0 +1,192 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}RAW Dedupe Workflow{% endblock %}
+{% block heading %}RAW Dedupe Workflow{% endblock %}
+
+{% block content %}
+<nav class="ida-toolbar">
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-home' %}">Back to Data Dashboard</a>
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-raw-downloads' %}{% if selected_system != 'all' %}?system={{ selected_system }}{% endif %}">RAW Data Downloads</a>
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-cleanup' %}?system={{ selected_system }}">Hierarchy Cleanup Planner</a>
+</nav>
+
+<section class="ida-band">
+  <div>
+    <h2>Dry-run, archive, validate</h2>
+    <p class="ida-muted">Find exact duplicate RAW source payloads, archive every removed row, and verify that unique RAW records plus downstream report table counts stay unchanged.</p>
+  </div>
+  <div class="ida-safety-note">
+    <strong>Protected mutation path</strong>
+    <span>GET requests only preview. The archive/delete action requires a reason and exact confirmation phrase, then runs in one transaction.</span>
+  </div>
+</section>
+
+<section class="ida-system-grid" aria-label="RAW dedupe scopes">
+  {% for option in system_options %}
+  <a class="ida-system-card {% if option.is_selected %}selected{% endif %}" href="{{ option.href }}">
+    <strong>{{ option.label }}</strong>
+    <span>{{ option.summary }}</span>
+  </a>
+  {% endfor %}
+</section>
+
+<section class="ida-summary-grid" aria-label="RAW dedupe dry-run totals">
+  <div class="ida-summary-tile">
+    <span>RAW tables checked</span>
+    <strong>{{ plan.table_count }}</strong>
+  </div>
+  <div class="ida-summary-tile {% if plan.duplicate_row_count %}ida-summary-warning{% endif %}">
+    <span>Rows to archive/delete</span>
+    <strong>{{ plan.duplicate_row_count }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Unique rows preserved</span>
+    <strong>{{ plan.unique_rows }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Report tables validated</span>
+    <strong>{{ report_snapshot.table_count }}</strong>
+  </div>
+</section>
+
+{% if result %}
+<section class="ida-panel ida-validation-panel">
+  <div class="ida-table-meta">
+    <div>
+      <p class="ida-eyebrow">Run {{ result.run_id }}</p>
+      <h2>{{ result.deleted_count }} duplicate rows archived and removed</h2>
+      <p class="ida-muted">Archive table: <code>{{ result.archive_table }}</code></p>
+    </div>
+    {% if result.validation.passed %}
+    <span class="ida-status ida-status-ready">Validation passed</span>
+    {% else %}
+    <span class="ida-status ida-status-blocked">Validation failed</span>
+    {% endif %}
+  </div>
+
+  <div class="ida-cleanup-summary-grid">
+    <div>
+      <strong>RAW unique rows</strong>
+      <p>{{ result.validation.raw_unique_changed_count }} tables changed unique-row counts.</p>
+    </div>
+    <div>
+      <strong>RAW total delta</strong>
+      <p>{{ result.validation.raw_total_mismatch_count }} tables had an unexpected total-row delta.</p>
+    </div>
+    <div>
+      <strong>Report rows</strong>
+      <p>{{ result.validation.report_row_count_before }} before / {{ result.validation.report_row_count_after }} after across {{ result.validation.report_table_count }} tables. Count errors: {{ result.validation.report_error_count }}.</p>
+    </div>
+  </div>
+
+  {% if result.validation.report_changed_rows %}
+  <section class="ida-danger-box">
+    <strong>Report table count changes detected</strong>
+    <span>The transaction should have rolled back if this occurred during execution. Review the changed tables before retrying.</span>
+  </section>
+  <div class="ida-scroll">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Table</th>
+          <th>Layer</th>
+          <th>Before</th>
+          <th>After</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in result.validation.report_changed_rows %}
+        <tr>
+          <td>{{ row.schema }}.{{ row.table }}</td>
+          <td>{{ row.layer_label }}</td>
+          <td>{{ row.before_row_count|default:"error" }}</td>
+          <td>{{ row.after_row_count|default:"error" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if plan.has_errors %}
+<section class="ida-danger-box">
+  <strong>Dry-run has table errors.</strong>
+  <span>Archive/delete is blocked until every RAW table in this scope can be inspected.</span>
+</section>
+{% endif %}
+
+<section class="ida-section">
+  <div class="ida-section-heading">
+    <h2>Dry-run Table Plan</h2>
+    <span>{{ plan.duplicate_table_count }} tables with exact duplicates / {{ plan.duplicate_group_count }} duplicate groups</span>
+  </div>
+
+  <div class="ida-scroll">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>RAW table</th>
+          <th>System</th>
+          <th>Total rows</th>
+          <th>Unique rows</th>
+          <th>Rows to archive/delete</th>
+          <th>Groups</th>
+          <th>Source columns</th>
+          <th>Keep rule</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in plan.rows %}
+        <tr>
+          <td><a href="{{ row.view_href }}">{{ row.schema }}.{{ row.table }}</a></td>
+          <td>{{ row.system_label }}</td>
+          {% if row.error %}
+          <td colspan="6">{{ row.error }}</td>
+          {% else %}
+          <td>{{ row.total_rows }}</td>
+          <td>{{ row.unique_rows }}</td>
+          <td>{{ row.duplicate_rows }}</td>
+          <td>{{ row.duplicate_groups }}</td>
+          <td>{{ row.source_column_count }}</td>
+          <td>Latest ingest kept</td>
+          {% endif %}
+        </tr>
+        {% empty %}
+        <tr><td colspan="8">No RAW tables are available for this scope.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="ida-panel ida-cleanup-plan">
+  <div class="ida-table-meta">
+    <div>
+      <p class="ida-eyebrow">Archive before delete</p>
+      <h2>Execute exact RAW dedupe</h2>
+      <p class="ida-muted">Rows are archived to <code>ops.raw_duplicate_archive</code> before deletion. Validation must pass or the whole transaction rolls back.</p>
+    </div>
+    <div class="ida-safety-note">
+      <strong>Confirmation phrase</strong>
+      <span><code>{{ phrase }}</code></span>
+    </div>
+  </div>
+
+  <form class="ida-form ida-cleanup-execute" method="post" action="{% url 'internal-data-admin-raw-dedupe' %}">
+    {% csrf_token %}
+    <input type="hidden" name="dedupe_action" value="execute">
+    <input type="hidden" name="system" value="{{ selected_system }}">
+    <label>
+      <span>Reason for RAW dedupe</span>
+      <input type="text" name="reason" placeholder="Example: remove repeated source ingests after dry-run validation" required {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>
+    </label>
+    <label>
+      <span>Type this exact phrase: <code>{{ phrase }}</code></span>
+      <input type="text" name="confirmation" autocomplete="off" required {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>
+    </label>
+    <button class="ida-button ida-button-danger" type="submit" {% if not plan.duplicate_row_count or plan.has_errors %}disabled{% endif %}>Archive and Remove Exact Duplicates</button>
+  </form>
+</section>
+{% endblock %}

@@ -5,9 +5,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Field Representative Insights</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260525a">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260526a">
 </head>
 <body>
+  <div id="page-loading" class="page-loading hidden" aria-live="polite" aria-label="Loading page">
+    <div class="loading-spinner" aria-hidden="true"></div>
+    <span>Loading...</span>
+  </div>
   <main class="dashboard detail-page">
     <section class="card detail-header">
       <div class="detail-title">
@@ -40,7 +44,6 @@
           <span>Doctors Assigned</span>
         </div>
       </div>
-      <p class="caption">Sent {{ field_rep_summary.doctors_sent }} · Viewed {{ field_rep_summary.doctors_viewed }} · Video {{ field_rep_summary.doctors_video_played }} · PDF {{ field_rep_summary.doctors_pdf_downloaded }}</p>
     </section>
 
     <section class="card">
@@ -77,6 +80,6 @@
     </section>
   </main>
 
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260525a"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260526a"></script>
 </body>
 </html>

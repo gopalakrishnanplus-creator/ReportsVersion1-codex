@@ -48,7 +48,21 @@ Use the read-only RAW downloads page when you need to reconcile source-level num
 http://127.0.0.1:8000/_internal/data-admin/raw-downloads/
 ```
 
-Each RAW table tile shows total rows, unique rows, duplicate rows, duplicate groups, and a per-table CSV download. Duplicate counts use the RAW `_record_hash` when present and fall back to a source-column fingerprint without mutating the database.
+Each RAW table tile shows total rows, unique rows, duplicate rows, duplicate groups, and a per-table CSV download. Duplicate counts compare the exact source-column payload and ignore RAW audit columns without mutating the database.
+
+RAW dedupe workflow:
+
+Use the RAW dedupe workflow when repeated source ingests have created exact duplicate RAW source payloads.
+
+```text
+http://127.0.0.1:8000/_internal/data-admin/raw-dedupe/
+```
+
+The page is dry-run first. It compares source columns only, ignoring RAW audit columns such as `_ingested_at`, `_ingestion_run_id`, and `_record_hash`. Execution requires a reason and confirmation phrase, archives every duplicate row to `ops.raw_duplicate_archive`, deletes only the extra exact copies, and rolls back unless validation proves:
+
+- RAW unique source-payload counts are unchanged.
+- RAW total-row reduction equals the archived/deleted duplicate count.
+- BRONZE, SILVER, and GOLD table row counts for the selected scope are unchanged.
 
 Select the system, choose the earliest layer to clear, and enter the campaign/entity key. The planner previews every matching table before deletion.
 

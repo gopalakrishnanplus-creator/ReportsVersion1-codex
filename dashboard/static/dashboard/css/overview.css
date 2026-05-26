@@ -54,6 +54,9 @@ select{min-width:360px;padding:8px;border:1px solid var(--line);border-radius:6p
 .insight-toggle{width:100%;margin-top:12px;border:1px solid #b9ccec;border-radius:10px;background:#ffffff;color:#1f3e74;padding:10px 12px;font-weight:800;cursor:pointer}
 .field-rep-modal{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(15,23,42,.42);backdrop-filter:blur(6px)}
 .field-rep-modal.hidden,.hidden{display:none!important}
+.page-loading{position:fixed;inset:0;z-index:1400;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(242,246,252,.78);backdrop-filter:blur(5px);color:#18345f;font-weight:800}
+.loading-spinner{width:44px;height:44px;border:4px solid #c8d7f0;border-top-color:#1f5aa6;border-radius:999px;animation:loading-spin .75s linear infinite}
+@keyframes loading-spin{to{transform:rotate(360deg)}}
 .field-rep-dialog{width:min(1120px,calc(100vw - 32px));max-height:min(760px,calc(100vh - 48px));display:grid;gap:14px;overflow:hidden}
 .old-collateral-dialog{width:min(760px,calc(100vw - 32px))}
 .field-rep-table-wrap{max-height:calc(100vh - 190px);overflow:auto}
