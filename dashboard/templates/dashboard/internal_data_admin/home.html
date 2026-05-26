@@ -11,6 +11,7 @@
     <p class="ida-toolbar ida-inline-toolbar">
       <a class="ida-button" href="{% url 'internal-data-admin-cleanup' %}?system={{ selected_system }}">Open Hierarchy Cleanup Planner</a>
       <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-raw-downloads' %}{% if selected_system != 'all' %}?system={{ selected_system }}{% endif %}">RAW Data Downloads</a>
+      <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-raw-dedupe' %}{% if selected_system != 'all' %}?system={{ selected_system }}{% endif %}">RAW Dedupe Workflow</a>
     </p>
   </div>
   <div class="ida-safety-note">

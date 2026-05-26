@@ -14,6 +14,9 @@ from dashboard.internal_data_admin import (
     _batch_cleanup_confirmation_phrase,
     _cleanup_candidate_columns,
     _cleanup_inverse_match_condition,
+    _raw_dedupe_confirmation_phrase,
+    _raw_dedupe_report_snapshot,
+    _raw_dedupe_validation,
     _is_raw_table_ref,
     _is_relevant_schema,
     _layer_key_for_schema,
@@ -38,6 +41,7 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/_internal/data-admin/login/").view_name, "internal-data-admin-login")
         self.assertEqual(resolve("/_internal/data-admin/cleanup/").view_name, "internal-data-admin-cleanup")
         self.assertEqual(resolve("/_internal/data-admin/raw-downloads/").view_name, "internal-data-admin-raw-downloads")
+        self.assertEqual(resolve("/_internal/data-admin/raw-dedupe/").view_name, "internal-data-admin-raw-dedupe")
         self.assertEqual(
             resolve("/_internal/data-admin/raw-downloads/raw_server1/campaign_fieldrep/download/").view_name,
             "internal-data-admin-raw-download",
@@ -120,6 +124,68 @@ class DashboardRoutingTests(SimpleTestCase):
     def test_batch_cleanup_confirmation_phrases_are_explicit(self):
         self.assertEqual(_batch_cleanup_confirmation_phrase("delete_listed", 2), "DELETE 2 LISTED CAMPAIGNS")
         self.assertEqual(_batch_cleanup_confirmation_phrase("keep_listed", 3), "KEEP 3 CAMPAIGNS DELETE REST")
+
+    def test_raw_dedupe_confirmation_phrase_is_scope_specific(self):
+        self.assertEqual(_raw_dedupe_confirmation_phrase("inclinic"), "ARCHIVE RAW DUPLICATES INCLINIC")
+        self.assertEqual(_raw_dedupe_confirmation_phrase("all"), "ARCHIVE RAW DUPLICATES ALL")
+
+    def test_raw_dedupe_validation_protects_unique_and_report_counts(self):
+        before_plan = {
+            "rows": [
+                {
+                    "schema": "raw_server1",
+                    "table": "campaign_campaignfieldrep",
+                    "total_rows": 12,
+                    "unique_rows": 10,
+                    "duplicate_rows": 2,
+                }
+            ]
+        }
+        after_plan = {
+            "rows": [
+                {
+                    "schema": "raw_server1",
+                    "table": "campaign_campaignfieldrep",
+                    "total_rows": 10,
+                    "unique_rows": 10,
+                    "duplicate_rows": 0,
+                }
+            ]
+        }
+        report_snapshot = {
+            "rows": [{"schema": "gold_global", "table": "campaign_registry", "row_count": 8, "error": None}],
+            "table_count": 1,
+            "row_count": 8,
+        }
+
+        validation = _raw_dedupe_validation(
+            before_plan,
+            after_plan,
+            report_snapshot,
+            report_snapshot,
+            [{"schema": "raw_server1", "table": "campaign_campaignfieldrep", "deleted_count": 2}],
+        )
+
+        self.assertTrue(validation["passed"])
+        self.assertEqual(validation["raw_unique_changed_count"], 0)
+        self.assertEqual(validation["report_changed_count"], 0)
+
+    def test_raw_dedupe_report_snapshot_keeps_all_report_rows(self):
+        with patch(
+            "dashboard.internal_data_admin._raw_dedupe_report_refs",
+            return_value=[
+                {"schema": "bronze", "name": "campaign_campaignfieldrep"},
+                {"schema": "gold_global", "name": "campaign_registry"},
+            ],
+        ), patch(
+            "dashboard.internal_data_admin._fetch_dicts",
+            side_effect=[[{"row_count": 4}], [{"row_count": 6}]],
+        ):
+            snapshot = _raw_dedupe_report_snapshot("inclinic")
+
+        self.assertEqual(snapshot["table_count"], 2)
+        self.assertEqual(snapshot["row_count"], 10)
+        self.assertEqual([row["table"] for row in snapshot["rows"]], ["campaign_campaignfieldrep", "campaign_registry"])
 
 
 class DashboardAccessViewTests(SimpleTestCase):
@@ -303,6 +369,85 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(response["Content-Type"], "text/csv; charset=utf-8")
         self.assertIn("raw_server1.campaign_fieldrep.csv", response["Content-Disposition"])
         self.assertEqual(b"".join(response.streaming_content), b"id\r\n1\r\n")
+
+    def test_internal_data_admin_raw_dedupe_renders_dry_run(self):
+        plan = {
+            "selected_system": "inclinic",
+            "rows": [
+                {
+                    "schema": "raw_server1",
+                    "table": "campaign_campaignfieldrep",
+                    "system_label": "Inclinic",
+                    "source_column_count": 4,
+                    "view_href": "/_internal/data-admin/raw_server1/campaign_campaignfieldrep/",
+                    "error": None,
+                    "total_rows": 12,
+                    "unique_rows": 10,
+                    "duplicate_rows": 2,
+                    "duplicate_groups": 1,
+                    "has_duplicates": True,
+                }
+            ],
+            "duplicate_rows": [],
+            "table_count": 1,
+            "duplicate_table_count": 1,
+            "total_rows": 12,
+            "unique_rows": 10,
+            "duplicate_row_count": 2,
+            "duplicate_group_count": 1,
+            "has_errors": False,
+        }
+        snapshot = {"rows": [], "table_count": 4, "row_count": 99, "error_count": 0}
+
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin._raw_dedupe_plan",
+            return_value=plan,
+        ), patch(
+            "dashboard.internal_data_admin._raw_dedupe_report_snapshot",
+            return_value=snapshot,
+        ):
+            response = self.client.get("/_internal/data-admin/raw-dedupe/?system=inclinic")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "RAW Dedupe Workflow")
+        self.assertContains(response, "Rows to archive/delete")
+        self.assertContains(response, "campaign_campaignfieldrep")
+        self.assertContains(response, "ARCHIVE RAW DUPLICATES INCLINIC")
+
+    def test_internal_data_admin_raw_dedupe_execute_requires_confirmation(self):
+        plan = {
+            "selected_system": "inclinic",
+            "rows": [],
+            "duplicate_rows": [{"schema": "raw_server1", "table": "campaign_campaignfieldrep"}],
+            "table_count": 1,
+            "duplicate_table_count": 1,
+            "total_rows": 12,
+            "unique_rows": 10,
+            "duplicate_row_count": 2,
+            "duplicate_group_count": 1,
+            "has_errors": False,
+        }
+        snapshot = {"rows": [], "table_count": 4, "row_count": 99, "error_count": 0}
+
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin._raw_dedupe_plan",
+            return_value=plan,
+        ), patch(
+            "dashboard.internal_data_admin._raw_dedupe_report_snapshot",
+            return_value=snapshot,
+        ), patch("dashboard.internal_data_admin._execute_raw_dedupe") as execute_mock:
+            response = self.client.post(
+                "/_internal/data-admin/raw-dedupe/",
+                {
+                    "dedupe_action": "execute",
+                    "system": "inclinic",
+                    "reason": "cleanup repeated source ingests",
+                    "confirmation": "WRONG",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        execute_mock.assert_not_called()
 
     def test_campaign_performance_page_renders_bootstrap_data(self):
         with patch(
