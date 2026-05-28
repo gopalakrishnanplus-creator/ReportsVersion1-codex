@@ -275,6 +275,7 @@ def _field_rep_alias_sql_parts() -> tuple[str, str, list[str]]:
         joins.append("LEFT JOIN bronze.auth_user au ON au.id::text = cfr.user_id::text")
         select_parts.extend(
             [
+                f"{_normalized_sql('au.id::text')} AS auth_user_id_key",
                 f"{_normalized_sql('au.email')} AS auth_email_key",
                 f"{_normalized_sql('au.username')} AS auth_username_key",
             ]
@@ -286,7 +287,7 @@ def _field_rep_alias_sql_parts() -> tuple[str, str, list[str]]:
             f" OR ({_normalized_sql('sfr.gmail')} <> '' AND {_normalized_sql('sfr.gmail')} = {_normalized_sql('au.email')})"
         )
     else:
-        select_parts.extend(["''::text AS auth_email_key", "''::text AS auth_username_key"])
+        select_parts.extend(["''::text AS auth_user_id_key", "''::text AS auth_email_key", "''::text AS auth_username_key"])
         auth_email_match = ""
         auth_username_match = ""
         legacy_auth_email_match = ""
@@ -691,24 +692,41 @@ def _field_rep_insight_rows(
 
     alias_joins, alias_selects, alias_key_columns = _field_rep_alias_sql_parts()
     alias_key_rank = {
-        "local_user_id_key": 10,
-        "legacy_rep_id_key": 20,
-        "internal_rep_key": 30,
-        "external_rep_key": 40,
-        "local_field_id_key": 45,
-        "legacy_field_id_key": 45,
-        "auth_email_key": 60,
+        "auth_email_key": 10,
+        "local_email_key": 10,
+        "legacy_email_key": 10,
+        "legacy_gmail_key": 10,
+        "auth_user_id_key": 20,
+        "local_user_id_key": 30,
+        "legacy_rep_id_key": 35,
+        "internal_rep_key": 40,
+        "external_rep_key": 45,
+        "local_field_id_key": 50,
+        "legacy_field_id_key": 50,
         "auth_username_key": 60,
-        "local_email_key": 60,
         "local_username_key": 60,
-        "legacy_email_key": 60,
-        "legacy_gmail_key": 60,
-        "legacy_whatsapp_key": 60,
+        "legacy_whatsapp_key": 70,
+    }
+    alias_key_type = {
+        "auth_email_key": "email",
+        "local_email_key": "email",
+        "legacy_email_key": "email",
+        "legacy_gmail_key": "email",
+        "auth_user_id_key": "auth_user_id",
+        "local_user_id_key": "local_user_id",
+        "legacy_rep_id_key": "legacy_rep_id",
+        "internal_rep_key": "campaign_fieldrep_id",
+        "external_rep_key": "brand_field_id",
+        "local_field_id_key": "brand_field_id",
+        "legacy_field_id_key": "brand_field_id",
+        "auth_username_key": "username",
+        "local_username_key": "username",
+        "legacy_whatsapp_key": "phone",
     }
     alias_key_unions = "\n            ".join(
         f"""
             UNION
-            SELECT field_rep_id, {column} AS rep_key, {alias_key_rank.get(column, 90)} AS match_rank
+            SELECT field_rep_id, {column} AS rep_key, '{alias_key_type.get(column, "alias")}'::text AS key_type, {alias_key_rank.get(column, 90)} AS match_rank
             FROM raw_assigned_reps
             WHERE {column} <> ''
         """.rstrip()
@@ -720,6 +738,8 @@ def _field_rep_insight_rows(
         *brand_keys,
         *brand_keys,
         _normalize_lookup_key(selected_campaign),
+        *brand_keys,
+        *current_collateral_ids,
         *brand_keys,
         *current_collateral_ids,
         *brand_keys,
@@ -773,30 +793,26 @@ def _field_rep_insight_rows(
             GROUP BY field_rep_id
         ),
         assigned_rep_keys AS (
-            SELECT field_rep_id, local_user_id_key AS rep_key, 10 AS match_rank
+            SELECT field_rep_id, auth_user_id_key AS rep_key, 'auth_user_id'::text AS key_type, 20 AS match_rank
+            FROM raw_assigned_reps
+            WHERE auth_user_id_key <> ''
+            UNION
+            SELECT field_rep_id, local_user_id_key AS rep_key, 'local_user_id'::text AS key_type, 30 AS match_rank
             FROM raw_assigned_reps
             WHERE local_user_id_key <> ''
             UNION
-            SELECT field_rep_id, legacy_rep_id_key AS rep_key, 20 AS match_rank
+            SELECT field_rep_id, legacy_rep_id_key AS rep_key, 'legacy_rep_id'::text AS key_type, 35 AS match_rank
             FROM raw_assigned_reps
             WHERE legacy_rep_id_key <> ''
             UNION
-            SELECT field_rep_id, internal_rep_key AS rep_key, 30 AS match_rank
+            SELECT field_rep_id, internal_rep_key AS rep_key, 'campaign_fieldrep_id'::text AS key_type, 40 AS match_rank
             FROM raw_assigned_reps
             WHERE internal_rep_key <> ''
             UNION
-            SELECT field_rep_id, external_rep_key AS rep_key, 40 AS match_rank
+            SELECT field_rep_id, external_rep_key AS rep_key, 'brand_field_id'::text AS key_type, 45 AS match_rank
             FROM raw_assigned_reps
             WHERE external_rep_key <> ''
             {alias_key_unions}
-        ),
-        canonical_activity_rep AS (
-            SELECT DISTINCT ON (rep_key)
-                rep_key,
-                field_rep_id
-            FROM assigned_rep_keys
-            WHERE rep_key <> ''
-            ORDER BY rep_key, match_rank, field_rep_id
         ),
         assigned_doctors AS (
             SELECT
@@ -808,12 +824,33 @@ def _field_rep_insight_rows(
                   {_normalized_sql('d.rep_id_normalized')} = ark.rep_key
                   OR {_normalized_sql('d.field_rep_id_resolved')} = ark.rep_key
               )
+            WHERE ark.key_type IN ('local_user_id', 'legacy_rep_id', 'campaign_fieldrep_id', 'brand_field_id')
             GROUP BY ark.field_rep_id
         ),
-        activity AS (
+        share_rep_id_email_map AS (
+            SELECT DISTINCT ON ({_normalized_sql('s.field_rep_id::text')})
+                {_normalized_sql('s.field_rep_id::text')} AS source_rep_id_key,
+                {_normalized_sql('s.field_rep_email')} AS mapped_email_key
+            FROM silver.fact_share_log s
+            WHERE {_normalized_sql('s.brand_campaign_id')} IN ({brand_placeholders})
+              {collateral_filter_share}
+              AND {_normalized_sql('s.field_rep_id::text')} <> ''
+              AND {_normalized_sql('s.field_rep_email')} <> ''
+            ORDER BY
+                {_normalized_sql('s.field_rep_id::text')},
+                COALESCE(s.updated_at_ts, s.created_at_ts, s.share_timestamp_ts) DESC NULLS LAST,
+                s.id DESC
+        ),
+        activity_source AS (
             SELECT
-                {_normalized_sql('tx.field_rep_id')} AS rep_key,
+                'tx:' || tx.id::text AS activity_row_id,
                 COALESCE(NULLIF(tx.doctor_phone_normalized, ''), tx.doctor_identity_key) AS doctor_key,
+                COALESCE(
+                    NULLIF({_normalized_sql('linked_share.field_rep_email')}, ''),
+                    NULLIF(rep_email_map.mapped_email_key, ''),
+                    NULLIF({_normalized_sql('tx.field_rep_email')}, '')
+                ) AS email_rep_key,
+                {_normalized_sql('tx.field_rep_id')} AS numeric_rep_key,
                 1 AS sent_flag,
                 CASE WHEN tx.has_viewed_flag = '1' OR NULLIF(tx.opened_event_ts, '') IS NOT NULL THEN 1 ELSE 0 END AS viewed_flag,
                 CASE
@@ -832,12 +869,23 @@ def _field_rep_insight_rows(
                     THEN 1 ELSE 0
                 END AS pdf_flag
             FROM silver.fact_collateral_transaction tx
+            LEFT JOIN silver.fact_share_log linked_share
+              ON {_normalized_sql('linked_share.brand_campaign_id')} = {_normalized_sql('tx.brand_campaign_id')}
+             AND linked_share.collateral_id::text = tx.collateral_id::text
+             AND linked_share.id::text = COALESCE(
+                 NULLIF(btrim(tx.sm_engagement_id), ''),
+                 NULLIF(btrim(tx.share_management_engagement_id), '')
+             )
+            LEFT JOIN share_rep_id_email_map rep_email_map
+              ON rep_email_map.source_rep_id_key = {_normalized_sql('tx.field_rep_id')}
             WHERE {_normalized_sql('tx.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_tx}
             UNION ALL
             SELECT
-                {_normalized_sql('s.field_rep_id::text')} AS rep_key,
+                'share:' || s.id::text AS activity_row_id,
                 COALESCE(NULLIF(s.doctor_identifier_normalized, ''), s.doctor_identity_key) AS doctor_key,
+                NULLIF({_normalized_sql('s.field_rep_email')}, '') AS email_rep_key,
+                {_normalized_sql('s.field_rep_id::text')} AS numeric_rep_key,
                 1 AS sent_flag,
                 0 AS viewed_flag,
                 0 AS video_flag,
@@ -846,16 +894,63 @@ def _field_rep_insight_rows(
             WHERE {_normalized_sql('s.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_share}
         ),
+        activity_key_candidates AS (
+            SELECT
+                activity_row_id,
+                doctor_key,
+                sent_flag,
+                viewed_flag,
+                video_flag,
+                pdf_flag,
+                email_rep_key AS rep_key,
+                'email'::text AS key_type,
+                10 AS source_rank
+            FROM activity_source
+            WHERE COALESCE(email_rep_key, '') <> ''
+            UNION ALL
+            SELECT activity_row_id, doctor_key, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'auth_user_id'::text, 40
+            FROM activity_source
+            WHERE COALESCE(numeric_rep_key, '') <> ''
+            UNION ALL
+            SELECT activity_row_id, doctor_key, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'local_user_id'::text, 50
+            FROM activity_source
+            WHERE COALESCE(numeric_rep_key, '') <> ''
+            UNION ALL
+            SELECT activity_row_id, doctor_key, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'campaign_fieldrep_id'::text, 60
+            FROM activity_source
+            WHERE COALESCE(numeric_rep_key, '') <> ''
+            UNION ALL
+            SELECT activity_row_id, doctor_key, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'brand_field_id'::text, 70
+            FROM activity_source
+            WHERE COALESCE(numeric_rep_key, '') <> ''
+        ),
+        matched_activity AS (
+            SELECT DISTINCT ON (akc.activity_row_id)
+                ark.field_rep_id,
+                akc.doctor_key,
+                akc.sent_flag,
+                akc.viewed_flag,
+                akc.video_flag,
+                akc.pdf_flag
+            FROM activity_key_candidates akc
+            JOIN assigned_rep_keys ark
+              ON ark.rep_key = akc.rep_key
+             AND ark.key_type = akc.key_type
+            ORDER BY
+                akc.activity_row_id,
+                akc.source_rank,
+                ark.match_rank,
+                ark.field_rep_id
+        ),
         activity_for_rep AS (
             SELECT
-                car.field_rep_id,
-                COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.sent_flag = 1) AS doctors_sent,
-                COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.viewed_flag = 1) AS doctors_viewed,
-                COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.video_flag = 1) AS doctors_video_played,
-                COUNT(DISTINCT a.doctor_key) FILTER (WHERE a.pdf_flag = 1) AS doctors_pdf_downloaded
-            FROM canonical_activity_rep car
-            JOIN activity a ON a.rep_key = car.rep_key
-            GROUP BY car.field_rep_id
+                field_rep_id,
+                COUNT(DISTINCT doctor_key) FILTER (WHERE sent_flag = 1) AS doctors_sent,
+                COUNT(DISTINCT doctor_key) FILTER (WHERE viewed_flag = 1) AS doctors_viewed,
+                COUNT(DISTINCT doctor_key) FILTER (WHERE video_flag = 1) AS doctors_video_played,
+                COUNT(DISTINCT doctor_key) FILTER (WHERE pdf_flag = 1) AS doctors_pdf_downloaded
+            FROM matched_activity
+            GROUP BY field_rep_id
         )
         SELECT
             COALESCE(NULLIF(ar.field_rep_display_id, ''), ar.field_rep_id) AS field_rep_id,
@@ -1027,13 +1122,41 @@ def _state_attention_source_rows(
             WHERE {_normalized_sql('a.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_action}
         ),
+        share_rep_id_email_map AS (
+            SELECT DISTINCT ON ({_normalized_sql('s.field_rep_id::text')})
+              {_normalized_sql('s.field_rep_id::text')} AS source_rep_id_key,
+              s.field_rep_email AS mapped_email
+            FROM silver.fact_share_log s
+            WHERE {_normalized_sql('s.brand_campaign_id')} IN ({brand_placeholders})
+              {collateral_filter_share}
+              AND {_normalized_sql('s.field_rep_id::text')} <> ''
+              AND {_normalized_sql('s.field_rep_email')} <> ''
+            ORDER BY
+              {_normalized_sql('s.field_rep_id::text')},
+              COALESCE(s.updated_at_ts, s.created_at_ts, s.share_timestamp_ts) DESC NULLS LAST,
+              s.id DESC
+        ),
         tx_rep AS (
             SELECT DISTINCT ON (tx.brand_campaign_id, tx.collateral_id, tx.doctor_identity_key)
               tx.brand_campaign_id,
               tx.collateral_id,
               tx.doctor_identity_key,
-              tx.field_rep_id::text AS field_rep_id_resolved
+              COALESCE(
+                NULLIF(btrim(linked_share.field_rep_email), ''),
+                NULLIF(btrim(rep_email_map.mapped_email), ''),
+                NULLIF(btrim(tx.field_rep_email), ''),
+                tx.field_rep_id::text
+              ) AS field_rep_id_resolved
             FROM silver.fact_collateral_transaction tx
+            LEFT JOIN silver.fact_share_log linked_share
+              ON {_normalized_sql('linked_share.brand_campaign_id')} = {_normalized_sql('tx.brand_campaign_id')}
+             AND linked_share.collateral_id::text = tx.collateral_id::text
+             AND linked_share.id::text = COALESCE(
+                 NULLIF(btrim(tx.sm_engagement_id), ''),
+                 NULLIF(btrim(tx.share_management_engagement_id), '')
+             )
+            LEFT JOIN share_rep_id_email_map rep_email_map
+              ON rep_email_map.source_rep_id_key = {_normalized_sql('tx.field_rep_id')}
             WHERE {_normalized_sql('tx.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_tx}
               AND COALESCE(NULLIF(btrim(tx.field_rep_id), ''), NULL) IS NOT NULL
@@ -1044,7 +1167,7 @@ def _state_attention_source_rows(
               s.brand_campaign_id,
               s.collateral_id,
               s.doctor_identity_key,
-              s.field_rep_id::text AS field_rep_id_resolved
+              COALESCE(NULLIF(btrim(s.field_rep_email), ''), s.field_rep_id::text) AS field_rep_id_resolved
             FROM silver.fact_share_log s
             WHERE {_normalized_sql('s.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_share}
@@ -1169,6 +1292,8 @@ def _state_attention_source_rows(
             *brand_keys,
             *brand_keys,
             _normalize_lookup_key(selected_campaign),
+            *brand_keys,
+            *current_collateral_ids,
             *brand_keys,
             *current_collateral_ids,
             *brand_keys,
