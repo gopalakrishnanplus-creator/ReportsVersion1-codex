@@ -1018,8 +1018,7 @@ def _field_rep_insight_rows(
                 COALESCE(NULLIF(tx.doctor_phone_normalized, ''), tx.doctor_identity_key) AS doctor_key,
                 COALESCE(
                     NULLIF(btrim(tx.doctor_name), ''),
-                    NULLIF(btrim(d_tx.name), ''),
-                    'Unknown Doctor'
+                    NULLIF(btrim(d_tx.name), '')
                 ) AS doctor_name,
                 COALESCE(
                     NULLIF(btrim(tx.doctor_number), ''),
@@ -1079,7 +1078,7 @@ def _field_rep_insight_rows(
             SELECT
                 'share:' || s.id::text AS activity_row_id,
                 COALESCE(NULLIF(s.doctor_identifier_normalized, ''), s.doctor_identity_key) AS doctor_key,
-                COALESCE(NULLIF(btrim(d_share.name), ''), 'Unknown Doctor') AS doctor_name,
+                NULLIF(btrim(d_share.name), '') AS doctor_name,
                 COALESCE(
                     NULLIF(btrim(d_share.phone), ''),
                     NULLIF(s.doctor_identifier_normalized, ''),
@@ -1163,16 +1162,33 @@ def _field_rep_insight_rows(
         ),
         activity_doctor_rows AS (
             SELECT
-                field_rep_id,
-                doctor_key,
-                COALESCE(MIN(NULLIF(doctor_name, 'Unknown Doctor')), 'Unknown Doctor') AS doctor_name,
-                MIN(NULLIF(doctor_phone, '')) AS doctor_phone,
-                MAX(sent_flag) AS sent_flag,
-                MAX(viewed_flag) AS viewed_flag,
-                MAX(video_flag) AS video_flag,
-                MAX(pdf_flag) AS pdf_flag
-            FROM matched_activity
-            GROUP BY field_rep_id, doctor_key
+                ma.field_rep_id,
+                ma.doctor_key,
+                COALESCE(
+                    MIN(NULLIF(NULLIF(ma.doctor_name, ''), 'Unknown Doctor')),
+                    MIN(NULLIF(NULLIF(ad.doctor_name, ''), 'Unknown Doctor')),
+                    ''
+                ) AS doctor_name,
+                COALESCE(
+                    MIN(NULLIF(ma.doctor_phone, '')),
+                    MIN(NULLIF(ad.doctor_phone, '')),
+                    ''
+                ) AS doctor_phone,
+                MAX(ma.sent_flag) AS sent_flag,
+                MAX(ma.viewed_flag) AS viewed_flag,
+                MAX(ma.video_flag) AS video_flag,
+                MAX(ma.pdf_flag) AS pdf_flag
+            FROM matched_activity ma
+            LEFT JOIN assigned_doctor_rows ad
+              ON ad.field_rep_id = ma.field_rep_id
+             AND (
+                ad.doctor_identity_key = ma.doctor_key
+                OR (
+                    COALESCE(NULLIF(ad.doctor_phone, ''), '') <> ''
+                    AND ad.doctor_phone = ma.doctor_key
+                )
+             )
+            GROUP BY ma.field_rep_id, ma.doctor_key
         ),
         activity_for_rep AS (
             SELECT
