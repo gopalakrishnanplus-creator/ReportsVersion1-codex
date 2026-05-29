@@ -116,7 +116,7 @@
   function setFieldRepPanel(open) {
     if (!fieldRepTile || !fieldRepPanel) return;
     fieldRepPanel.classList.toggle('hidden', !open);
-    document.body.classList.toggle('modal-open', open);
+    document.body.classList.toggle('modal-open', currentModalOpen());
     fieldRepTile.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (fieldRepToggle) {
       fieldRepToggle.textContent = open ? 'Hide insights' : 'View all reps';
@@ -198,7 +198,7 @@
   function setOldCollateralsPanel(open) {
     if (!oldCollateralsPanel) return;
     oldCollateralsPanel.classList.toggle('hidden', !open);
-    document.body.classList.toggle('modal-open', open || (fieldRepPanel && !fieldRepPanel.classList.contains('hidden')));
+    document.body.classList.toggle('modal-open', currentModalOpen());
     if (open) {
       oldCollateralsClose?.focus();
     }
@@ -226,6 +226,92 @@
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && oldCollateralsPanel && !oldCollateralsPanel.classList.contains('hidden')) {
       setOldCollateralsPanel(false);
+    }
+  });
+
+  const doctorRosterPanel = document.getElementById('doctor_roster_panel');
+  const doctorRosterClose = document.getElementById('doctor-roster-close');
+  const doctorRosterTitle = document.getElementById('doctor-roster-title');
+  const doctorRosterSubtitle = document.getElementById('doctor-roster-subtitle');
+  const doctorRosterBody = document.getElementById('doctor-roster-body');
+
+  function escapeHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function currentModalOpen() {
+    return Boolean(
+      (fieldRepPanel && !fieldRepPanel.classList.contains('hidden'))
+      || (oldCollateralsPanel && !oldCollateralsPanel.classList.contains('hidden'))
+      || (doctorRosterPanel && !doctorRosterPanel.classList.contains('hidden')),
+    );
+  }
+
+  function setDoctorRosterPanel(open) {
+    if (!doctorRosterPanel) return;
+    doctorRosterPanel.classList.toggle('hidden', !open);
+    document.body.classList.toggle('modal-open', currentModalOpen());
+    if (open) {
+      doctorRosterClose?.focus();
+    }
+  }
+
+  function doctorRowsHtml(doctors) {
+    if (!Array.isArray(doctors) || !doctors.length) {
+      return '<tr class="empty-roster-row"><td colspan="2">No doctor names are mapped to this Field Representative in the campaign roster.</td></tr>';
+    }
+    return doctors.map((doctor) => `
+      <tr>
+        <td>${escapeHtml(doctor.name || 'Unknown Doctor')}</td>
+        <td>${escapeHtml(doctor.phone || '-')}</td>
+      </tr>
+    `).join('');
+  }
+
+  document.querySelectorAll('.doctor-count-btn').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      let doctors = [];
+      try {
+        doctors = JSON.parse(button.dataset.doctors || '[]');
+      } catch (error) {
+        doctors = [];
+      }
+      const repName = button.dataset.repName || button.dataset.repId || 'Field Representative';
+      if (doctorRosterTitle) {
+        doctorRosterTitle.textContent = `Assigned Doctors - ${repName}`;
+      }
+      if (doctorRosterSubtitle) {
+        doctorRosterSubtitle.textContent = `${doctors.length} unique doctor${doctors.length === 1 ? '' : 's'} mapped in the campaign roster.`;
+      }
+      if (doctorRosterBody) {
+        doctorRosterBody.innerHTML = doctorRowsHtml(doctors);
+      }
+      setDoctorRosterPanel(true);
+    });
+  });
+
+  if (doctorRosterClose) {
+    doctorRosterClose.addEventListener('click', (event) => {
+      event.stopPropagation();
+      setDoctorRosterPanel(false);
+    });
+  }
+  if (doctorRosterPanel) {
+    doctorRosterPanel.addEventListener('click', (event) => {
+      if (event.target === doctorRosterPanel) {
+        setDoctorRosterPanel(false);
+      }
+    });
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && doctorRosterPanel && !doctorRosterPanel.classList.contains('hidden')) {
+      setDoctorRosterPanel(false);
     }
   });
 

@@ -58,12 +58,28 @@ def _safe_pct(num: float, den: float) -> float:
     return (num / den) * 100.0
 
 
+def _capped_pct(num: float, den: float) -> float:
+    return min(_safe_pct(num, den), 100.0)
+
+
+def _weekly_doctor_base(total_doctors: float) -> float:
+    return total_doctors / 4.0 if total_doctors else 0.0
+
+
 def _health_color(score: float) -> str:
-    if score < 40:
+    if score <= 40:
         return "red"
     if score < 60:
         return "yellow"
     return "green"
+
+
+def _health_label(score: float) -> str:
+    if score <= 40:
+        return "Low"
+    if score < 60:
+        return "Medium"
+    return "Good"
 
 
 def _clean_display_text(value: Any) -> str | None:
@@ -76,10 +92,40 @@ def _clean_display_text(value: Any) -> str | None:
 
 
 def _engagement_health_score(reached: float, opened: float, consumed: float, total_doctors: float) -> float:
-    reached_component = min(_safe_pct(reached, total_doctors), 100.0) / 100.0
-    opened_component = min(_safe_pct(opened, total_doctors), 100.0) / 100.0
-    consumed_component = min(_safe_pct(consumed, total_doctors), 100.0) / 100.0
-    return ((reached_component * 0.5) + (opened_component * 0.25) + (consumed_component * 0.25)) * 100.0
+    reached_pct = _capped_pct(reached, total_doctors)
+    opened_pct = _capped_pct(opened, reached)
+    consumed_pct = _capped_pct(consumed, opened)
+    return (reached_pct + opened_pct + consumed_pct) / 3.0
+
+
+def _weekly_engagement_health_score(reached: float, opened: float, consumed: float, total_doctors: float) -> float:
+    reached_pct = _capped_pct(reached, _weekly_doctor_base(total_doctors))
+    opened_pct = _capped_pct(opened, reached)
+    consumed_pct = _capped_pct(consumed, opened)
+    return (reached_pct + opened_pct + consumed_pct) / 3.0
+
+
+def _state_weekly_health_score(reached: float, opened: float, consumed: float, total_state: float) -> float:
+    reached_pct = _capped_pct(reached, _weekly_doctor_base(total_state))
+    opened_pct = _capped_pct(opened, reached)
+    consumed_pct = _capped_pct(consumed, opened)
+    return (reached_pct + opened_pct + consumed_pct) / 3.0
+
+
+def _apply_weekly_v2_fields(row: dict[str, Any], total_doctors: float | None = None) -> dict[str, Any]:
+    total = _to_float(total_doctors if total_doctors is not None else row.get("total_doctors_in_campaign"))
+    reached = _to_float(row.get("doctors_reached_unique"))
+    opened = _to_float(row.get("doctors_opened_unique"))
+    consumed = _to_float(row.get("doctors_consumed_unique"))
+    row["total_doctors_in_campaign"] = total
+    row["weekly_doctor_base"] = _weekly_doctor_base(total)
+    row["weekly_reached_pct"] = _capped_pct(reached, row["weekly_doctor_base"]) / 100.0
+    row["weekly_opened_pct"] = _capped_pct(opened, reached) / 100.0
+    row["weekly_consumption_pct"] = _capped_pct(consumed, opened) / 100.0
+    row["weekly_health_score"] = _weekly_engagement_health_score(reached, opened, consumed, total)
+    row["health_color"] = _health_color(row["weekly_health_score"]).title()
+    row["insufficient_data_flag"] = 1 if total <= 0 else 0
+    return row
 
 
 def _first_display_word(value: Any) -> str:
@@ -136,14 +182,12 @@ def _state_sort_key(item: dict[str, Any]) -> tuple[int, str]:
     return (1 if _is_unknown_state(state) else 0, str(state or "").strip().lower())
 
 
-def _state_attention_card_rows(state_attention: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
-    visible = list(state_attention[:limit])
-    unknown_row = next((row for row in state_attention if _is_unknown_state(row.get("state"))), None)
-    if unknown_row and unknown_row not in visible:
-        if len(visible) >= limit:
-            visible = visible[: max(limit - 1, 0)]
-        visible.append(unknown_row)
-    return visible
+def _state_attention_rank_key(item: dict[str, Any]) -> tuple[float, int, str]:
+    return (_to_float(item.get("health_score")), *_state_sort_key(item))
+
+
+def _state_attention_card_rows(state_attention: list[dict[str, Any]], limit: int = 3) -> list[dict[str, Any]]:
+    return list(state_attention[:limit])
 
 
 def _aggregate_weekly_metric_rows(rows: list[dict[str, Any]], total_doctors: float) -> dict[str, Any]:
@@ -151,7 +195,7 @@ def _aggregate_weekly_metric_rows(rows: list[dict[str, Any]], total_doctors: flo
         return {}
     week_starts = [row.get("week_start_date") for row in rows if row.get("week_start_date")]
     week_ends = [row.get("week_end_date") for row in rows if row.get("week_end_date")]
-    return {
+    aggregate = {
         "brand_campaign_id": rows[0].get("brand_campaign_id"),
         "week_index": 0,
         "week_start_date": min(week_starts) if week_starts else None,
@@ -163,6 +207,7 @@ def _aggregate_weekly_metric_rows(rows: list[dict[str, Any]], total_doctors: flo
         "doctors_consumed_unique": sum(_to_float(row.get("doctors_consumed_unique")) for row in rows),
         "total_doctors_in_campaign": total_doctors or _to_float(rows[-1].get("total_doctors_in_campaign")),
     }
+    return _apply_weekly_v2_fields(aggregate)
 
 
 def _placeholders(values: list[Any]) -> str:
@@ -353,7 +398,7 @@ def _field_rep_alias_sql_parts() -> tuple[str, str, list[str]]:
 
 def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
     lookup_key = _normalize_lookup_key(selected_campaign)
-    return _fetch_dicts(
+    rows = _fetch_dicts(
         f"""
         WITH campaign_row AS (
             SELECT
@@ -433,6 +478,7 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
         """,
         [lookup_key, lookup_key, lookup_key, lookup_key, lookup_key],
     )
+    return rows
 
 
 def _campaign_display_name(selected_campaign: str, brand_campaign_variants: list[str]) -> str | None:
@@ -567,7 +613,7 @@ def _weekly_rows_for_current_collateral(
         params.extend(current_collateral_ids)
 
     params.extend([schedule_start_date, schedule_end_date, schedule_start_date, schedule_start_date, selected_campaign])
-    return _fetch_dicts(
+    rows = _fetch_dicts(
         f"""
         WITH source_events AS (
             SELECT
@@ -660,19 +706,113 @@ def _weekly_rows_for_current_collateral(
             pdf_download_unique,
             doctors_consumed_unique,
             %s::numeric AS total_doctors_in_campaign,
-            (%s::numeric / GREATEST((SELECT COUNT(*) FROM weeks), 1)::numeric) AS weekly_doctor_base,
-            LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF(%s::numeric,0) END, 1.0) AS weekly_reached_pct,
-            CASE WHEN doctors_reached_unique=0 THEN 0 ELSE doctors_opened_unique::numeric / doctors_reached_unique END AS weekly_opened_pct,
-            CASE WHEN doctors_opened_unique=0 THEN 0 ELSE doctors_consumed_unique::numeric / doctors_opened_unique END AS weekly_consumption_pct,
+            (%s::numeric / 4.0) AS weekly_doctor_base,
+            LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF((%s::numeric / 4.0),0) END, 1.0) AS weekly_reached_pct,
+            CASE WHEN doctors_reached_unique=0 THEN 0 ELSE LEAST(doctors_opened_unique::numeric / doctors_reached_unique, 1.0) END AS weekly_opened_pct,
+            CASE WHEN doctors_opened_unique=0 THEN 0 ELSE LEAST(doctors_consumed_unique::numeric / doctors_opened_unique, 1.0) END AS weekly_consumption_pct,
             (
-                LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF(%s::numeric,0) END, 1.0) * 0.5
-                + LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_opened_unique::numeric / NULLIF(%s::numeric,0) END, 1.0) * 0.25
-                + LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_consumed_unique::numeric / NULLIF(%s::numeric,0) END, 1.0) * 0.25
-            ) * 100 AS weekly_health_score
+                LEAST(CASE WHEN %s::numeric=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF((%s::numeric / 4.0),0) END, 1.0)
+                + CASE WHEN doctors_reached_unique=0 THEN 0 ELSE LEAST(doctors_opened_unique::numeric / doctors_reached_unique, 1.0) END
+                + CASE WHEN doctors_opened_unique=0 THEN 0 ELSE LEAST(doctors_consumed_unique::numeric / doctors_opened_unique, 1.0) END
+            ) / 3.0 * 100 AS weekly_health_score
         FROM agg
         ORDER BY week_index
         """,
-        [*params, *([total_doctors] * 10)],
+        [*params, *([total_doctors] * 6)],
+    )
+    for row in rows:
+        _apply_weekly_v2_fields(row, total_doctors)
+    return rows
+
+
+def _current_collateral_period_metrics(
+    selected_campaign: str,
+    brand_campaign_variants: list[str],
+    current_collateral_ids: list[str],
+    period_start: Any,
+    period_end: Any,
+) -> dict[str, Any]:
+    if not period_start or not period_end:
+        return {}
+    brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
+    collateral_filter = ""
+    params: list[Any] = [period_start, period_end, *brand_keys]
+    if current_collateral_ids:
+        collateral_filter = f"AND a.collateral_id::text IN ({_placeholders(current_collateral_ids)})"
+        params.extend(current_collateral_ids)
+    rows = _fetch_dicts(
+        f"""
+        WITH period AS (
+            SELECT %s::date AS period_start, %s::date AS period_end
+        ),
+        source_events AS (
+            SELECT
+                COALESCE(NULLIF(a.doctor_identity_key,''), a.brand_campaign_id || ':' || a.collateral_id) AS doctor_key,
+                CASE WHEN a.reached_first_ts IS NULL OR btrim(a.reached_first_ts) = '' OR lower(btrim(a.reached_first_ts)) = 'null' THEN NULL ELSE a.reached_first_ts::date END AS reached_first_date,
+                CASE WHEN a.opened_first_ts IS NULL OR btrim(a.opened_first_ts) = '' OR lower(btrim(a.opened_first_ts)) = 'null' THEN NULL ELSE a.opened_first_ts::date END AS opened_first_date,
+                CASE WHEN a.video_gt_50_first_ts IS NULL OR btrim(a.video_gt_50_first_ts) = '' OR lower(btrim(a.video_gt_50_first_ts)) = 'null' THEN NULL ELSE a.video_gt_50_first_ts::date END AS video_gt_50_first_date,
+                CASE WHEN a.pdf_download_first_ts IS NULL OR btrim(a.pdf_download_first_ts) = '' OR lower(btrim(a.pdf_download_first_ts)) = 'null' THEN NULL ELSE a.pdf_download_first_ts::date END AS pdf_download_first_date
+            FROM silver.doctor_action_first_seen a
+            WHERE {_normalized_sql('a.brand_campaign_id')} IN ({brand_placeholders})
+              {collateral_filter}
+        )
+        SELECT
+            COUNT(DISTINCT doctor_key) FILTER (
+                WHERE reached_first_date BETWEEN period_start AND period_end
+                   OR opened_first_date BETWEEN period_start AND period_end
+                   OR video_gt_50_first_date BETWEEN period_start AND period_end
+                   OR pdf_download_first_date BETWEEN period_start AND period_end
+            ) AS doctors_reached_unique,
+            COUNT(DISTINCT doctor_key) FILTER (WHERE opened_first_date BETWEEN period_start AND period_end) AS doctors_opened_unique,
+            COUNT(DISTINCT doctor_key) FILTER (WHERE video_gt_50_first_date BETWEEN period_start AND period_end) AS video_viewed_50_unique,
+            COUNT(DISTINCT doctor_key) FILTER (WHERE pdf_download_first_date BETWEEN period_start AND period_end) AS pdf_download_unique,
+            COUNT(DISTINCT doctor_key) FILTER (
+                WHERE video_gt_50_first_date BETWEEN period_start AND period_end
+                   OR pdf_download_first_date BETWEEN period_start AND period_end
+            ) AS doctors_consumed_unique
+        FROM source_events
+        CROSS JOIN period
+        """,
+        params,
+    )
+    return rows[0] if rows else {}
+
+
+def _collateral_health_rows(
+    selected_campaign: str,
+    brand_campaign_variants: list[str],
+) -> list[dict[str, Any]]:
+    brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
+    return _fetch_dicts(
+        f"""
+        WITH source_events AS (
+            SELECT
+                a.collateral_id::text AS collateral_id,
+                COALESCE(NULLIF(a.doctor_identity_key,''), a.brand_campaign_id || ':' || a.collateral_id) AS doctor_key,
+                NULLIF(a.reached_first_ts, '') AS reached_first_ts,
+                NULLIF(a.opened_first_ts, '') AS opened_first_ts,
+                NULLIF(a.video_gt_50_first_ts, '') AS video_gt_50_first_ts,
+                NULLIF(a.pdf_download_first_ts, '') AS pdf_download_first_ts
+            FROM silver.doctor_action_first_seen a
+            WHERE {_normalized_sql('a.brand_campaign_id')} IN ({brand_placeholders})
+        )
+        SELECT
+            collateral_id,
+            COUNT(DISTINCT doctor_key) FILTER (
+                WHERE reached_first_ts IS NOT NULL
+                   OR opened_first_ts IS NOT NULL
+                   OR video_gt_50_first_ts IS NOT NULL
+                   OR pdf_download_first_ts IS NOT NULL
+            ) AS reached,
+            COUNT(DISTINCT doctor_key) FILTER (WHERE opened_first_ts IS NOT NULL) AS opened,
+            COUNT(DISTINCT doctor_key) FILTER (
+                WHERE video_gt_50_first_ts IS NOT NULL OR pdf_download_first_ts IS NOT NULL
+            ) AS consumed
+        FROM source_events
+        GROUP BY collateral_id
+        ORDER BY collateral_id
+        """,
+        brand_keys,
     )
 
 
@@ -814,10 +954,12 @@ def _field_rep_insight_rows(
             WHERE external_rep_key <> ''
             {alias_key_unions}
         ),
-        assigned_doctors AS (
+        assigned_doctor_matches AS (
             SELECT
                 ark.field_rep_id,
-                COUNT(DISTINCT d.doctor_identity_key) AS total_doctors_assigned
+                d.doctor_identity_key,
+                COALESCE(NULLIF(btrim(d.name), ''), 'Unknown Doctor') AS doctor_name,
+                NULLIF(btrim(COALESCE(d.phone, d.doctor_phone_normalized)), '') AS doctor_phone
             FROM assigned_rep_keys ark
             LEFT JOIN silver.dim_doctor d
               ON (
@@ -825,7 +967,36 @@ def _field_rep_insight_rows(
                   OR {_normalized_sql('d.field_rep_id_resolved')} = ark.rep_key
               )
             WHERE ark.key_type IN ('local_user_id', 'legacy_rep_id', 'campaign_fieldrep_id', 'brand_field_id')
-            GROUP BY ark.field_rep_id
+              AND COALESCE(NULLIF(d.doctor_identity_key, ''), '') <> ''
+        ),
+        assigned_doctor_rows AS (
+            SELECT
+                field_rep_id,
+                doctor_identity_key,
+                MIN(doctor_name) AS doctor_name,
+                MIN(doctor_phone) AS doctor_phone
+            FROM assigned_doctor_matches
+            GROUP BY
+                field_rep_id,
+                doctor_identity_key
+        ),
+        assigned_doctors AS (
+            SELECT
+                field_rep_id,
+                COUNT(DISTINCT doctor_identity_key) AS total_doctors_assigned,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_identity_key
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_identity_key
+                    ),
+                    '[]'::jsonb
+                ) AS assigned_doctors_json
+            FROM assigned_doctor_rows
+            GROUP BY field_rep_id
         ),
         share_rep_id_email_map AS (
             SELECT DISTINCT ON ({_normalized_sql('s.field_rep_id::text')})
@@ -957,6 +1128,7 @@ def _field_rep_insight_rows(
             ar.field_rep_name,
             ar.state_normalized,
             COALESCE(ad.total_doctors_assigned, 0)::int AS total_doctors_assigned,
+            COALESCE(ad.assigned_doctors_json, '[]'::jsonb)::text AS assigned_doctors_json,
             COALESCE(ab.doctors_sent, 0)::int AS doctors_sent,
             COALESCE(ab.doctors_viewed, 0)::int AS doctors_viewed,
             COALESCE(ab.doctors_video_played, 0)::int AS doctors_video_played,
@@ -1196,7 +1368,9 @@ def _state_attention_source_rows(
                 se.video_gt_50_first_date,
                 se.pdf_download_first_date
               ) AS effective_reached_date,
-              se.opened_first_date
+              se.opened_first_date,
+              se.video_gt_50_first_date,
+              se.pdf_download_first_date
             FROM source_events se
             LEFT JOIN roster_base rb
               ON rb.doctor_key = se.doctor_key
@@ -1259,7 +1433,17 @@ def _state_attention_source_rows(
               COUNT(DISTINCT doctor_key) FILTER (
                 WHERE opened_first_date IS NOT NULL
                   AND opened_first_date BETWEEN %s::date AND %s::date
-              ) AS opened
+              ) AS opened,
+              COUNT(DISTINCT doctor_key) FILTER (
+                WHERE (
+                    video_gt_50_first_date IS NOT NULL
+                    AND video_gt_50_first_date BETWEEN %s::date AND %s::date
+                )
+                OR (
+                    pdf_download_first_date IS NOT NULL
+                    AND pdf_download_first_date BETWEEN %s::date AND %s::date
+                )
+              ) AS consumed
             FROM event_enriched
             GROUP BY 1
         ),
@@ -1274,6 +1458,7 @@ def _state_attention_source_rows(
           su.state_normalized,
           COALESCE(ea.reached, 0) AS reached,
           COALESCE(ea.opened, 0) AS opened,
+          COALESCE(ea.consumed, 0) AS consumed,
           COALESCE(da.total_state, COALESCE(ea.reached, 0), 0) AS total_state
         FROM state_universe su
         LEFT JOIN event_agg ea ON ea.state_normalized = su.state_normalized
@@ -1281,9 +1466,9 @@ def _state_attention_source_rows(
         ORDER BY
           CASE
             WHEN COALESCE(ea.reached,0)=0 OR COALESCE(da.total_state,0)=0 THEN 0
-            ELSE ((LEAST((COALESCE(ea.reached,0) / NULLIF(COALESCE(da.total_state,0),0)),1.0)
+            ELSE ((LEAST((COALESCE(ea.reached,0) / NULLIF((COALESCE(da.total_state,0) / 4.0),0)),1.0)
               + (COALESCE(ea.opened,0) / NULLIF(COALESCE(ea.reached,0),0))
-              + (COALESCE(ea.opened,0) / NULLIF(COALESCE(ea.opened,0),0))) / 3.0) * 100
+              + (COALESCE(ea.consumed,0) / NULLIF(COALESCE(ea.opened,0),0))) / 3.0) * 100
           END ASC,
           su.state_normalized ASC
         """,
@@ -1301,6 +1486,10 @@ def _state_attention_source_rows(
             *brand_keys,
             *current_collateral_ids,
             *bridge_params,
+            latest_week.get("week_start_date"),
+            latest_week.get("week_end_date"),
+            latest_week.get("week_start_date"),
+            latest_week.get("week_end_date"),
             latest_week.get("week_start_date"),
             latest_week.get("week_end_date"),
             latest_week.get("week_start_date"),
@@ -1873,10 +2062,12 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         "campaign_wow": 0.0,
         "campaign_benchmark_label": "Insufficient Data",
         "campaign_color": "red",
+        "campaign_score_available": False,
         "weekly_health": 0.0,
         "weekly_wow": 0.0,
         "weekly_benchmark_label": "Insufficient Data",
         "weekly_color": "red",
+        "weekly_score_available": False,
         "kpi_reached": 0,
         "kpi_opened": 0,
         "kpi_video": 0,
@@ -1962,9 +2153,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             fallback_weekly_rows = _fetch_dicts(f"SELECT * FROM {selected_schema}.kpi_weekly_summary ORDER BY week_index")
             if fallback_weekly_rows:
                 all_weekly_rows = fallback_weekly_rows
-        if reporting_total_doctors:
-            for row in all_weekly_rows:
-                row["total_doctors_in_campaign"] = reporting_total_doctors
+        for row in all_weekly_rows:
+            _apply_weekly_v2_fields(row, reporting_total_doctors or _to_float(row.get("total_doctors_in_campaign")))
         data_weekly_rows = [r for r in all_weekly_rows if _row_has_week_data(r)]
         metric_weekly_rows = data_weekly_rows or all_weekly_rows
 
@@ -2030,6 +2220,20 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             latest_data_week = (data_weekly_rows or all_weekly_rows or metric_rows)[-1]
             total_doctors = _to_float(latest_week.get("total_doctors_in_campaign"))
 
+            try:
+                period_metrics = _current_collateral_period_metrics(
+                    requested_campaign,
+                    brand_campaign_variants,
+                    current_collateral_ids,
+                    latest_week.get("week_start_date"),
+                    latest_week.get("week_end_date"),
+                )
+            except (ProgrammingError, OperationalError):
+                period_metrics = {}
+            if period_metrics:
+                latest_week = {**latest_week, **period_metrics}
+                _apply_weekly_v2_fields(latest_week, total_doctors)
+
             latest_reached = _to_float(latest_week.get("doctors_reached_unique"))
             latest_opened = _to_float(latest_week.get("doctors_opened_unique"))
             latest_video = _to_float(latest_week.get("video_viewed_50_unique"))
@@ -2052,11 +2256,25 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 prev_week = prev_candidates[-1] if prev_candidates else None
 
             health_rows = data_weekly_rows or metric_rows
-            campaign_reached = sum(_to_float(r.get("doctors_reached_unique")) for r in health_rows)
-            campaign_opened = sum(_to_float(r.get("doctors_opened_unique")) for r in health_rows)
-            campaign_consumed = sum(_to_float(r.get("doctors_consumed_unique")) for r in health_rows)
-            campaign_health = _engagement_health_score(campaign_reached, campaign_opened, campaign_consumed, total_doctors)
-            weekly_health = _engagement_health_score(latest_reached, latest_opened, latest_consumed, total_doctors)
+            try:
+                collateral_health_source = _collateral_health_rows(requested_campaign, brand_campaign_variants)
+            except (ProgrammingError, OperationalError):
+                collateral_health_source = []
+            collateral_scores = [
+                _engagement_health_score(
+                    _to_float(row.get("reached")),
+                    _to_float(row.get("opened")),
+                    _to_float(row.get("consumed")),
+                    total_doctors,
+                )
+                for row in collateral_health_source
+            ]
+            campaign_health = (
+                sum(collateral_scores) / len(collateral_scores)
+                if collateral_scores
+                else _engagement_health_score(latest_reached, latest_opened, latest_consumed, total_doctors)
+            )
+            weekly_health = _weekly_engagement_health_score(latest_reached, latest_opened, latest_consumed, total_doctors)
 
             previous_health_rows = [
                 r for r in health_rows
@@ -2071,7 +2289,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             wow_campaign = campaign_health - previous_campaign_health
             wow_weekly = (
                 weekly_health
-                - _engagement_health_score(
+                - _weekly_engagement_health_score(
                     _to_float(prev_week.get("doctors_reached_unique")),
                     _to_float(prev_week.get("doctors_opened_unique")),
                     _to_float(prev_week.get("doctors_consumed_unique")),
@@ -2097,29 +2315,34 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             state_buckets: dict[str, dict[str, float]] = {}
             for row in state_rows:
                 state = _display_state_name(row.get("state_normalized"))
-                bucket = state_buckets.setdefault(state, {"reached": 0.0, "opened": 0.0, "total_state": 0.0})
+                bucket = state_buckets.setdefault(state, {"reached": 0.0, "opened": 0.0, "consumed": 0.0, "total_state": 0.0})
                 bucket["reached"] += _to_float(row.get("reached"))
                 bucket["opened"] += _to_float(row.get("opened"))
+                bucket["consumed"] += _to_float(row.get("consumed"))
                 bucket["total_state"] += _to_float(row.get("total_state"))
 
             state_attention = []
             for state, counts in state_buckets.items():
                 reached = counts["reached"]
                 opened = counts["opened"]
+                consumed = counts["consumed"]
                 total_state = counts["total_state"]
-                reached_pct = min(_safe_pct(reached, total_state), 100.0)
-                open_pct = _safe_pct(opened, reached)
-                state_health = ((reached_pct / 100.0) + (open_pct / 100.0) + (open_pct / 100.0)) / 3.0 * 100
-                label = "Low" if state_health < 40 else "Medium" if state_health < 60 else "Good"
+                reached_pct = _capped_pct(reached, _weekly_doctor_base(total_state))
+                open_pct = _capped_pct(opened, reached)
+                consumed_pct = _capped_pct(consumed, opened)
+                state_health = _state_weekly_health_score(reached, opened, consumed, total_state)
+                label = _health_label(state_health)
                 state_attention.append(
                     {
                         "state": state,
                         "open_pct": round(open_pct, 1),
                         "reached_pct": round(reached_pct, 1),
+                        "consumed_pct": round(consumed_pct, 1),
+                        "health_score": round(state_health, 1),
                         "label": label,
                     }
                 )
-            state_attention.sort(key=_state_sort_key)
+            state_attention.sort(key=_state_attention_rank_key)
             state_attention_card = _state_attention_card_rows(state_attention)
 
             weakest = min(
@@ -2161,7 +2384,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
 
             weekly_best = max(
                 health_rows,
-                key=lambda r: _engagement_health_score(
+                key=lambda r: _weekly_engagement_health_score(
                     _to_float(r.get("doctors_reached_unique")),
                     _to_float(r.get("doctors_opened_unique")),
                     _to_float(r.get("doctors_consumed_unique")),
@@ -2223,7 +2446,11 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                                 COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.reached_first_ts,'') IS NOT NULL) AS reached,
                                 COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.opened_first_ts,'') IS NOT NULL) AS opened,
                                 COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.video_gt_50_first_ts,'') IS NOT NULL) AS video,
-                                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.pdf_download_first_ts,'') IS NOT NULL) AS pdf
+                                COUNT(DISTINCT a.doctor_identity_key) FILTER (WHERE NULLIF(a.pdf_download_first_ts,'') IS NOT NULL) AS pdf,
+                                COUNT(DISTINCT a.doctor_identity_key) FILTER (
+                                    WHERE NULLIF(a.video_gt_50_first_ts,'') IS NOT NULL
+                                       OR NULLIF(a.pdf_download_first_ts,'') IS NOT NULL
+                                ) AS consumed
                             FROM silver.doctor_action_first_seen a
                             JOIN recent_campaigns r ON r.brand_campaign_id = a.brand_campaign_id
                             GROUP BY a.brand_campaign_id
@@ -2240,10 +2467,10 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                                 CASE WHEN x.opened=0 THEN 0 ELSE (x.video::numeric / x.opened) * 100 END AS video_pct,
                                 CASE WHEN x.opened=0 THEN 0 ELSE (x.pdf::numeric / x.opened) * 100 END AS pdf_pct,
                                 (
-                                  CASE WHEN d.total_doctors=0 THEN 0 ELSE LEAST(x.reached::numeric / d.total_doctors, 1.0) END * 0.5
-                                  + CASE WHEN d.total_doctors=0 THEN 0 ELSE LEAST(x.opened::numeric / d.total_doctors, 1.0) END * 0.25
-                                  + CASE WHEN d.total_doctors=0 THEN 0 ELSE LEAST((GREATEST(x.video, x.pdf))::numeric / d.total_doctors, 1.0) END * 0.25
-                                ) * 100 AS health_score
+                                  CASE WHEN d.total_doctors=0 THEN 0 ELSE LEAST(x.reached::numeric / d.total_doctors, 1.0) END
+                                  + CASE WHEN x.reached=0 THEN 0 ELSE LEAST(x.opened::numeric / x.reached, 1.0) END
+                                  + CASE WHEN x.opened=0 THEN 0 ELSE LEAST(x.consumed::numeric / x.opened, 1.0) END
+                                ) / 3.0 * 100 AS health_score
                             FROM campaign_actions x
                             JOIN campaign_doctor_base d ON d.brand_campaign_id = x.brand_campaign_id
                         )
@@ -2279,10 +2506,12 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 "campaign_wow": round(wow_campaign, 1),
                 "campaign_benchmark_label": "Above Average" if campaign_health >= benchmark_health else "Below Average",
                 "campaign_color": _health_color(campaign_health),
+                "campaign_score_available": total_doctors > 0,
                 "weekly_health": round(weekly_health, 1),
                 "weekly_wow": round(wow_weekly, 1),
                 "weekly_benchmark_label": "Average" if 40 <= weekly_health < 60 else ("Good" if weekly_health >= 60 else "Low"),
                 "weekly_color": _health_color(weekly_health),
+                "weekly_score_available": total_doctors > 0,
                 "kpi_reached": _to_int(latest_reached),
                 "kpi_opened": _to_int(latest_opened),
                 "kpi_video": _to_int(latest_video),
@@ -2305,10 +2534,22 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
 
     trend_source_rows = weekly_rows if week_filter else data_weekly_rows
     trend_labels = [f"Week {r.get('week_index')}" for r in trend_source_rows]
-    reached_pct_series = [_safe_pct(_to_float(r.get("doctors_reached_unique")), _to_float(r.get("total_doctors_in_campaign"))) for r in trend_source_rows]
-    opened_pct_series = [_safe_pct(_to_float(r.get("doctors_opened_unique")), _to_float(r.get("total_doctors_in_campaign"))) for r in trend_source_rows]
-    pdf_pct_series = [_safe_pct(_to_float(r.get("pdf_download_unique")), _to_float(r.get("total_doctors_in_campaign"))) for r in trend_source_rows]
-    video_pct_series = [_safe_pct(_to_float(r.get("video_viewed_50_unique")), _to_float(r.get("total_doctors_in_campaign"))) for r in trend_source_rows]
+    reached_pct_series = [
+        _capped_pct(_to_float(r.get("doctors_reached_unique")), _weekly_doctor_base(_to_float(r.get("total_doctors_in_campaign"))))
+        for r in trend_source_rows
+    ]
+    opened_pct_series = [
+        _capped_pct(_to_float(r.get("doctors_opened_unique")), _to_float(r.get("doctors_reached_unique")))
+        for r in trend_source_rows
+    ]
+    pdf_pct_series = [
+        _capped_pct(_to_float(r.get("pdf_download_unique")), _to_float(r.get("doctors_opened_unique")))
+        for r in trend_source_rows
+    ]
+    video_pct_series = [
+        _capped_pct(_to_float(r.get("video_viewed_50_unique")), _to_float(r.get("doctors_opened_unique")))
+        for r in trend_source_rows
+    ]
 
     week_options = [
         {

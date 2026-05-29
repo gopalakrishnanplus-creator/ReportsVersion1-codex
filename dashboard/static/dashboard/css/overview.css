@@ -35,6 +35,7 @@ select{min-width:360px;padding:8px;border:1px solid var(--line);border-radius:6p
 .score-card h3{margin:0 0 6px;font-size:16px}
 .score-line{display:flex;gap:6px;align-items:flex-end}
 .score{font-size:60px;font-weight:800;line-height:1}
+.score-unavailable{font-size:22px;font-weight:800;line-height:1.2;color:#4b5563}
 .wow{font-weight:700;margin:8px 0 4px}
 .wow.up{color:var(--green)}
 .wow.down{color:var(--red)}
@@ -60,6 +61,12 @@ select{min-width:360px;padding:8px;border:1px solid var(--line);border-radius:6p
 .field-rep-dialog{width:min(1120px,calc(100vw - 32px));max-height:min(760px,calc(100vh - 48px));display:grid;gap:14px;overflow:hidden}
 .old-collateral-dialog{width:min(760px,calc(100vw - 32px))}
 .field-rep-table-wrap{max-height:calc(100vh - 190px);overflow:auto}
+.doctor-roster-dialog{width:min(820px,calc(100vw - 32px))}
+.doctor-roster-table-wrap{max-height:calc(100vh - 210px);overflow:auto}
+.doctor-count-btn{display:inline-flex;align-items:center;justify-content:center;min-width:48px;border:1px solid #b9ccec;border-radius:8px;background:#f8fbff;color:#1f3e74;padding:6px 10px;font:inherit;font-weight:800;cursor:pointer}
+.doctor-count-btn:hover,.doctor-count-btn:focus{background:#edf5ff;border-color:#7aa1de;outline:none}
+.doctor-count-btn:focus{box-shadow:0 0 0 3px rgba(50,121,219,.18)}
+.empty-roster-row td{color:var(--muted);font-weight:600}
 body.modal-open{overflow:hidden}
 .panel-title-row{display:flex;justify-content:space-between;align-items:center}
 .panel-title-row h3{margin:0}
@@ -131,7 +138,7 @@ body.modal-open{overflow:hidden}
 .detail-title h1{font-size:34px;margin:4px 0}
 .detail-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 .state-full-list{display:grid;gap:10px}
-.state-full-row{display:grid;grid-template-columns:minmax(180px,1fr) repeat(3,minmax(120px,.6fr));gap:12px;align-items:center;padding:14px;border:1px solid var(--line);border-radius:10px;background:#fbfcff}
+.state-full-row{display:grid;grid-template-columns:minmax(180px,1fr) repeat(5,minmax(110px,.6fr));gap:12px;align-items:center;padding:14px;border:1px solid var(--line);border-radius:10px;background:#fbfcff}
 .state-full-row strong{font-size:16px}
 .metric-label{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;font-weight:800}
 .metric-value{display:block;margin-top:3px;font-size:17px;font-weight:800}
