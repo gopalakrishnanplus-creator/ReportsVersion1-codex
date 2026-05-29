@@ -234,6 +234,7 @@
   const doctorRosterTitle = document.getElementById('doctor-roster-title');
   const doctorRosterSubtitle = document.getElementById('doctor-roster-subtitle');
   const doctorRosterBody = document.getElementById('doctor-roster-body');
+  const doctorRosterNameHeader = document.getElementById('doctor-roster-name-header');
 
   function escapeHtml(value) {
     return String(value || '')
@@ -261,14 +262,19 @@
     }
   }
 
-  function doctorRowsHtml(doctors) {
+  function hasDisplayName(doctor) {
+    const name = String(doctor?.name || '').trim();
+    return Boolean(name && !['unknown doctor', 'unknown', 'null', 'none'].includes(name.toLowerCase()));
+  }
+
+  function doctorRowsHtml(doctors, showNames) {
     if (!Array.isArray(doctors) || !doctors.length) {
       return '<tr class="empty-roster-row"><td colspan="3">No doctor names are available for this count.</td></tr>';
     }
     return doctors.map((doctor, index) => `
       <tr>
         <td>${index + 1}</td>
-        <td>${escapeHtml(doctor.name || 'Unknown Doctor')}</td>
+        ${showNames ? `<td>${escapeHtml(doctor.name || '-')}</td>` : ''}
         <td>${escapeHtml(doctor.phone || '-')}</td>
       </tr>
     `).join('');
@@ -285,14 +291,20 @@
       }
       const repName = button.dataset.repName || button.dataset.repId || 'Field Representative';
       const metricLabel = button.dataset.metricLabel || 'Assigned Doctors';
+      const showNames = doctors.some(hasDisplayName);
       if (doctorRosterTitle) {
         doctorRosterTitle.textContent = `${metricLabel} - ${repName}`;
       }
       if (doctorRosterSubtitle) {
-        doctorRosterSubtitle.textContent = `${doctors.length} unique doctor${doctors.length === 1 ? '' : 's'} for ${metricLabel}.`;
+        doctorRosterSubtitle.textContent = showNames
+          ? `${doctors.length} unique doctor${doctors.length === 1 ? '' : 's'} for ${metricLabel}.`
+          : `${doctors.length} unique doctor${doctors.length === 1 ? '' : 's'} for ${metricLabel}; names are not available in source logs.`;
+      }
+      if (doctorRosterNameHeader) {
+        doctorRosterNameHeader.classList.toggle('hidden', !showNames);
       }
       if (doctorRosterBody) {
-        doctorRosterBody.innerHTML = doctorRowsHtml(doctors);
+        doctorRosterBody.innerHTML = doctorRowsHtml(doctors, showNames);
       }
       setDoctorRosterPanel(true);
     });
