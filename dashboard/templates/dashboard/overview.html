@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>In-Clinic Sharing Dashboard</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260526a">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260529v2">
 </head>
 <body>
   <div id="page-loading" class="page-loading hidden" aria-live="polite" aria-label="Loading page">
@@ -59,24 +59,34 @@
     <section class="top-grid">
       <article id="health_summary" class="card score-card {{ campaign_color }}">
         <h3>Campaign Health</h3>
+        {% if campaign_score_available %}
         <div class="score-line"><span class="score">{{ campaign_health|floatformat:0 }}</span><span>/100</span></div>
         <p class="wow {% if campaign_wow >= 0 %}up{% else %}down{% endif %}">{% if campaign_wow >= 0 %}↑{% else %}↓{% endif %} {{ campaign_wow|floatformat:1 }} WoW</p>
         <p class="subtext">Benchmark: {{ campaign_benchmark_label }}</p>
+        {% else %}
+        <div class="score-line score-unavailable">Insufficient Data</div>
+        <p class="subtext">Campaign doctor total is unavailable.</p>
+        {% endif %}
         <p class="caption">Average Collateral Health</p>
       </article>
 
       <article class="card score-card {{ weekly_color }}">
         <h3>Weekly Campaign Health</h3>
+        {% if weekly_score_available %}
         <div class="score-line"><span class="score">{{ weekly_health|floatformat:0 }}</span><span>/100</span></div>
         <p class="wow {% if weekly_wow >= 0 %}up{% else %}down{% endif %}">{% if weekly_wow >= 0 %}↑{% else %}↓{% endif %} {{ weekly_wow|floatformat:1 }} WoW</p>
         <p class="subtext">Benchmark: {{ weekly_benchmark_label }}</p>
+        {% else %}
+        <div class="score-line score-unavailable">Insufficient Data</div>
+        <p class="subtext">Campaign doctor total is unavailable.</p>
+        {% endif %}
         <p class="caption">Performance for {{ week_of }}</p>
       </article>
 
       <article id="state_panel" class="card side-panel">
         <div class="panel-title-row">
           <h3>States Requiring Attention</h3>
-          {% if state_attention|length > 5 %}
+          {% if state_attention|length > 3 %}
           <a href="{% url 'campaign-state-list' selected_campaign %}{% if selected_week %}?week={{ selected_week }}{% endif %}" class="link-button">View All</a>
           {% endif %}
         </div>
@@ -86,11 +96,13 @@
           <div class="state-row">
             <div>
               <strong>{{ s.state }}</strong>
+              <p>Health: {{ s.health_score }}%</p>
               <p>Open: {{ s.open_pct }}%</p>
             </div>
             <div class="state-right">
               <span class="badge {{ s.label|lower }}">{{ s.label }}</span>
               <p>Reached: {{ s.reached_pct }}%</p>
+              <p>Consumed: {{ s.consumed_pct }}%</p>
             </div>
           </div>
         {% empty %}
@@ -178,7 +190,17 @@
                 <tr>
                   <td>{{ rep.field_rep_id }}</td>
                   <td>{{ rep.field_rep_name }}</td>
-                  <td>{{ rep.total_doctors_assigned }}</td>
+                  <td>
+                    <button
+                      type="button"
+                      class="doctor-count-btn"
+                      data-rep-id="{{ rep.field_rep_id|escape }}"
+                      data-rep-name="{{ rep.field_rep_name|escape }}"
+                      data-doctors='{{ rep.assigned_doctors_json|default:"[]"|escape }}'
+                    >
+                      {{ rep.total_doctors_assigned }}
+                    </button>
+                  </td>
                   <td>{{ rep.doctors_sent }}</td>
                   <td>{{ rep.doctors_viewed }}</td>
                   <td>{{ rep.doctors_video_played }}</td>
@@ -187,6 +209,31 @@
               {% empty %}
                 <tr><td colspan="7">No field representative assignment data available.</td></tr>
               {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="doctor_roster_panel" class="field-rep-modal hidden" role="dialog" aria-modal="true" aria-labelledby="doctor-roster-title">
+      <div class="card field-rep-dialog doctor-roster-dialog">
+        <div class="panel-title-row">
+          <div>
+            <h3 id="doctor-roster-title">Assigned Doctors</h3>
+            <p id="doctor-roster-subtitle" class="subtext">Campaign roster mapped to this Field Representative.</p>
+          </div>
+          <button type="button" id="doctor-roster-close" class="ghost-btn">Close</button>
+        </div>
+        <div class="table-wrap doctor-roster-table-wrap">
+          <table class="menu-table">
+            <thead>
+              <tr>
+                <th>Doctor Name</th>
+                <th>Phone</th>
+              </tr>
+            </thead>
+            <tbody id="doctor-roster-body">
+              <tr><td colspan="2">Select a doctor count to view details.</td></tr>
             </tbody>
           </table>
         </div>
@@ -274,6 +321,6 @@
   {{ video_pct_series|json_script:"trend-video" }}
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260526a"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260529v2"></script>
 </body>
 </html>

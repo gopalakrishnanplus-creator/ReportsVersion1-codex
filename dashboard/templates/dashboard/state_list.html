@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>States Requiring Attention</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260526a">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260529v2">
 </head>
 <body>
   <div id="page-loading" class="page-loading hidden" aria-live="polite" aria-label="Loading page">
@@ -18,7 +18,7 @@
         <p class="brand-sub">{{ brand_name }}</p>
         <h1>States Requiring Attention</h1>
         <p class="schedule">{{ collateral_name }}</p>
-        <p class="footnote">States are listed alphabetically. Percentages use the selected campaign/week context.</p>
+        <p class="footnote">States are ranked from lowest weekly health to highest using the selected campaign/week context.</p>
       </div>
       <div class="detail-actions">
         <a class="ghost-btn" href="{% url 'campaign-overview-specific' selected_campaign %}{% if selected_week %}?week={{ selected_week }}{% endif %}">Back to Dashboard</a>
@@ -37,12 +37,20 @@
           <div class="state-full-row">
             <strong>{{ s.state }}</strong>
             <div>
+              <span class="metric-label">Health</span>
+              <span class="metric-value">{{ s.health_score }}%</span>
+            </div>
+            <div>
               <span class="metric-label">Reached</span>
               <span class="metric-value">{{ s.reached_pct }}%</span>
             </div>
             <div>
               <span class="metric-label">Open</span>
               <span class="metric-value">{{ s.open_pct }}%</span>
+            </div>
+            <div>
+              <span class="metric-label">Consumed</span>
+              <span class="metric-value">{{ s.consumed_pct }}%</span>
             </div>
             <div>
               <span class="badge {{ s.label|lower }}">{{ s.label }}</span>
@@ -54,6 +62,6 @@
       </div>
     </section>
   </main>
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260526a"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260529v2"></script>
 </body>
 </html>
