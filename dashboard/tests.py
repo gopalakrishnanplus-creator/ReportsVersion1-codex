@@ -219,12 +219,17 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("matched_activity AS", sql)
         self.assertIn("assigned_doctor_rows AS", sql)
         self.assertIn("assigned_doctors_json", sql)
+        self.assertIn("activity_doctor_rows AS", sql)
+        self.assertIn("sent_doctors_json", sql)
+        self.assertIn("viewed_doctors_json", sql)
+        self.assertIn("video_doctors_json", sql)
+        self.assertIn("pdf_doctors_json", sql)
         self.assertIn("linked_share.field_rep_email", sql)
         self.assertIn("'email'::text AS key_type", sql)
         self.assertNotIn("canonical_activity_rep AS", sql)
         self.assertIn("COALESCE(NULLIF(tx.doctor_phone_normalized, ''), tx.doctor_identity_key) AS doctor_key", sql)
         self.assertIn("COALESCE(NULLIF(s.doctor_identifier_normalized, ''), s.doctor_identity_key) AS doctor_key", sql)
-        self.assertIn("COUNT(DISTINCT doctor_key)", sql)
+        self.assertIn("COUNT(*) FILTER (WHERE sent_flag = 1)", sql)
         self.assertIn("lower(COALESCE(tx.pdf_completed", sql)
         self.assertNotIn("tx.pdf_completed_flag", sql)
 
@@ -768,6 +773,10 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "doctors_video_played": 12,
                     "doctors_pdf_downloaded": 8,
                     "assigned_doctors_json": '[{"name":"Dr Meera Rao","phone":"+919999999999"}]',
+                    "sent_doctors_json": '[{"name":"Dr Sent","phone":"+911111111111"}]',
+                    "viewed_doctors_json": '[{"name":"Dr Viewed","phone":"+912222222222"}]',
+                    "video_doctors_json": '[{"name":"Dr Video","phone":"+913333333333"}]',
+                    "pdf_doctors_json": '[{"name":"Dr PDF","phone":"+914444444444"}]',
                     "assignment_note": "Hidden diagnostic note",
                 }
             ],
@@ -829,6 +838,11 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "/campaign/demo/states/")
         self.assertContains(response, "Asha Mehta")
         self.assertContains(response, "doctor-count-btn")
+        self.assertContains(response, 'data-metric-label="Collateral Sent"')
+        self.assertContains(response, 'data-metric-label="Viewed"')
+        self.assertContains(response, 'data-metric-label="Video Played"')
+        self.assertContains(response, 'data-metric-label="PDF / Collateral Saved"')
+        self.assertContains(response, "S. No.")
         self.assertContains(response, "Assigned Doctors")
         self.assertContains(response, "page-loading")
         self.assertNotContains(response, "<strong>Karnataka</strong>", html=True)
@@ -902,6 +916,10 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "doctors_video_played": 1,
                     "doctors_pdf_downloaded": 3,
                     "assigned_doctors_json": '[{"name":"Dr Meera Rao","phone":"+919999999999"}]',
+                    "sent_doctors_json": '[{"name":"Dr Sent","phone":"+911111111111"}]',
+                    "viewed_doctors_json": '[{"name":"Dr Viewed","phone":"+912222222222"}]',
+                    "video_doctors_json": '[{"name":"Dr Video","phone":"+913333333333"}]',
+                    "pdf_doctors_json": '[{"name":"Dr PDF","phone":"+914444444444"}]',
                 }
             ],
             "old_collaterals": [],
@@ -918,6 +936,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "This page is filtered to collateral ID 11 only.")
         self.assertContains(response, "Asha Mehta")
         self.assertContains(response, "doctor-count-btn")
+        self.assertContains(response, 'data-metric-label="Collateral Sent"')
+        self.assertContains(response, "S. No.")
         self.assertContains(response, "Assigned Doctors")
         self.assertContains(response, "12")
         self.assertContains(response, "page-loading")

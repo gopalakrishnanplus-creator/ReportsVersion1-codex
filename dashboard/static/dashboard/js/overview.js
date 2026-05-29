@@ -263,10 +263,11 @@
 
   function doctorRowsHtml(doctors) {
     if (!Array.isArray(doctors) || !doctors.length) {
-      return '<tr class="empty-roster-row"><td colspan="2">No doctor names are mapped to this Field Representative in the campaign roster.</td></tr>';
+      return '<tr class="empty-roster-row"><td colspan="3">No doctor names are available for this count.</td></tr>';
     }
-    return doctors.map((doctor) => `
+    return doctors.map((doctor, index) => `
       <tr>
+        <td>${index + 1}</td>
         <td>${escapeHtml(doctor.name || 'Unknown Doctor')}</td>
         <td>${escapeHtml(doctor.phone || '-')}</td>
       </tr>
@@ -283,11 +284,12 @@
         doctors = [];
       }
       const repName = button.dataset.repName || button.dataset.repId || 'Field Representative';
+      const metricLabel = button.dataset.metricLabel || 'Assigned Doctors';
       if (doctorRosterTitle) {
-        doctorRosterTitle.textContent = `Assigned Doctors - ${repName}`;
+        doctorRosterTitle.textContent = `${metricLabel} - ${repName}`;
       }
       if (doctorRosterSubtitle) {
-        doctorRosterSubtitle.textContent = `${doctors.length} unique doctor${doctors.length === 1 ? '' : 's'} mapped in the campaign roster.`;
+        doctorRosterSubtitle.textContent = `${doctors.length} unique doctor${doctors.length === 1 ? '' : 's'} for ${metricLabel}.`;
       }
       if (doctorRosterBody) {
         doctorRosterBody.innerHTML = doctorRowsHtml(doctors);
