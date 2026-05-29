@@ -1017,6 +1017,17 @@ def _field_rep_insight_rows(
                 'tx:' || tx.id::text AS activity_row_id,
                 COALESCE(NULLIF(tx.doctor_phone_normalized, ''), tx.doctor_identity_key) AS doctor_key,
                 COALESCE(
+                    NULLIF(btrim(tx.doctor_name), ''),
+                    NULLIF(btrim(d_tx.name), ''),
+                    'Unknown Doctor'
+                ) AS doctor_name,
+                COALESCE(
+                    NULLIF(btrim(tx.doctor_number), ''),
+                    NULLIF(btrim(d_tx.phone), ''),
+                    NULLIF(tx.doctor_phone_normalized, ''),
+                    ''
+                ) AS doctor_phone,
+                COALESCE(
                     NULLIF({_normalized_sql('linked_share.field_rep_email')}, ''),
                     NULLIF(rep_email_map.mapped_email_key, ''),
                     NULLIF({_normalized_sql('tx.field_rep_email')}, '')
@@ -1049,12 +1060,32 @@ def _field_rep_insight_rows(
              )
             LEFT JOIN share_rep_id_email_map rep_email_map
               ON rep_email_map.source_rep_id_key = {_normalized_sql('tx.field_rep_id')}
+            LEFT JOIN LATERAL (
+                SELECT d.name, d.phone, d.doctor_phone_normalized
+                FROM silver.dim_doctor d
+                WHERE d.doctor_identity_key = tx.doctor_identity_key
+                   OR (
+                      COALESCE(NULLIF(tx.doctor_phone_normalized, ''), '') <> ''
+                      AND d.doctor_phone_normalized = tx.doctor_phone_normalized
+                   )
+                ORDER BY
+                    CASE WHEN d.doctor_identity_key = tx.doctor_identity_key THEN 0 ELSE 1 END,
+                    d.id DESC
+                LIMIT 1
+            ) d_tx ON TRUE
             WHERE {_normalized_sql('tx.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_tx}
             UNION ALL
             SELECT
                 'share:' || s.id::text AS activity_row_id,
                 COALESCE(NULLIF(s.doctor_identifier_normalized, ''), s.doctor_identity_key) AS doctor_key,
+                COALESCE(NULLIF(btrim(d_share.name), ''), 'Unknown Doctor') AS doctor_name,
+                COALESCE(
+                    NULLIF(btrim(d_share.phone), ''),
+                    NULLIF(s.doctor_identifier_normalized, ''),
+                    NULLIF(btrim(s.doctor_identifier), ''),
+                    ''
+                ) AS doctor_phone,
                 NULLIF({_normalized_sql('s.field_rep_email')}, '') AS email_rep_key,
                 {_normalized_sql('s.field_rep_id::text')} AS numeric_rep_key,
                 1 AS sent_flag,
@@ -1062,6 +1093,19 @@ def _field_rep_insight_rows(
                 0 AS video_flag,
                 0 AS pdf_flag
             FROM silver.fact_share_log s
+            LEFT JOIN LATERAL (
+                SELECT d.name, d.phone, d.doctor_phone_normalized
+                FROM silver.dim_doctor d
+                WHERE d.doctor_identity_key = s.doctor_identity_key
+                   OR (
+                      COALESCE(NULLIF(s.doctor_identifier_normalized, ''), '') <> ''
+                      AND d.doctor_phone_normalized = s.doctor_identifier_normalized
+                   )
+                ORDER BY
+                    CASE WHEN d.doctor_identity_key = s.doctor_identity_key THEN 0 ELSE 1 END,
+                    d.id DESC
+                LIMIT 1
+            ) d_share ON TRUE
             WHERE {_normalized_sql('s.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_share}
         ),
@@ -1069,6 +1113,8 @@ def _field_rep_insight_rows(
             SELECT
                 activity_row_id,
                 doctor_key,
+                doctor_name,
+                doctor_phone,
                 sent_flag,
                 viewed_flag,
                 video_flag,
@@ -1079,19 +1125,19 @@ def _field_rep_insight_rows(
             FROM activity_source
             WHERE COALESCE(email_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'auth_user_id'::text, 40
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'auth_user_id'::text, 40
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'local_user_id'::text, 50
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'local_user_id'::text, 50
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'campaign_fieldrep_id'::text, 60
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'campaign_fieldrep_id'::text, 60
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'brand_field_id'::text, 70
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'brand_field_id'::text, 70
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
         ),
@@ -1099,6 +1145,8 @@ def _field_rep_insight_rows(
             SELECT DISTINCT ON (akc.activity_row_id)
                 ark.field_rep_id,
                 akc.doctor_key,
+                akc.doctor_name,
+                akc.doctor_phone,
                 akc.sent_flag,
                 akc.viewed_flag,
                 akc.video_flag,
@@ -1113,14 +1161,71 @@ def _field_rep_insight_rows(
                 ark.match_rank,
                 ark.field_rep_id
         ),
+        activity_doctor_rows AS (
+            SELECT
+                field_rep_id,
+                doctor_key,
+                COALESCE(MIN(NULLIF(doctor_name, 'Unknown Doctor')), 'Unknown Doctor') AS doctor_name,
+                MIN(NULLIF(doctor_phone, '')) AS doctor_phone,
+                MAX(sent_flag) AS sent_flag,
+                MAX(viewed_flag) AS viewed_flag,
+                MAX(video_flag) AS video_flag,
+                MAX(pdf_flag) AS pdf_flag
+            FROM matched_activity
+            GROUP BY field_rep_id, doctor_key
+        ),
         activity_for_rep AS (
             SELECT
                 field_rep_id,
-                COUNT(DISTINCT doctor_key) FILTER (WHERE sent_flag = 1) AS doctors_sent,
-                COUNT(DISTINCT doctor_key) FILTER (WHERE viewed_flag = 1) AS doctors_viewed,
-                COUNT(DISTINCT doctor_key) FILTER (WHERE video_flag = 1) AS doctors_video_played,
-                COUNT(DISTINCT doctor_key) FILTER (WHERE pdf_flag = 1) AS doctors_pdf_downloaded
-            FROM matched_activity
+                COUNT(*) FILTER (WHERE sent_flag = 1) AS doctors_sent,
+                COUNT(*) FILTER (WHERE viewed_flag = 1) AS doctors_viewed,
+                COUNT(*) FILTER (WHERE video_flag = 1) AS doctors_video_played,
+                COUNT(*) FILTER (WHERE pdf_flag = 1) AS doctors_pdf_downloaded,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_key
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
+                    ) FILTER (WHERE sent_flag = 1),
+                    '[]'::jsonb
+                ) AS sent_doctors_json,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_key
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
+                    ) FILTER (WHERE viewed_flag = 1),
+                    '[]'::jsonb
+                ) AS viewed_doctors_json,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_key
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
+                    ) FILTER (WHERE video_flag = 1),
+                    '[]'::jsonb
+                ) AS video_doctors_json,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_key
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
+                    ) FILTER (WHERE pdf_flag = 1),
+                    '[]'::jsonb
+                ) AS pdf_doctors_json
+            FROM activity_doctor_rows
             GROUP BY field_rep_id
         )
         SELECT
@@ -1130,9 +1235,13 @@ def _field_rep_insight_rows(
             COALESCE(ad.total_doctors_assigned, 0)::int AS total_doctors_assigned,
             COALESCE(ad.assigned_doctors_json, '[]'::jsonb)::text AS assigned_doctors_json,
             COALESCE(ab.doctors_sent, 0)::int AS doctors_sent,
+            COALESCE(ab.sent_doctors_json, '[]'::jsonb)::text AS sent_doctors_json,
             COALESCE(ab.doctors_viewed, 0)::int AS doctors_viewed,
+            COALESCE(ab.viewed_doctors_json, '[]'::jsonb)::text AS viewed_doctors_json,
             COALESCE(ab.doctors_video_played, 0)::int AS doctors_video_played,
+            COALESCE(ab.video_doctors_json, '[]'::jsonb)::text AS video_doctors_json,
             COALESCE(ab.doctors_pdf_downloaded, 0)::int AS doctors_pdf_downloaded,
+            COALESCE(ab.pdf_doctors_json, '[]'::jsonb)::text AS pdf_doctors_json,
             CASE
                 WHEN COALESCE(ad.total_doctors_assigned, 0) = 0
                  AND (

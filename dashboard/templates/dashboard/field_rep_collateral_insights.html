@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Field Representative Insights</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260529v2">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260529v3">
 </head>
 <body>
   <div id="page-loading" class="page-loading hidden" aria-live="polite" aria-label="Loading page">
@@ -71,15 +71,60 @@
                     class="doctor-count-btn"
                     data-rep-id="{{ rep.field_rep_id|escape }}"
                     data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-metric-label="Doctors Assigned"
                     data-doctors='{{ rep.assigned_doctors_json|default:"[]"|escape }}'
                   >
                     {{ rep.total_doctors_assigned }}
                   </button>
                 </td>
-                <td data-label="Collateral Sent">{{ rep.doctors_sent }}</td>
-                <td data-label="Viewed">{{ rep.doctors_viewed }}</td>
-                <td data-label="Video Played">{{ rep.doctors_video_played }}</td>
-                <td data-label="PDF / Collateral Saved">{{ rep.doctors_pdf_downloaded }}</td>
+                <td data-label="Collateral Sent">
+                  <button
+                    type="button"
+                    class="doctor-count-btn"
+                    data-rep-id="{{ rep.field_rep_id|escape }}"
+                    data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-metric-label="Collateral Sent"
+                    data-doctors='{{ rep.sent_doctors_json|default:"[]"|escape }}'
+                  >
+                    {{ rep.doctors_sent }}
+                  </button>
+                </td>
+                <td data-label="Viewed">
+                  <button
+                    type="button"
+                    class="doctor-count-btn"
+                    data-rep-id="{{ rep.field_rep_id|escape }}"
+                    data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-metric-label="Viewed"
+                    data-doctors='{{ rep.viewed_doctors_json|default:"[]"|escape }}'
+                  >
+                    {{ rep.doctors_viewed }}
+                  </button>
+                </td>
+                <td data-label="Video Played">
+                  <button
+                    type="button"
+                    class="doctor-count-btn"
+                    data-rep-id="{{ rep.field_rep_id|escape }}"
+                    data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-metric-label="Video Played"
+                    data-doctors='{{ rep.video_doctors_json|default:"[]"|escape }}'
+                  >
+                    {{ rep.doctors_video_played }}
+                  </button>
+                </td>
+                <td data-label="PDF / Collateral Saved">
+                  <button
+                    type="button"
+                    class="doctor-count-btn"
+                    data-rep-id="{{ rep.field_rep_id|escape }}"
+                    data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-metric-label="PDF / Collateral Saved"
+                    data-doctors='{{ rep.pdf_doctors_json|default:"[]"|escape }}'
+                  >
+                    {{ rep.doctors_pdf_downloaded }}
+                  </button>
+                </td>
               </tr>
             {% empty %}
               <tr><td colspan="7">No field representative assignment data available for this collateral.</td></tr>
@@ -102,12 +147,13 @@
           <table class="menu-table">
             <thead>
               <tr>
+                <th>S. No.</th>
                 <th>Doctor Name</th>
                 <th>Phone</th>
               </tr>
             </thead>
             <tbody id="doctor-roster-body">
-              <tr><td colspan="2">Select a doctor count to view details.</td></tr>
+              <tr><td colspan="3">Select any count to view doctor details.</td></tr>
             </tbody>
           </table>
         </div>
@@ -115,6 +161,6 @@
     </section>
   </main>
 
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260529v2"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260529v3"></script>
 </body>
 </html>
