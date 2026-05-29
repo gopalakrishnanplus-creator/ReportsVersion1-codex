@@ -192,7 +192,11 @@ class DashboardRoutingTests(SimpleTestCase):
 class DashboardAccessViewTests(SimpleTestCase):
     def test_engagement_health_uses_actual_campaign_denominator(self):
         score = dashboard.views._engagement_health_score(reached=5, opened=5, consumed=5, total_doctors=1000)
-        self.assertAlmostEqual(score, 0.5, places=1)
+        self.assertAlmostEqual(score, 66.8, places=1)
+
+    def test_weekly_health_uses_four_week_base_and_caps_reach(self):
+        score = dashboard.views._weekly_engagement_health_score(reached=80, opened=40, consumed=20, total_doctors=100)
+        self.assertAlmostEqual(score, 66.7, places=1)
 
     def test_field_rep_insights_select_brand_supplied_rep_id_for_display(self):
         with patch("dashboard.views._fetch_dicts", return_value=[]) as fetch_mock:
@@ -213,6 +217,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("share_rep_id_email_map AS", sql)
         self.assertIn("activity_key_candidates AS", sql)
         self.assertIn("matched_activity AS", sql)
+        self.assertIn("assigned_doctor_rows AS", sql)
+        self.assertIn("assigned_doctors_json", sql)
         self.assertIn("linked_share.field_rep_email", sql)
         self.assertIn("'email'::text AS key_type", sql)
         self.assertNotIn("canonical_activity_rep AS", sql)
@@ -245,6 +251,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertNotIn(".fact_doctor_collateral_latest", sql)
         self.assertIn("a.collateral_id::text IN", sql)
         self.assertIn("effective_reached_date", sql)
+        self.assertIn("consumed", sql)
         self.assertIn("video_gt_50_first_ts", sql)
         self.assertIn("pdf_download_first_ts", sql)
         self.assertIn("effective_reached_date BETWEEN", sql)
@@ -258,22 +265,21 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertNotIn("state_normalized <> 'UNKNOWN'", sql)
         self.assertNotIn("total_state,0)/4.0", sql)
 
-    def test_state_attention_groups_unknown_last_and_keeps_it_visible_on_card(self):
+    def test_state_attention_ranks_by_weekly_health_and_cards_show_bottom_three(self):
         state_attention = [
-            {"state": "Gujarat", "open_pct": 0, "reached_pct": 0, "label": "Low"},
-            {"state": "Unknown", "open_pct": 20, "reached_pct": 35, "label": "Low"},
-            {"state": "Andhra Pradesh", "open_pct": 0, "reached_pct": 0, "label": "Low"},
-            {"state": "Bihar", "open_pct": 0, "reached_pct": 0, "label": "Low"},
-            {"state": "Delhi", "open_pct": 0, "reached_pct": 0, "label": "Low"},
-            {"state": "Karnataka", "open_pct": 0, "reached_pct": 0, "label": "Low"},
+            {"state": "Gujarat", "open_pct": 0, "reached_pct": 0, "health_score": 30, "label": "Low"},
+            {"state": "Unknown", "open_pct": 20, "reached_pct": 35, "health_score": 10, "label": "Low"},
+            {"state": "Andhra Pradesh", "open_pct": 0, "reached_pct": 0, "health_score": 1, "label": "Low"},
+            {"state": "Bihar", "open_pct": 0, "reached_pct": 0, "health_score": 2, "label": "Low"},
+            {"state": "Delhi", "open_pct": 0, "reached_pct": 0, "health_score": 3, "label": "Low"},
+            {"state": "Karnataka", "open_pct": 0, "reached_pct": 0, "health_score": 4, "label": "Low"},
         ]
 
-        state_attention.sort(key=dashboard.views._state_sort_key)
+        state_attention.sort(key=dashboard.views._state_attention_rank_key)
         card_rows = dashboard.views._state_attention_card_rows(state_attention)
 
-        self.assertEqual([row["state"] for row in state_attention][-1], "Unknown")
-        self.assertEqual(len(card_rows), 5)
-        self.assertEqual(card_rows[-1]["state"], "Unknown")
+        self.assertEqual(len(card_rows), 3)
+        self.assertEqual([row["state"] for row in card_rows], ["Andhra Pradesh", "Bihar", "Delhi"])
         self.assertNotIn("Karnataka", [row["state"] for row in card_rows])
 
     def test_united_kingdom_state_is_grouped_as_unknown(self):
@@ -730,20 +736,18 @@ class DashboardAccessViewTests(SimpleTestCase):
             "schedule_text": "May 01, 2026 - May 31, 2026",
             "collateral_name": "Current Collateral",
             "state_attention": [
-                {"state": "Andhra Pradesh", "open_pct": 1, "reached_pct": 2, "label": "Low"},
-                {"state": "Bihar", "open_pct": 1, "reached_pct": 2, "label": "Low"},
-                {"state": "Delhi", "open_pct": 1, "reached_pct": 2, "label": "Low"},
-                {"state": "Gujarat", "open_pct": 1, "reached_pct": 2, "label": "Low"},
-                {"state": "Karnataka", "open_pct": 1, "reached_pct": 2, "label": "Low"},
-                {"state": "Maharashtra", "open_pct": 1, "reached_pct": 2, "label": "Low"},
-                {"state": "Unknown", "open_pct": 20, "reached_pct": 35, "label": "Low"},
+                {"state": "Andhra Pradesh", "open_pct": 1, "reached_pct": 2, "consumed_pct": 0, "health_score": 1, "label": "Low"},
+                {"state": "Bihar", "open_pct": 1, "reached_pct": 2, "consumed_pct": 0, "health_score": 2, "label": "Low"},
+                {"state": "Delhi", "open_pct": 1, "reached_pct": 2, "consumed_pct": 0, "health_score": 3, "label": "Low"},
+                {"state": "Gujarat", "open_pct": 1, "reached_pct": 2, "consumed_pct": 0, "health_score": 4, "label": "Low"},
+                {"state": "Karnataka", "open_pct": 1, "reached_pct": 2, "consumed_pct": 0, "health_score": 5, "label": "Low"},
+                {"state": "Maharashtra", "open_pct": 1, "reached_pct": 2, "consumed_pct": 0, "health_score": 6, "label": "Low"},
+                {"state": "Unknown", "open_pct": 20, "reached_pct": 35, "consumed_pct": 0, "health_score": 10, "label": "Low"},
             ],
             "state_attention_card": [
-                {"state": "Andhra Pradesh", "open_pct": 1, "reached_pct": 2, "label": "Low"},
-                {"state": "Bihar", "open_pct": 1, "reached_pct": 2, "label": "Low"},
-                {"state": "Delhi", "open_pct": 1, "reached_pct": 2, "label": "Low"},
-                {"state": "Gujarat", "open_pct": 1, "reached_pct": 2, "label": "Low"},
-                {"state": "Unknown", "open_pct": 20, "reached_pct": 35, "label": "Low"},
+                {"state": "Andhra Pradesh", "open_pct": 1, "reached_pct": 2, "consumed_pct": 0, "health_score": 1, "label": "Low"},
+                {"state": "Bihar", "open_pct": 1, "reached_pct": 2, "consumed_pct": 0, "health_score": 2, "label": "Low"},
+                {"state": "Delhi", "open_pct": 1, "reached_pct": 2, "consumed_pct": 0, "health_score": 3, "label": "Low"},
             ],
             "field_rep_summary": {
                 "total_reps": 1,
@@ -763,6 +767,7 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "doctors_viewed": 20,
                     "doctors_video_played": 12,
                     "doctors_pdf_downloaded": 8,
+                    "assigned_doctors_json": '[{"name":"Dr Meera Rao","phone":"+919999999999"}]',
                     "assignment_note": "Hidden diagnostic note",
                 }
             ],
@@ -790,10 +795,12 @@ class DashboardAccessViewTests(SimpleTestCase):
             "campaign_wow": 0,
             "campaign_benchmark_label": "Below Average",
             "campaign_color": "yellow",
+            "campaign_score_available": True,
             "weekly_health": 45,
             "weekly_wow": 0,
             "weekly_benchmark_label": "Average",
             "weekly_color": "yellow",
+            "weekly_score_available": True,
             "kpi_reached": 30,
             "kpi_opened": 20,
             "kpi_video": 12,
@@ -821,7 +828,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "/campaign/demo/collateral/11/field-rep-insights/")
         self.assertContains(response, "/campaign/demo/states/")
         self.assertContains(response, "Asha Mehta")
-        self.assertContains(response, "Unknown")
+        self.assertContains(response, "doctor-count-btn")
+        self.assertContains(response, "Assigned Doctors")
         self.assertContains(response, "page-loading")
         self.assertNotContains(response, "<strong>Karnataka</strong>", html=True)
         self.assertNotContains(response, "Sent 30")
@@ -845,8 +853,8 @@ class DashboardAccessViewTests(SimpleTestCase):
             "selected_week": None,
             "error_message": None,
             "state_attention": [
-                {"state": "Andhra Pradesh", "open_pct": 10, "reached_pct": 20, "label": "Low"},
-                {"state": "Maharashtra", "open_pct": 30, "reached_pct": 40, "label": "Medium"},
+                {"state": "Andhra Pradesh", "open_pct": 10, "reached_pct": 20, "consumed_pct": 5, "health_score": 12, "label": "Low"},
+                {"state": "Maharashtra", "open_pct": 30, "reached_pct": 40, "consumed_pct": 20, "health_score": 35, "label": "Medium"},
             ],
         }
         with patch(
@@ -893,6 +901,7 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "doctors_viewed": 4,
                     "doctors_video_played": 1,
                     "doctors_pdf_downloaded": 3,
+                    "assigned_doctors_json": '[{"name":"Dr Meera Rao","phone":"+919999999999"}]',
                 }
             ],
             "old_collaterals": [],
@@ -908,6 +917,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Older Collateral")
         self.assertContains(response, "This page is filtered to collateral ID 11 only.")
         self.assertContains(response, "Asha Mehta")
+        self.assertContains(response, "doctor-count-btn")
+        self.assertContains(response, "Assigned Doctors")
         self.assertContains(response, "12")
         self.assertContains(response, "page-loading")
         self.assertNotContains(response, "Sent 12")

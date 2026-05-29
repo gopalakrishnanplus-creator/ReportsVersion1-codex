@@ -218,26 +218,26 @@ def build_gold(run_id: str) -> None:
                 pdf_download_unique,
                 doctors_consumed_unique,
                 b.total_doctors_in_campaign,
-                (b.total_doctors_in_campaign / GREATEST((SELECT COUNT(*) FROM weeks), 1)::numeric) AS weekly_doctor_base,
-                LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF(b.total_doctors_in_campaign,0) END, 1.0) AS weekly_reached_pct,
-                CASE WHEN doctors_reached_unique=0 THEN 0 ELSE doctors_opened_unique::numeric / doctors_reached_unique END AS weekly_opened_pct,
-                CASE WHEN doctors_opened_unique=0 THEN 0 ELSE doctors_consumed_unique::numeric / doctors_opened_unique END AS weekly_consumption_pct,
+                (b.total_doctors_in_campaign / 4.0) AS weekly_doctor_base,
+                LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF((b.total_doctors_in_campaign / 4.0),0) END, 1.0) AS weekly_reached_pct,
+                CASE WHEN doctors_reached_unique=0 THEN 0 ELSE LEAST(doctors_opened_unique::numeric / doctors_reached_unique, 1.0) END AS weekly_opened_pct,
+                CASE WHEN doctors_opened_unique=0 THEN 0 ELSE LEAST(doctors_consumed_unique::numeric / doctors_opened_unique, 1.0) END AS weekly_consumption_pct,
                 (
-                    LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF(b.total_doctors_in_campaign,0) END, 1.0) * 0.5
-                    + LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_opened_unique::numeric / NULLIF(b.total_doctors_in_campaign,0) END, 1.0) * 0.25
-                    + LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_consumed_unique::numeric / NULLIF(b.total_doctors_in_campaign,0) END, 1.0) * 0.25
-                ) * 100 AS weekly_health_score,
+                    LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF((b.total_doctors_in_campaign / 4.0),0) END, 1.0)
+                    + CASE WHEN doctors_reached_unique=0 THEN 0 ELSE LEAST(doctors_opened_unique::numeric / doctors_reached_unique, 1.0) END
+                    + CASE WHEN doctors_opened_unique=0 THEN 0 ELSE LEAST(doctors_consumed_unique::numeric / doctors_opened_unique, 1.0) END
+                ) / 3.0 * 100 AS weekly_health_score,
                 CASE
                     WHEN ((
-                        LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF(b.total_doctors_in_campaign,0) END, 1.0) * 0.5
-                        + LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_opened_unique::numeric / NULLIF(b.total_doctors_in_campaign,0) END, 1.0) * 0.25
-                        + LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_consumed_unique::numeric / NULLIF(b.total_doctors_in_campaign,0) END, 1.0) * 0.25
-                    ) * 100) < 40 THEN 'Red'
+                        LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF((b.total_doctors_in_campaign / 4.0),0) END, 1.0)
+                        + CASE WHEN doctors_reached_unique=0 THEN 0 ELSE LEAST(doctors_opened_unique::numeric / doctors_reached_unique, 1.0) END
+                        + CASE WHEN doctors_opened_unique=0 THEN 0 ELSE LEAST(doctors_consumed_unique::numeric / doctors_opened_unique, 1.0) END
+                    ) / 3.0 * 100) <= 40 THEN 'Red'
                     WHEN ((
-                        LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF(b.total_doctors_in_campaign,0) END, 1.0) * 0.5
-                        + LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_opened_unique::numeric / NULLIF(b.total_doctors_in_campaign,0) END, 1.0) * 0.25
-                        + LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_consumed_unique::numeric / NULLIF(b.total_doctors_in_campaign,0) END, 1.0) * 0.25
-                    ) * 100) < 60 THEN 'Yellow'
+                        LEAST(CASE WHEN b.total_doctors_in_campaign=0 THEN 0 ELSE doctors_reached_unique::numeric / NULLIF((b.total_doctors_in_campaign / 4.0),0) END, 1.0)
+                        + CASE WHEN doctors_reached_unique=0 THEN 0 ELSE LEAST(doctors_opened_unique::numeric / doctors_reached_unique, 1.0) END
+                        + CASE WHEN doctors_opened_unique=0 THEN 0 ELSE LEAST(doctors_consumed_unique::numeric / doctors_opened_unique, 1.0) END
+                    ) / 3.0 * 100) < 60 THEN 'Yellow'
                     ELSE 'Green'
                 END AS health_color,
                 CASE WHEN b.total_doctors_in_campaign=0 THEN 1 ELSE 0 END AS insufficient_data_flag
@@ -252,29 +252,43 @@ def build_gold(run_id: str) -> None:
             f"""
             INSERT INTO gold_global.campaign_health_history
             (brand_campaign_id, as_of_date, campaign_health_score, health_color, total_doctors_in_campaign, _loaded_at)
-            WITH rollup AS (
+            WITH base AS (
+                SELECT COUNT(DISTINCT doctor_identity_key)::numeric AS total_doctors
+                FROM silver.bridge_brand_campaign_doctor_base
+                WHERE brand_campaign_id = %s
+            ),
+            collateral_rollup AS (
                 SELECT
-                    SUM(doctors_reached_unique)::numeric AS reached,
-                    SUM(doctors_opened_unique)::numeric AS opened,
-                    SUM(doctors_consumed_unique)::numeric AS consumed,
-                    MAX(total_doctors_in_campaign)::numeric AS total_doctors
-                FROM {schema}.kpi_weekly_summary
+                    f.collateral_id,
+                    COUNT(DISTINCT f.doctor_identity_key) FILTER (WHERE f.is_reached = 1)::numeric AS reached,
+                    COUNT(DISTINCT f.doctor_identity_key) FILTER (WHERE f.is_opened = 1)::numeric AS opened,
+                    COUNT(DISTINCT f.doctor_identity_key) FILTER (WHERE f.is_consumed = 1)::numeric AS consumed,
+                    MAX(b.total_doctors)::numeric AS total_doctors
+                FROM {schema}.fact_doctor_collateral_latest f
+                CROSS JOIN base b
+                GROUP BY f.collateral_id
+            ),
+            collateral_scores AS (
+                SELECT
+                    (
+                        CASE WHEN total_doctors=0 THEN 0 ELSE LEAST(reached / NULLIF(total_doctors,0), 1.0) END
+                        + CASE WHEN reached=0 THEN 0 ELSE LEAST(opened / NULLIF(reached,0), 1.0) END
+                        + CASE WHEN opened=0 THEN 0 ELSE LEAST(consumed / NULLIF(opened,0), 1.0) END
+                    ) / 3.0 * 100 AS collateral_health_score,
+                    total_doctors
+                FROM collateral_rollup
             ),
             scored AS (
                 SELECT
-                    (
-                        CASE WHEN total_doctors=0 THEN 0 ELSE LEAST(reached / NULLIF(total_doctors,0), 1.0) END * 0.5
-                        + CASE WHEN total_doctors=0 THEN 0 ELSE LEAST(opened / NULLIF(total_doctors,0), 1.0) END * 0.25
-                        + CASE WHEN total_doctors=0 THEN 0 ELSE LEAST(consumed / NULLIF(total_doctors,0), 1.0) END * 0.25
-                    ) * 100 AS campaign_health_score,
-                    total_doctors
-                FROM rollup
+                    COALESCE(AVG(collateral_health_score), 0) AS campaign_health_score,
+                    COALESCE(MAX(total_doctors), 0) AS total_doctors
+                FROM collateral_scores
             )
             SELECT
                 %s,
                 CURRENT_DATE::text,
                 campaign_health_score,
-                CASE WHEN campaign_health_score < 40 THEN 'Red' WHEN campaign_health_score < 60 THEN 'Yellow' ELSE 'Green' END,
+                CASE WHEN campaign_health_score <= 40 THEN 'Red' WHEN campaign_health_score < 60 THEN 'Yellow' ELSE 'Green' END,
                 total_doctors,
                 NOW()::text
             FROM scored
@@ -284,7 +298,7 @@ def build_gold(run_id: str) -> None:
                           total_doctors_in_campaign=EXCLUDED.total_doctors_in_campaign,
                           _loaded_at=EXCLUDED._loaded_at
             """,
-            [brand_campaign_id],
+            [brand_campaign_id, brand_campaign_id],
         )
 
     execute(

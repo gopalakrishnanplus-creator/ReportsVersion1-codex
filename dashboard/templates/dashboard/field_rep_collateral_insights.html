@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Field Representative Insights</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260526a">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260529v2">
 </head>
 <body>
   <div id="page-loading" class="page-loading hidden" aria-live="polite" aria-label="Loading page">
@@ -65,7 +65,17 @@
               <tr>
                 <td data-label="Field Rep ID">{{ rep.field_rep_id }}</td>
                 <td data-label="Field Representative">{{ rep.field_rep_name }}</td>
-                <td data-label="Doctors Assigned">{{ rep.total_doctors_assigned }}</td>
+                <td data-label="Doctors Assigned">
+                  <button
+                    type="button"
+                    class="doctor-count-btn"
+                    data-rep-id="{{ rep.field_rep_id|escape }}"
+                    data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-doctors='{{ rep.assigned_doctors_json|default:"[]"|escape }}'
+                  >
+                    {{ rep.total_doctors_assigned }}
+                  </button>
+                </td>
                 <td data-label="Collateral Sent">{{ rep.doctors_sent }}</td>
                 <td data-label="Viewed">{{ rep.doctors_viewed }}</td>
                 <td data-label="Video Played">{{ rep.doctors_video_played }}</td>
@@ -78,8 +88,33 @@
         </table>
       </div>
     </section>
+
+    <section id="doctor_roster_panel" class="field-rep-modal hidden" role="dialog" aria-modal="true" aria-labelledby="doctor-roster-title">
+      <div class="card field-rep-dialog doctor-roster-dialog">
+        <div class="panel-title-row">
+          <div>
+            <h3 id="doctor-roster-title">Assigned Doctors</h3>
+            <p id="doctor-roster-subtitle" class="subtext">Campaign roster mapped to this Field Representative.</p>
+          </div>
+          <button type="button" id="doctor-roster-close" class="ghost-btn">Close</button>
+        </div>
+        <div class="table-wrap doctor-roster-table-wrap">
+          <table class="menu-table">
+            <thead>
+              <tr>
+                <th>Doctor Name</th>
+                <th>Phone</th>
+              </tr>
+            </thead>
+            <tbody id="doctor-roster-body">
+              <tr><td colspan="2">Select a doctor count to view details.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   </main>
 
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260526a"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260529v2"></script>
 </body>
 </html>
