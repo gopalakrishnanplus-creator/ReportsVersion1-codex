@@ -10,7 +10,7 @@ from etl.integrations.sapa_growth.learndash import LearnDashClient, LearnDashInt
 from etl.sapa_growth.control import get_watermark, log_step, upsert_watermark
 from etl.sapa_growth.mysql import SapaMySQLExtractionError, extract_rows
 from etl.sapa_growth.specs import API_TABLE_SPECS, MYSQL_TABLE_SPECS, RAW_API_SCHEMA, RAW_AUDIT_COLUMNS, RAW_MYSQL_SCHEMA
-from etl.sapa_growth.storage import append_rows, ensure_text_table, fetch_all, qident, table_exists
+from etl.sapa_growth.storage import ensure_text_table, fetch_all, insert_new_source_rows, qident, table_exists
 from sapa_growth.logic import clean_text, hash_fields, normalize_phone, parse_datetime
 
 
@@ -51,6 +51,8 @@ def ensure_raw_tables() -> None:
 def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
     ensure_raw_tables()
     counts: dict[str, int] = {}
+    skipped_counts: dict[str, int] = {}
+    extracted_counts: dict[str, int] = {}
     errors: dict[str, str] = {}
     max_watermarks: dict[str, str] = {}
 
@@ -75,8 +77,10 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
                     if candidate and (max_watermark_value is None or candidate > max_watermark_value):
                         max_watermark_value = candidate
 
-            append_rows(RAW_MYSQL_SCHEMA, spec.raw_table, spec.columns + RAW_AUDIT_COLUMNS, prepared_rows)
-            counts[name] = len(prepared_rows)
+            inserted_count = insert_new_source_rows(RAW_MYSQL_SCHEMA, spec.raw_table, spec.columns, RAW_AUDIT_COLUMNS, prepared_rows)
+            counts[name] = inserted_count
+            skipped_counts[name] = len(prepared_rows) - inserted_count
+            extracted_counts[name] = len(rows)
             if max_watermark_value:
                 max_watermarks[name] = max_watermark_value
             current_watermark = get_watermark("mysql", name)
@@ -90,13 +94,15 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
                 "incremental" if spec.watermark_field else "full_snapshot",
                 run_id,
             )
-            log_step(run_id, "extract_mysql", name, "SUCCESS", rows_read=len(rows), rows_written=len(prepared_rows))
+            log_step(run_id, "extract_mysql", name, "SUCCESS", rows_read=len(rows), rows_written=inserted_count)
         except SapaMySQLExtractionError as exc:
             counts[name] = 0
+            skipped_counts[name] = 0
+            extracted_counts[name] = 0
             errors[name] = str(exc)
             log_step(run_id, "extract_mysql", name, "FAIL", error_message=str(exc))
 
-    return {"counts": counts, "errors": errors, "max_watermarks": max_watermarks}
+    return {"counts": counts, "skipped_counts": skipped_counts, "extracted_counts": extracted_counts, "errors": errors, "max_watermarks": max_watermarks}
 
 
 def _latest_previous_row_count(schema: str, table: str, current_run_id: str) -> int | None:
@@ -121,6 +127,30 @@ def _latest_previous_row_count(schema: str, table: str, current_run_id: str) -> 
         return None
 
 
+def _latest_successful_rows_read(step_name: str, source_name: str, current_run_id: str, offset: int = 0) -> int | None:
+    if not table_exists("control", "sapa_etl_step_log"):
+        return None
+    rows = fetch_all(
+        """
+        SELECT rows_read
+        FROM control.sapa_etl_step_log
+        WHERE step_name = %s
+          AND source_name = %s
+          AND status = 'SUCCESS'
+          AND run_id <> %s
+        ORDER BY ended_at DESC
+        LIMIT 1
+        """,
+        [step_name, source_name, current_run_id],
+    )
+    if not rows:
+        return None
+    try:
+        return max(int(rows[0]["rows_read"]) - offset, 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _stale_payload(current_count: int, previous_count: int | None) -> bool:
     if previous_count in (None, 0):
         return False
@@ -132,12 +162,16 @@ def ingest_api_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
     ensure_raw_tables()
     client = LearnDashClient()
     counts: dict[str, int] = {}
+    skipped_counts: dict[str, int] = {}
+    extracted_counts: dict[str, int] = {}
     errors: dict[str, str] = {}
     stale_sources: list[str] = []
 
     try:
         webinar_rows = client.get_webinar_registrations()
-        previous_count = _latest_previous_row_count(RAW_API_SCHEMA, API_TABLE_SPECS["wp_webinar_registrations"]["raw_table"], run_id)
+        previous_count = _latest_successful_rows_read("extract_api", "webinar_registrations", run_id)
+        if previous_count is None:
+            previous_count = _latest_previous_row_count(RAW_API_SCHEMA, API_TABLE_SPECS["wp_webinar_registrations"]["raw_table"], run_id)
         if _stale_payload(len(webinar_rows), previous_count):
             raise LearnDashIntegrationError("webinar registrations payload looks stale compared with previous successful snapshot")
         prepared_webinars = []
@@ -159,16 +193,21 @@ def ingest_api_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
             }
             prepared.update(_audit_payload(run_id, "sapa_api", "webinar_registrations", extracted_at, list(prepared.values())))
             prepared_webinars.append(prepared)
-        append_rows(
+        inserted_webinars = insert_new_source_rows(
             RAW_API_SCHEMA,
             API_TABLE_SPECS["wp_webinar_registrations"]["raw_table"],
-            API_TABLE_SPECS["wp_webinar_registrations"]["columns"] + RAW_AUDIT_COLUMNS,
+            API_TABLE_SPECS["wp_webinar_registrations"]["columns"],
+            RAW_AUDIT_COLUMNS,
             prepared_webinars,
         )
-        counts["webinar_registrations"] = len(prepared_webinars)
-        log_step(run_id, "extract_api", "webinar_registrations", "SUCCESS", rows_read=len(webinar_rows), rows_written=len(prepared_webinars))
+        counts["webinar_registrations"] = inserted_webinars
+        skipped_counts["webinar_registrations"] = len(prepared_webinars) - inserted_webinars
+        extracted_counts["webinar_registrations"] = len(webinar_rows)
+        log_step(run_id, "extract_api", "webinar_registrations", "SUCCESS", rows_read=len(webinar_rows), rows_written=inserted_webinars)
     except LearnDashIntegrationError as exc:
         counts["webinar_registrations"] = 0
+        skipped_counts["webinar_registrations"] = 0
+        extracted_counts["webinar_registrations"] = 0
         errors["webinar_registrations"] = str(exc)
         stale_sources.append("webinar_registrations")
         log_step(run_id, "extract_api", "webinar_registrations", "FAIL", error_message=str(exc))
@@ -177,8 +216,6 @@ def ingest_api_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
         ("doctor", int(settings.SAPA_WORDPRESS["DOCTOR_COURSE_ID"])),
         ("paramedic", int(settings.SAPA_WORDPRESS["PARAMEDIC_COURSE_ID"])),
     ]
-    summary_rows: list[dict[str, Any]] = []
-    breakdown_rows: list[dict[str, Any]] = []
 
     for audience, course_id in course_specs:
         try:
@@ -193,12 +230,24 @@ def ingest_api_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
                 "payload_json": json.dumps(summary, default=str),
             }
             summary_row.update(_audit_payload(run_id, "sapa_api", f"course_summary_{audience}", extracted_at, list(summary_row.values())))
-            summary_rows.append(summary_row)
+            inserted_summary = insert_new_source_rows(
+                RAW_API_SCHEMA,
+                API_TABLE_SPECS["wp_course_summary"]["raw_table"],
+                API_TABLE_SPECS["wp_course_summary"]["columns"],
+                RAW_AUDIT_COLUMNS,
+                [summary_row],
+            )
+            counts[f"course_summary_{audience}"] = inserted_summary
+            skipped_counts[f"course_summary_{audience}"] = 1 - inserted_summary
+            extracted_counts[f"course_summary_{audience}"] = 1
 
             breakdown = client.get_course_breakdown(course_id)
-            previous_count = _latest_previous_row_count(RAW_API_SCHEMA, API_TABLE_SPECS["wp_course_breakdown"]["raw_table"], run_id)
+            previous_count = _latest_successful_rows_read("extract_api", f"course_{audience}", run_id, offset=1)
+            if previous_count is None:
+                previous_count = _latest_previous_row_count(RAW_API_SCHEMA, API_TABLE_SPECS["wp_course_breakdown"]["raw_table"], run_id)
             if _stale_payload(len(breakdown), previous_count):
                 raise LearnDashIntegrationError(f"{audience} course breakdown payload looks stale compared with previous successful snapshot")
+            prepared_breakdown: list[dict[str, Any]] = []
             for row in breakdown:
                 prepared = {
                     "course_id": str(course_id),
@@ -216,27 +265,29 @@ def ingest_api_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
                     "payload_json": json.dumps(row, default=str),
                 }
                 prepared.update(_audit_payload(run_id, "sapa_api", f"course_breakdown_{audience}", extracted_at, list(prepared.values())))
-                breakdown_rows.append(prepared)
+                prepared_breakdown.append(prepared)
 
-            counts[f"course_summary_{audience}"] = 1
-            counts[f"course_breakdown_{audience}"] = len(breakdown)
-            log_step(run_id, "extract_api", f"course_{audience}", "SUCCESS", rows_read=len(breakdown) + 1, rows_written=len(breakdown) + 1)
+            inserted_breakdown = insert_new_source_rows(
+                RAW_API_SCHEMA,
+                API_TABLE_SPECS["wp_course_breakdown"]["raw_table"],
+                API_TABLE_SPECS["wp_course_breakdown"]["columns"],
+                RAW_AUDIT_COLUMNS,
+                prepared_breakdown,
+            )
+
+            counts[f"course_breakdown_{audience}"] = inserted_breakdown
+            skipped_counts[f"course_breakdown_{audience}"] = len(prepared_breakdown) - inserted_breakdown
+            extracted_counts[f"course_breakdown_{audience}"] = len(breakdown)
+            log_step(run_id, "extract_api", f"course_{audience}", "SUCCESS", rows_read=len(breakdown) + 1, rows_written=inserted_summary + inserted_breakdown)
         except LearnDashIntegrationError as exc:
+            counts.setdefault(f"course_summary_{audience}", 0)
+            counts.setdefault(f"course_breakdown_{audience}", 0)
+            skipped_counts.setdefault(f"course_summary_{audience}", 0)
+            skipped_counts.setdefault(f"course_breakdown_{audience}", 0)
+            extracted_counts.setdefault(f"course_summary_{audience}", 0)
+            extracted_counts.setdefault(f"course_breakdown_{audience}", 0)
             errors[f"course_{audience}"] = str(exc)
             stale_sources.append(f"course_{audience}")
             log_step(run_id, "extract_api", f"course_{audience}", "FAIL", error_message=str(exc))
 
-    append_rows(
-        RAW_API_SCHEMA,
-        API_TABLE_SPECS["wp_course_summary"]["raw_table"],
-        API_TABLE_SPECS["wp_course_summary"]["columns"] + RAW_AUDIT_COLUMNS,
-        summary_rows,
-    )
-    append_rows(
-        RAW_API_SCHEMA,
-        API_TABLE_SPECS["wp_course_breakdown"]["raw_table"],
-        API_TABLE_SPECS["wp_course_breakdown"]["columns"] + RAW_AUDIT_COLUMNS,
-        breakdown_rows,
-    )
-
-    return {"counts": counts, "errors": errors, "stale_sources": stale_sources}
+    return {"counts": counts, "skipped_counts": skipped_counts, "extracted_counts": extracted_counts, "errors": errors, "stale_sources": stale_sources}

@@ -18,6 +18,7 @@ RAW_AUDIT_COLUMNS = [
     "_extract_started_at",
     "_extract_ended_at",
     "_record_hash",
+    "_source_payload_hash",
     "_dq_status",
     "_dq_errors",
 ]

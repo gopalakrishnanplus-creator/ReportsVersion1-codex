@@ -3,19 +3,52 @@ from __future__ import annotations
 import base64
 import json
 from io import BytesIO
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve, reverse
 
+from etl.sapa_growth import storage as sapa_storage
 from etl.sapa_growth.mysql import extract_rows
 from etl.sapa_growth.silver import _best_dim_for_event, _doctor_indexes, _doctor_matches_for_api
+from etl.sapa_growth.specs import RAW_AUDIT_COLUMNS
 from sapa_growth.logic import classify_metric_event, explode_followup_schedule, map_course_status, normalize_phone, webinar_effective_date
 from sapa_growth.services import _derived_certified_rows, _enrich_video_rows, dashboard_context, detail_context, export_dashboard_pdf
 from sapa_growth.video_metadata import resolve_video_metadata
 
 
 class SapaGrowthLogicTests(SimpleTestCase):
+    def test_raw_source_insert_uses_payload_hash_guard(self):
+        cursor_mock = MagicMock()
+        cursor_context = MagicMock()
+        cursor_context.__enter__.return_value = cursor_mock
+        cursor_context.__exit__.return_value = False
+        connection_mock = MagicMock()
+        connection_mock.cursor.return_value = cursor_context
+
+        with patch("etl.sapa_growth.storage.ensure_text_table") as ensure_table, patch(
+            "etl.sapa_growth.storage.ensure_source_payload_hash"
+        ) as ensure_hash, patch("etl.sapa_growth.storage.connection", connection_mock), patch(
+            "etl.sapa_growth.storage.execute_values",
+            return_value=[(1,)],
+        ) as execute_values_mock:
+            inserted = sapa_storage.insert_new_source_rows(
+                "raw_sapa_mysql",
+                "campaign_fieldrep_raw",
+                ["id", "full_name"],
+                ["_record_hash", "_source_payload_hash"],
+                [{"id": "1", "full_name": "Asha", "_record_hash": "row-hash"}],
+            )
+
+        self.assertEqual(inserted, 1)
+        self.assertIn("_source_payload_hash", RAW_AUDIT_COLUMNS)
+        ensure_table.assert_called_once()
+        ensure_hash.assert_called_once_with("raw_sapa_mysql", "campaign_fieldrep_raw", ["id", "full_name"])
+        _, query, values = execute_values_mock.call_args.args
+        self.assertIn("ROW_NUMBER() OVER (PARTITION BY source_payload_hash", query)
+        self.assertIn('existing."_source_payload_hash" = deduped.source_payload_hash', query)
+        self.assertEqual(values, [["1", "Asha", "row-hash"]])
+
     def test_map_course_status(self):
         self.assertEqual(map_course_status("In Progress"), "Started")
         self.assertEqual(map_course_status("Completed"), "Completed")
