@@ -7,6 +7,7 @@ from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 
 import dashboard.views
+from etl.pipelines import bronze_transform, silver_transform
 from dashboard.internal_data_admin import (
     ColumnInfo,
     RAW_AUDIT_COLUMN_NAMES,
@@ -206,6 +207,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("brand_supplied_field_rep_id", sql)
         self.assertIn("field_rep_display_id", sql)
         self.assertIn("AS field_rep_id", sql)
+        self.assertNotIn("AND lower(regexp_replace(COALESCE(btrim(uu.id::text)", sql)
         self.assertNotIn("d.source", sql)
         self.assertNotIn("CASE WHEN COALESCE(ad.total_doctors_assigned, 0) > 0", sql)
         self.assertIn("activity_for_rep AS", sql)
@@ -269,6 +271,31 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("lower(btrim(base.state_normalized)) IN ('null', 'none', 'unknown')", sql)
         self.assertNotIn("state_normalized <> 'UNKNOWN'", sql)
         self.assertNotIn("total_state,0)/4.0", sql)
+
+    def test_inclinic_silver_uses_strict_rep_mapping_and_backfilled_transaction_ids(self):
+        with patch("etl.pipelines.silver_transform.execute") as execute_mock:
+            silver_transform.build_silver("run-1")
+
+        sql = "\n".join(str(call.args[0]) for call in execute_mock.call_args_list)
+        self.assertIn("CREATE TABLE silver.map_field_rep_identity AS", sql)
+        self.assertIn("strict_local_users AS", sql)
+        self.assertNotIn("uu.id::text = ccf.field_rep_id::text", sql)
+        self.assertIn("source_transaction_id", sql)
+        self.assertIn("transaction_identity_key", sql)
+        self.assertIn("field_rep_master_id_resolved", sql)
+        self.assertIn("latest_transaction_rows AS", sql)
+        self.assertIn("COALESCE(t.field_rep_master_id_resolved, t.field_rep_id) AS field_rep_id_resolved", sql)
+
+    def test_inclinic_bronze_preserves_blank_campaign_transactions_for_resolution(self):
+        minimal_specs = {"mysql_server_2": {"sharing_management_collateraltransaction": ["id", "brand_campaign_id"]}}
+        with patch("etl.pipelines.bronze_transform.SOURCE_TABLE_SPECS", minimal_specs), patch(
+            "etl.pipelines.bronze_transform.execute"
+        ) as execute_mock:
+            bronze_transform.build_bronze()
+
+        sql = "\n".join(str(call.args[0]) for call in execute_mock.call_args_list)
+        self.assertIn("LIKE '%test%'", sql)
+        self.assertNotIn("COALESCE(\"brand_campaign_id\", '') = ''", sql)
 
     def test_state_attention_ranks_by_weekly_health_and_cards_show_bottom_three(self):
         state_attention = [

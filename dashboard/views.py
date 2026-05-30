@@ -342,7 +342,6 @@ def _field_rep_alias_sql_parts() -> tuple[str, str, list[str]]:
             f"""
             LEFT JOIN bronze.user_management_user uu
               ON ({_normalized_sql('uu.field_id')} <> '' AND {_normalized_sql('uu.field_id')} = {_normalized_sql('cfr.brand_supplied_field_rep_id')})
-              OR ({_normalized_sql('uu.id::text')} <> '' AND {_normalized_sql('uu.id::text')} = {_normalized_sql('ccf.field_rep_id::text')})
               {auth_email_match}
               {auth_username_match}
             """
@@ -528,10 +527,7 @@ def _campaign_display_name(selected_campaign: str, brand_campaign_variants: list
 def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list[str]) -> int:
     brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
     candidate_cte = _candidate_campaign_ids_cte(brand_placeholders)
-    alias_joins, alias_selects, alias_key_columns = _field_rep_alias_sql_parts()
-    alias_key_unions = "\n                ".join(
-        f"UNION ALL SELECT {column} AS rep_key FROM assigned_reps" for column in alias_key_columns
-    )
+    alias_joins, alias_selects, _alias_key_columns = _field_rep_alias_sql_parts()
     params = [selected_campaign, *brand_keys, *brand_keys, _normalize_lookup_key(selected_campaign)]
     rows = _fetch_dicts(
         f"""
@@ -549,21 +545,11 @@ def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list
               ON cfr.id::text = ccf.field_rep_id::text
             {alias_joins}
         ),
-        assigned_rep_keys AS (
-            SELECT DISTINCT rep_key
-            FROM (
-                SELECT internal_rep_key AS rep_key FROM assigned_reps
-                UNION ALL SELECT external_rep_key AS rep_key FROM assigned_reps
-                {alias_key_unions}
-            ) keys
-            WHERE rep_key <> ''
-        ),
         assigned_doctors AS (
             SELECT DISTINCT d.doctor_identity_key
-            FROM assigned_rep_keys ar
+            FROM assigned_reps ar
             JOIN silver.dim_doctor d
-              ON {_normalized_sql('d.rep_id_normalized')} = ar.rep_key
-              OR {_normalized_sql('d.field_rep_id_resolved')} = ar.rep_key
+              ON d.field_rep_id_resolved = ar.field_rep_id
         ),
         declared_counts AS (
             SELECT MAX(
@@ -586,11 +572,15 @@ def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list
             JOIN candidate_campaign_ids ci
               ON {_normalized_sql('cc.id::text')} = {_normalized_sql('ci.candidate_campaign_id')}
         )
-        SELECT GREATEST(
-            COALESCE((SELECT COUNT(*) FROM assigned_doctors), 0),
-            COALESCE((SELECT declared_total FROM declared_counts), 0),
-            COALESCE((SELECT supported_total FROM supported_counts), 0)
-        )::int AS assigned_total
+        SELECT
+            CASE
+                WHEN COALESCE((SELECT COUNT(*) FROM assigned_doctors), 0) > 0
+                THEN COALESCE((SELECT COUNT(*) FROM assigned_doctors), 0)
+                ELSE GREATEST(
+                    COALESCE((SELECT declared_total FROM declared_counts), 0),
+                    COALESCE((SELECT supported_total FROM supported_counts), 0)
+                )
+            END::int AS assigned_total
         """,
         [*params, *brand_keys],
     )
@@ -797,7 +787,8 @@ def _collateral_health_rows(
             WHERE {_normalized_sql('a.brand_campaign_id')} IN ({brand_placeholders})
         )
         SELECT
-            collateral_id,
+            se.collateral_id,
+            COALESCE(MAX(NULLIF(c.collateral_title, '')), 'Collateral ' || se.collateral_id) AS collateral_title,
             COUNT(DISTINCT doctor_key) FILTER (
                 WHERE reached_first_ts IS NOT NULL
                    OR opened_first_ts IS NOT NULL
@@ -805,12 +796,16 @@ def _collateral_health_rows(
                    OR pdf_download_first_ts IS NOT NULL
             ) AS reached,
             COUNT(DISTINCT doctor_key) FILTER (WHERE opened_first_ts IS NOT NULL) AS opened,
+            COUNT(DISTINCT doctor_key) FILTER (WHERE video_gt_50_first_ts IS NOT NULL) AS video,
+            COUNT(DISTINCT doctor_key) FILTER (WHERE pdf_download_first_ts IS NOT NULL) AS pdf,
             COUNT(DISTINCT doctor_key) FILTER (
                 WHERE video_gt_50_first_ts IS NOT NULL OR pdf_download_first_ts IS NOT NULL
             ) AS consumed
-        FROM source_events
-        GROUP BY collateral_id
-        ORDER BY collateral_id
+        FROM source_events se
+        LEFT JOIN silver.bridge_campaign_collateral_schedule c
+          ON c.collateral_id::text = se.collateral_id
+        GROUP BY se.collateral_id
+        ORDER BY se.collateral_id
         """,
         brand_keys,
     )
@@ -956,18 +951,14 @@ def _field_rep_insight_rows(
         ),
         assigned_doctor_matches AS (
             SELECT
-                ark.field_rep_id,
+                ar.field_rep_id,
                 d.doctor_identity_key,
                 COALESCE(NULLIF(btrim(d.name), ''), 'Unknown Doctor') AS doctor_name,
                 NULLIF(btrim(COALESCE(d.phone, d.doctor_phone_normalized)), '') AS doctor_phone
-            FROM assigned_rep_keys ark
+            FROM assigned_reps ar
             LEFT JOIN silver.dim_doctor d
-              ON (
-                  {_normalized_sql('d.rep_id_normalized')} = ark.rep_key
-                  OR {_normalized_sql('d.field_rep_id_resolved')} = ark.rep_key
-              )
-            WHERE ark.key_type IN ('local_user_id', 'legacy_rep_id', 'campaign_fieldrep_id', 'brand_field_id')
-              AND COALESCE(NULLIF(d.doctor_identity_key, ''), '') <> ''
+              ON d.field_rep_id_resolved = ar.field_rep_id
+            WHERE COALESCE(NULLIF(d.doctor_identity_key, ''), '') <> ''
         ),
         assigned_doctor_rows AS (
             SELECT
@@ -1031,6 +1022,8 @@ def _field_rep_insight_rows(
                     NULLIF(rep_email_map.mapped_email_key, ''),
                     NULLIF({_normalized_sql('tx.field_rep_email')}, '')
                 ) AS email_rep_key,
+                {_normalized_sql('tx.field_rep_master_id_resolved')} AS master_rep_key,
+                {_normalized_sql('tx.brand_supplied_field_rep_id_resolved')} AS brand_rep_key,
                 {_normalized_sql('tx.field_rep_id')} AS numeric_rep_key,
                 1 AS sent_flag,
                 CASE WHEN tx.has_viewed_flag = '1' OR NULLIF(tx.opened_event_ts, '') IS NOT NULL THEN 1 ELSE 0 END AS viewed_flag,
@@ -1086,6 +1079,8 @@ def _field_rep_insight_rows(
                     ''
                 ) AS doctor_phone,
                 NULLIF({_normalized_sql('s.field_rep_email')}, '') AS email_rep_key,
+                ''::text AS master_rep_key,
+                ''::text AS brand_rep_key,
                 {_normalized_sql('s.field_rep_id::text')} AS numeric_rep_key,
                 1 AS sent_flag,
                 0 AS viewed_flag,
@@ -1124,19 +1119,19 @@ def _field_rep_insight_rows(
             FROM activity_source
             WHERE COALESCE(email_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'auth_user_id'::text, 40
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, master_rep_key, 'campaign_fieldrep_id'::text, 20
             FROM activity_source
-            WHERE COALESCE(numeric_rep_key, '') <> ''
+            WHERE COALESCE(master_rep_key, '') <> ''
+            UNION ALL
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, brand_rep_key, 'brand_field_id'::text, 30
+            FROM activity_source
+            WHERE COALESCE(brand_rep_key, '') <> ''
             UNION ALL
             SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'local_user_id'::text, 50
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'campaign_fieldrep_id'::text, 60
-            FROM activity_source
-            WHERE COALESCE(numeric_rep_key, '') <> ''
-            UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'brand_field_id'::text, 70
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'legacy_rep_id'::text, 70
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
         ),
@@ -1441,6 +1436,8 @@ def _state_attention_source_rows(
               COALESCE(
                 NULLIF(btrim(linked_share.field_rep_email), ''),
                 NULLIF(btrim(rep_email_map.mapped_email), ''),
+                NULLIF(btrim(tx.field_rep_master_id_resolved), ''),
+                NULLIF(btrim(tx.brand_supplied_field_rep_id_resolved), ''),
                 NULLIF(btrim(tx.field_rep_email), ''),
                 tx.field_rep_id::text
               ) AS field_rep_id_resolved
@@ -2507,15 +2504,15 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     ],
                 }
 
-            weekly_best = max(
-                health_rows,
-                key=lambda r: _weekly_engagement_health_score(
-                    _to_float(r.get("doctors_reached_unique")),
-                    _to_float(r.get("doctors_opened_unique")),
-                    _to_float(r.get("doctors_consumed_unique")),
+            best_collateral = max(
+                collateral_health_source,
+                key=lambda r: _engagement_health_score(
+                    _to_float(r.get("reached")),
+                    _to_float(r.get("opened")),
+                    _to_float(r.get("consumed")),
                     total_doctors,
                 ),
-            )
+            ) if collateral_health_source else {}
             bench_rows = _fetch_dicts(
                 """
                 SELECT avg_campaign_health_score
@@ -2538,15 +2535,15 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 "pdf_pct": round(pdf_pct_opened, 1),
             }
             collateral_cards["best"] = {
-                "title": f"Week {weekly_best.get('week_index')} Best",
-                "reached": _to_int(_to_float(weekly_best.get("doctors_reached_unique"))),
-                "opened": _to_int(_to_float(weekly_best.get("doctors_opened_unique"))),
-                "video": _to_int(_to_float(weekly_best.get("video_viewed_50_unique"))),
-                "pdf": _to_int(_to_float(weekly_best.get("pdf_download_unique"))),
-                "reached_pct": round(_safe_pct(_to_float(weekly_best.get("doctors_reached_unique")), total_doctors), 1),
-                "opened_pct": round(_safe_pct(_to_float(weekly_best.get("doctors_opened_unique")), _to_float(weekly_best.get("doctors_reached_unique"))), 1),
-                "video_pct": round(_safe_pct(_to_float(weekly_best.get("video_viewed_50_unique")), _to_float(weekly_best.get("doctors_opened_unique"))), 1),
-                "pdf_pct": round(_safe_pct(_to_float(weekly_best.get("pdf_download_unique")), _to_float(weekly_best.get("doctors_opened_unique"))), 1),
+                "title": best_collateral.get("collateral_title") or "Best Collateral",
+                "reached": _to_int(_to_float(best_collateral.get("reached"))),
+                "opened": _to_int(_to_float(best_collateral.get("opened"))),
+                "video": _to_int(_to_float(best_collateral.get("video"))),
+                "pdf": _to_int(_to_float(best_collateral.get("pdf"))),
+                "reached_pct": round(_safe_pct(_to_float(best_collateral.get("reached")), total_doctors), 1),
+                "opened_pct": round(_safe_pct(_to_float(best_collateral.get("opened")), _to_float(best_collateral.get("reached"))), 1),
+                "video_pct": round(_safe_pct(_to_float(best_collateral.get("video")), _to_float(best_collateral.get("opened"))), 1),
+                "pdf_pct": round(_safe_pct(_to_float(best_collateral.get("pdf")), _to_float(best_collateral.get("opened"))), 1),
             }
             benchmark_metric_rows = []
             if bridge_base_exists:
