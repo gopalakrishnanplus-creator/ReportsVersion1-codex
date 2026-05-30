@@ -64,6 +64,5 @@ def build_bronze() -> None:
         """
         DELETE FROM bronze.sharing_management_collateraltransaction
         WHERE COALESCE(LOWER("brand_campaign_id"), '') LIKE '%test%'
-           OR COALESCE("brand_campaign_id", '') = '';
         """
     )

@@ -185,6 +185,128 @@ def build_silver(run_id: str) -> None:
         """
     )
 
+    execute("DROP TABLE IF EXISTS silver.map_field_rep_identity;")
+    execute(
+        """
+        CREATE TABLE silver.map_field_rep_identity AS
+        WITH master_reps AS (
+            SELECT
+                cfr.id::text AS canonical_field_rep_id,
+                COALESCE(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), cfr.id::text) AS field_rep_display_id,
+                COALESCE(
+                    NULLIF(btrim(cfr.full_name), ''),
+                    NULLIF(btrim(concat_ws(' ', NULLIF(au.first_name, ''), NULLIF(au.last_name, ''))), ''),
+                    NULLIF(btrim(au.username), ''),
+                    NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''),
+                    cfr.id::text
+                ) AS field_rep_name,
+                NULLIF(btrim(cfr.brand_supplied_field_rep_id), '') AS brand_supplied_field_rep_id,
+                NULLIF(btrim(cfr.user_id), '') AS auth_user_id,
+                NULLIF(btrim(au.email), '') AS auth_email,
+                NULLIF(btrim(au.username), '') AS auth_username,
+                COALESCE(NULLIF(initcap(btrim(cfr.state)), ''), 'UNKNOWN') AS state_normalized,
+                cfr.updated_at,
+                cfr.created_at
+            FROM bronze.campaign_fieldrep cfr
+            LEFT JOIN bronze.auth_user au
+              ON au.id::text = cfr.user_id::text
+        ),
+        strict_local_users AS (
+            SELECT DISTINCT
+                mr.canonical_field_rep_id,
+                uu.id::text AS local_user_id,
+                NULLIF(btrim(uu.field_id), '') AS local_field_id,
+                NULLIF(btrim(uu.email), '') AS local_email,
+                NULLIF(btrim(uu.username), '') AS local_username
+            FROM master_reps mr
+            JOIN bronze.user_management_user uu
+              ON (
+                  mr.brand_supplied_field_rep_id IS NOT NULL
+                  AND lower(regexp_replace(NULLIF(btrim(uu.field_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+                    = lower(regexp_replace(mr.brand_supplied_field_rep_id, '[^a-zA-Z0-9]', '', 'g'))
+              )
+              OR (
+                  mr.auth_email IS NOT NULL
+                  AND lower(regexp_replace(NULLIF(btrim(uu.email), ''), '[^a-zA-Z0-9]', '', 'g'))
+                    = lower(regexp_replace(mr.auth_email, '[^a-zA-Z0-9]', '', 'g'))
+              )
+              OR (
+                  mr.auth_username IS NOT NULL
+                  AND lower(regexp_replace(NULLIF(btrim(uu.username), ''), '[^a-zA-Z0-9]', '', 'g'))
+                    = lower(regexp_replace(mr.auth_username, '[^a-zA-Z0-9]', '', 'g'))
+              )
+        ),
+        strict_legacy_reps AS (
+            SELECT DISTINCT
+                mr.canonical_field_rep_id,
+                sfr.id::text AS legacy_rep_id,
+                NULLIF(btrim(sfr.field_id), '') AS legacy_field_id,
+                NULLIF(btrim(sfr.email), '') AS legacy_email,
+                NULLIF(btrim(sfr.gmail), '') AS legacy_gmail,
+                NULLIF(btrim(sfr.whatsapp_number), '') AS legacy_whatsapp
+            FROM master_reps mr
+            JOIN bronze.sharing_management_fieldrepresentative sfr
+              ON (
+                  mr.brand_supplied_field_rep_id IS NOT NULL
+                  AND lower(regexp_replace(NULLIF(btrim(sfr.field_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+                    = lower(regexp_replace(mr.brand_supplied_field_rep_id, '[^a-zA-Z0-9]', '', 'g'))
+              )
+              OR (
+                  mr.auth_email IS NOT NULL
+                  AND (
+                    lower(regexp_replace(NULLIF(btrim(sfr.email), ''), '[^a-zA-Z0-9]', '', 'g'))
+                      = lower(regexp_replace(mr.auth_email, '[^a-zA-Z0-9]', '', 'g'))
+                    OR lower(regexp_replace(NULLIF(btrim(sfr.gmail), ''), '[^a-zA-Z0-9]', '', 'g'))
+                      = lower(regexp_replace(mr.auth_email, '[^a-zA-Z0-9]', '', 'g'))
+                  )
+              )
+        ),
+        alias_rows AS (
+            SELECT canonical_field_rep_id, field_rep_display_id, field_rep_name, brand_supplied_field_rep_id, state_normalized, 'campaign_fieldrep_id'::text AS alias_type, canonical_field_rep_id AS alias_value, 80 AS match_rank FROM master_reps
+            UNION ALL SELECT canonical_field_rep_id, field_rep_display_id, field_rep_name, brand_supplied_field_rep_id, state_normalized, 'brand_field_id', brand_supplied_field_rep_id, 20 FROM master_reps WHERE brand_supplied_field_rep_id IS NOT NULL
+            UNION ALL SELECT canonical_field_rep_id, field_rep_display_id, field_rep_name, brand_supplied_field_rep_id, state_normalized, 'auth_user_id', auth_user_id, 70 FROM master_reps WHERE auth_user_id IS NOT NULL
+            UNION ALL SELECT canonical_field_rep_id, field_rep_display_id, field_rep_name, brand_supplied_field_rep_id, state_normalized, 'auth_email', auth_email, 10 FROM master_reps WHERE auth_email IS NOT NULL
+            UNION ALL SELECT canonical_field_rep_id, field_rep_display_id, field_rep_name, brand_supplied_field_rep_id, state_normalized, 'auth_username', auth_username, 30 FROM master_reps WHERE auth_username IS NOT NULL
+            UNION ALL SELECT mr.canonical_field_rep_id, mr.field_rep_display_id, mr.field_rep_name, mr.brand_supplied_field_rep_id, mr.state_normalized, 'local_user_id', slu.local_user_id, 40 FROM strict_local_users slu JOIN master_reps mr ON mr.canonical_field_rep_id = slu.canonical_field_rep_id WHERE slu.local_user_id IS NOT NULL
+            UNION ALL SELECT mr.canonical_field_rep_id, mr.field_rep_display_id, mr.field_rep_name, mr.brand_supplied_field_rep_id, mr.state_normalized, 'local_field_id', slu.local_field_id, 20 FROM strict_local_users slu JOIN master_reps mr ON mr.canonical_field_rep_id = slu.canonical_field_rep_id WHERE slu.local_field_id IS NOT NULL
+            UNION ALL SELECT mr.canonical_field_rep_id, mr.field_rep_display_id, mr.field_rep_name, mr.brand_supplied_field_rep_id, mr.state_normalized, 'local_email', slu.local_email, 10 FROM strict_local_users slu JOIN master_reps mr ON mr.canonical_field_rep_id = slu.canonical_field_rep_id WHERE slu.local_email IS NOT NULL
+            UNION ALL SELECT mr.canonical_field_rep_id, mr.field_rep_display_id, mr.field_rep_name, mr.brand_supplied_field_rep_id, mr.state_normalized, 'local_username', slu.local_username, 30 FROM strict_local_users slu JOIN master_reps mr ON mr.canonical_field_rep_id = slu.canonical_field_rep_id WHERE slu.local_username IS NOT NULL
+            UNION ALL SELECT mr.canonical_field_rep_id, mr.field_rep_display_id, mr.field_rep_name, mr.brand_supplied_field_rep_id, mr.state_normalized, 'legacy_rep_id', slr.legacy_rep_id, 50 FROM strict_legacy_reps slr JOIN master_reps mr ON mr.canonical_field_rep_id = slr.canonical_field_rep_id WHERE slr.legacy_rep_id IS NOT NULL
+            UNION ALL SELECT mr.canonical_field_rep_id, mr.field_rep_display_id, mr.field_rep_name, mr.brand_supplied_field_rep_id, mr.state_normalized, 'legacy_field_id', slr.legacy_field_id, 20 FROM strict_legacy_reps slr JOIN master_reps mr ON mr.canonical_field_rep_id = slr.canonical_field_rep_id WHERE slr.legacy_field_id IS NOT NULL
+            UNION ALL SELECT mr.canonical_field_rep_id, mr.field_rep_display_id, mr.field_rep_name, mr.brand_supplied_field_rep_id, mr.state_normalized, 'legacy_email', slr.legacy_email, 10 FROM strict_legacy_reps slr JOIN master_reps mr ON mr.canonical_field_rep_id = slr.canonical_field_rep_id WHERE slr.legacy_email IS NOT NULL
+            UNION ALL SELECT mr.canonical_field_rep_id, mr.field_rep_display_id, mr.field_rep_name, mr.brand_supplied_field_rep_id, mr.state_normalized, 'legacy_gmail', slr.legacy_gmail, 10 FROM strict_legacy_reps slr JOIN master_reps mr ON mr.canonical_field_rep_id = slr.canonical_field_rep_id WHERE slr.legacy_gmail IS NOT NULL
+            UNION ALL SELECT mr.canonical_field_rep_id, mr.field_rep_display_id, mr.field_rep_name, mr.brand_supplied_field_rep_id, mr.state_normalized, 'legacy_whatsapp', slr.legacy_whatsapp, 60 FROM strict_legacy_reps slr JOIN master_reps mr ON mr.canonical_field_rep_id = slr.canonical_field_rep_id WHERE slr.legacy_whatsapp IS NOT NULL
+        ),
+        normalized_alias_rows AS (
+            SELECT
+                canonical_field_rep_id,
+                field_rep_display_id,
+                field_rep_name,
+                brand_supplied_field_rep_id,
+                state_normalized,
+                alias_type,
+                alias_value,
+                lower(regexp_replace(NULLIF(btrim(alias_value), ''), '[^a-zA-Z0-9]', '', 'g')) AS alias_key,
+                match_rank
+            FROM alias_rows
+            WHERE NULLIF(btrim(alias_value), '') IS NOT NULL
+        )
+        SELECT DISTINCT ON (alias_type, alias_key, canonical_field_rep_id)
+            canonical_field_rep_id,
+            field_rep_display_id,
+            field_rep_name,
+            brand_supplied_field_rep_id,
+            state_normalized,
+            alias_type,
+            alias_value,
+            alias_key,
+            match_rank,
+            NOW()::text AS _silver_updated_at
+        FROM normalized_alias_rows
+        ORDER BY alias_type, alias_key, canonical_field_rep_id, match_rank
+        """
+    )
+
     execute("DROP TABLE IF EXISTS silver.dim_doctor;")
     execute(
         """
@@ -216,34 +338,26 @@ def build_silver(run_id: str) -> None:
             CASE WHEN NULLIF(n.doctor_phone_normalized, '') IS NOT NULL THEN 'phone' ELSE n.source_table END AS doctor_identity_source,
             md5(COALESCE(NULLIF(n.doctor_phone_normalized, ''), n.source_table || ':' || COALESCE(n.id, ''))) AS doctor_identity_key,
             n.rep_id AS rep_id_normalized,
-            fr.id AS field_rep_id_resolved,
-            COALESCE(fr.state_normalized, 'UNKNOWN') AS state_normalized,
+            mi.canonical_field_rep_id AS field_rep_id_resolved,
+            COALESCE(mi.state_normalized, 'UNKNOWN') AS state_normalized,
             NOW()::text AS _silver_updated_at,
             'PASS'::text AS _dq_status,
             NULL::text AS _dq_errors
         FROM normalized n
         LEFT JOIN LATERAL (
-            SELECT *
-            FROM silver.dim_field_rep fr
+            SELECT
+                mi.canonical_field_rep_id,
+                mi.state_normalized,
+                mi.match_rank
+            FROM silver.map_field_rep_identity mi
             WHERE n.rep_key <> ''
-              AND n.rep_key IN (
-                lower(regexp_replace(COALESCE(NULLIF(btrim(fr.source_field_rep_id), ''), ''), '[^a-zA-Z0-9]', '', 'g')),
-                lower(regexp_replace(COALESCE(NULLIF(btrim(fr.brand_supplied_field_rep_id), ''), ''), '[^a-zA-Z0-9]', '', 'g')),
-                lower(regexp_replace(COALESCE(NULLIF(btrim(fr.id::text), ''), ''), '[^a-zA-Z0-9]', '', 'g')),
-                lower(regexp_replace(COALESCE(NULLIF(btrim(fr.field_rep_email_best), ''), ''), '[^a-zA-Z0-9]', '', 'g'))
-              )
+              AND mi.alias_key = n.rep_key
+              AND mi.alias_type IN ('local_user_id', 'local_field_id', 'legacy_rep_id', 'legacy_field_id', 'brand_field_id')
             ORDER BY
-                CASE fr.source_table
-                    WHEN 'campaign_fieldrep' THEN 0
-                    WHEN 'campaign_campaignfieldrep' THEN 1
-                    WHEN 'sharing_management_fieldrepresentative' THEN 2
-                    WHEN 'user_management_user' THEN 3
-                    ELSE 4
-                END,
-                fr.updated_at_ts DESC NULLS LAST,
-                fr.id DESC
+                mi.match_rank,
+                mi.canonical_field_rep_id
             LIMIT 1
-        ) fr ON TRUE
+        ) mi ON TRUE
         """
     )
 
@@ -312,15 +426,185 @@ def build_silver(run_id: str) -> None:
         """
     )
 
+    execute("DROP TABLE IF EXISTS silver.fact_share_log;")
+    execute(
+        f"""
+        CREATE TABLE silver.fact_share_log AS
+        SELECT
+            s.*,
+            regexp_replace(COALESCE(s.doctor_identifier,''), '[^0-9+]', '', 'g') AS doctor_identifier_normalized,
+            md5(COALESCE(NULLIF(regexp_replace(COALESCE(s.doctor_identifier,''), '[^0-9+]', '', 'g'),''), NULLIF(s.doctor_identifier,''), s.id::text)) AS doctor_identity_key,
+            COALESCE(s.share_timestamp, s.created_at)::text AS reached_event_ts,
+            s.share_timestamp::text AS share_timestamp_ts,
+            s.created_at::text AS created_at_ts,
+            s.updated_at::text AS updated_at_ts,
+            NOW()::text AS _silver_updated_at,
+            '{run_id}'::text AS _as_of_run_id
+        FROM bronze.sharing_management_sharelog s
+        """
+    )
+
     execute("DROP TABLE IF EXISTS silver.fact_collateral_transaction;")
     execute(
         f"""
         CREATE TABLE silver.fact_collateral_transaction AS
+        WITH collateral_campaign AS (
+            SELECT
+                cc.collateral_id,
+                MIN(NULLIF(btrim(cm.brand_campaign_id), '')) AS resolved_brand_campaign_id,
+                COUNT(DISTINCT NULLIF(btrim(cm.brand_campaign_id), '')) AS brand_campaign_count
+            FROM silver.bridge_campaign_collateral_schedule cc
+            LEFT JOIN bronze.campaign_management_campaign cm
+              ON cm.id::text = cc.campaign_id_resolved
+            GROUP BY cc.collateral_id
+        ),
+        normalized AS (
+            SELECT
+                t.*,
+                NULLIF(regexp_replace(COALESCE(t.doctor_number,''), '[^0-9+]', '', 'g'), '') AS doctor_phone_normalized_value,
+                COALESCE(
+                    NULLIF(btrim(t.transaction_date), ''),
+                    NULLIF(btrim(t.sent_at), ''),
+                    NULLIF(btrim(t.created_at), ''),
+                    NULLIF(btrim(t.updated_at), ''),
+                    NULLIF(btrim(t.id), '')
+                ) AS transaction_time_value,
+                COALESCE(
+                    NULLIF(btrim(t.brand_campaign_id), ''),
+                    NULLIF(btrim(linked_share.brand_campaign_id), ''),
+                    CASE WHEN cc.brand_campaign_count = 1 THEN cc.resolved_brand_campaign_id ELSE NULL END
+                ) AS brand_campaign_id_resolved_value,
+                COALESCE(
+                    rep_from_txid.brand_supplied_field_rep_id,
+                    rep_from_email.brand_supplied_field_rep_id,
+                    rep_from_id.brand_supplied_field_rep_id,
+                    NULLIF(btrim(t.field_rep_unique_id), ''),
+                    NULLIF(btrim(t.field_rep_id), '')
+                ) AS brand_supplied_field_rep_id_resolved,
+                COALESCE(
+                    rep_from_txid.canonical_field_rep_id,
+                    rep_from_email.canonical_field_rep_id,
+                    rep_from_id.canonical_field_rep_id
+                ) AS field_rep_master_id_resolved
+            FROM bronze.sharing_management_collateraltransaction t
+            LEFT JOIN LATERAL (
+                SELECT s.*
+                FROM silver.fact_share_log s
+                WHERE NULLIF(btrim(COALESCE(t.sm_engagement_id, t.share_management_engagement_id)), '') IS NOT NULL
+                  AND s.id::text = COALESCE(NULLIF(btrim(t.sm_engagement_id), ''), NULLIF(btrim(t.share_management_engagement_id), ''))
+                ORDER BY COALESCE(s.updated_at_ts, s.created_at_ts, s.share_timestamp_ts) DESC NULLS LAST, s.id DESC
+                LIMIT 1
+            ) linked_share ON TRUE
+            LEFT JOIN collateral_campaign cc
+              ON cc.collateral_id::text = t.collateral_id::text
+            LEFT JOIN LATERAL (
+                SELECT mi.canonical_field_rep_id, mi.brand_supplied_field_rep_id
+                FROM silver.map_field_rep_identity mi
+                WHERE mi.alias_key = lower(regexp_replace(NULLIF(btrim(split_part(t.transaction_id, '-', 1)), ''), '[^a-zA-Z0-9]', '', 'g'))
+                  AND mi.alias_type IN ('brand_field_id', 'local_field_id', 'legacy_field_id')
+                ORDER BY mi.match_rank, mi.canonical_field_rep_id
+                LIMIT 1
+            ) rep_from_txid ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT mi.canonical_field_rep_id, mi.brand_supplied_field_rep_id
+                FROM silver.map_field_rep_identity mi
+                WHERE mi.alias_key = lower(regexp_replace(NULLIF(btrim(t.field_rep_email), ''), '[^a-zA-Z0-9]', '', 'g'))
+                  AND mi.alias_type IN ('local_email', 'auth_email', 'legacy_email', 'legacy_gmail')
+                ORDER BY mi.match_rank, mi.canonical_field_rep_id
+                LIMIT 1
+            ) rep_from_email ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT mi.canonical_field_rep_id, mi.brand_supplied_field_rep_id
+                FROM silver.map_field_rep_identity mi
+                WHERE mi.alias_key = lower(regexp_replace(NULLIF(btrim(t.field_rep_id), ''), '[^a-zA-Z0-9]', '', 'g'))
+                  AND mi.alias_type IN ('local_user_id', 'brand_field_id', 'legacy_rep_id', 'legacy_field_id')
+                ORDER BY mi.match_rank, mi.canonical_field_rep_id
+                LIMIT 1
+            ) rep_from_id ON TRUE
+        )
         SELECT
-            t.*,
-            regexp_replace(COALESCE(t.doctor_number,''), '[^0-9+]', '', 'g') AS doctor_phone_normalized,
-            md5(COALESCE(NULLIF(t.doctor_unique_id,''), NULLIF(regexp_replace(COALESCE(t.doctor_number,''), '[^0-9+]', '', 'g'),''), t.id)) AS doctor_identity_key,
+            t.id,
+            COALESCE(
+                NULLIF(btrim(t.transaction_id), ''),
+                NULLIF(
+                    concat_ws(
+                        '-',
+                        NULLIF(btrim(t.brand_supplied_field_rep_id_resolved), ''),
+                        t.doctor_phone_normalized_value,
+                        NULLIF(btrim(t.collateral_id), ''),
+                        NULLIF(regexp_replace(COALESCE(t.transaction_time_value, ''), '[^0-9A-Za-z]+', '', 'g'), '')
+                    ),
+                    ''
+                ),
+                t.id
+            ) AS transaction_id,
+            NULLIF(btrim(t.transaction_id), '') AS source_transaction_id,
+            t.brand_campaign_id_resolved_value AS brand_campaign_id,
+            t.field_rep_id,
+            t.field_rep_unique_id,
+            t.doctor_name,
+            t.doctor_number,
+            t.doctor_unique_id,
+            t.collateral_id,
+            t.transaction_date,
+            t.has_viewed,
+            t.downloaded_pdf,
+            t.pdf_completed,
+            t.video_view_lt_50,
+            t.video_view_gt_50,
+            t.video_completed,
+            t.pdf_total_pages,
+            t.last_video_percentage,
+            t.pdf_last_page,
+            t.doctor_viewer_engagement_id,
+            t.share_management_engagement_id,
+            t.video_tracking_last_event_id,
+            t.created_at,
+            t.updated_at,
+            t.sent_at,
+            t.viewed_at,
+            t.first_viewed_at,
+            t.viewed_last_page_at,
+            t.video_lt_50_at,
+            t.video_gt_50_at,
+            t.video_100_at,
+            t.last_viewed_at,
+            t.dv_engagement_id,
+            t.field_rep_email,
+            t.share_channel,
+            t.sm_engagement_id,
+            t.video_watch_percentage,
+            t._ingestion_run_id,
+            t._ingested_at,
+            t._source_server,
+            t._source_table,
+            t._extract_started_at,
+            t._extract_ended_at,
+            t._record_hash,
+            t._is_deleted,
+            t._dq_status,
+            t._dq_errors,
+            t.doctor_phone_normalized_value AS doctor_phone_normalized,
+            md5(COALESCE(NULLIF(t.doctor_unique_id,''), t.doctor_phone_normalized_value, t.id)) AS doctor_identity_key,
+            md5(
+                COALESCE(
+                    NULLIF(btrim(t.transaction_id), ''),
+                    NULLIF(
+                        concat_ws(
+                            '-',
+                            NULLIF(btrim(t.brand_supplied_field_rep_id_resolved), ''),
+                            t.doctor_phone_normalized_value,
+                            NULLIF(btrim(t.collateral_id), ''),
+                            NULLIF(regexp_replace(COALESCE(t.transaction_time_value, ''), '[^0-9A-Za-z]+', '', 'g'), '')
+                        ),
+                        ''
+                    ),
+                    t.id
+                )
+            ) AS transaction_identity_key,
             d.id AS doctor_master_id_resolved,
+            t.field_rep_master_id_resolved,
+            t.brand_supplied_field_rep_id_resolved,
             CASE WHEN lower(COALESCE(t.has_viewed,'')) IN ('1','true','t','yes') THEN '1' ELSE '0' END AS has_viewed_flag,
             CASE WHEN lower(COALESCE(t.downloaded_pdf,'')) IN ('1','true','t','yes') THEN '1' ELSE '0' END AS downloaded_pdf_flag,
             CASE WHEN lower(COALESCE(t.pdf_completed,'')) IN ('1','true','t','yes') THEN '1' ELSE '0' END AS pdf_completed_flag,
@@ -358,27 +642,9 @@ def build_silver(run_id: str) -> None:
             END::text AS pdf_download_event_ts,
             NOW()::text AS _silver_updated_at,
             '{run_id}'::text AS _as_of_run_id
-        FROM bronze.sharing_management_collateraltransaction t
+        FROM normalized t
         LEFT JOIN silver.dim_doctor d
-          ON regexp_replace(COALESCE(d.phone,''), '[^0-9+]', '', 'g') = regexp_replace(COALESCE(t.doctor_number,''), '[^0-9+]', '', 'g')
-        """
-    )
-
-    execute("DROP TABLE IF EXISTS silver.fact_share_log;")
-    execute(
-        f"""
-        CREATE TABLE silver.fact_share_log AS
-        SELECT
-            s.*,
-            regexp_replace(COALESCE(s.doctor_identifier,''), '[^0-9+]', '', 'g') AS doctor_identifier_normalized,
-            md5(COALESCE(NULLIF(s.doctor_identifier,''), s.id::text)) AS doctor_identity_key,
-            COALESCE(s.share_timestamp, s.created_at)::text AS reached_event_ts,
-            s.share_timestamp::text AS share_timestamp_ts,
-            s.created_at::text AS created_at_ts,
-            s.updated_at::text AS updated_at_ts,
-            NOW()::text AS _silver_updated_at,
-            '{run_id}'::text AS _as_of_run_id
-        FROM bronze.sharing_management_sharelog s
+          ON d.doctor_phone_normalized = t.doctor_phone_normalized_value
         """
     )
 
@@ -387,9 +653,9 @@ def build_silver(run_id: str) -> None:
         """
         CREATE TABLE silver.map_brand_campaign_to_campaign AS
         WITH campaign_ids AS (
-            SELECT brand_campaign_id FROM silver.fact_collateral_transaction
+            SELECT brand_campaign_id FROM silver.fact_collateral_transaction WHERE COALESCE(NULLIF(btrim(brand_campaign_id), ''), '') <> ''
             UNION
-            SELECT brand_campaign_id FROM silver.fact_share_log
+            SELECT brand_campaign_id FROM silver.fact_share_log WHERE COALESCE(NULLIF(btrim(brand_campaign_id), ''), '') <> ''
         )
         SELECT
             c.brand_campaign_id,
@@ -399,7 +665,9 @@ def build_silver(run_id: str) -> None:
             CASE WHEN COUNT(DISTINCT COALESCE(cm.id::text, coll.campaign_id)) <= 1 THEN NULL ELSE 'Campaign mapping inconsistency' END AS _dq_errors,
             NOW()::text AS _silver_updated_at
         FROM campaign_ids c
-        LEFT JOIN bronze.campaign_management_campaign cm ON cm.brand_campaign_id = c.brand_campaign_id
+        LEFT JOIN bronze.campaign_management_campaign cm
+          ON lower(regexp_replace(COALESCE(NULLIF(btrim(cm.brand_campaign_id), ''), ''), '[^a-zA-Z0-9]', '', 'g'))
+           = lower(regexp_replace(COALESCE(NULLIF(btrim(c.brand_campaign_id), ''), ''), '[^a-zA-Z0-9]', '', 'g'))
         LEFT JOIN silver.dim_collateral coll ON coll.id IN (
             SELECT DISTINCT collateral_id FROM silver.fact_collateral_transaction t WHERE t.brand_campaign_id = c.brand_campaign_id
             UNION
@@ -417,44 +685,20 @@ def build_silver(run_id: str) -> None:
             SELECT DISTINCT
                 m.brand_campaign_id,
                 ccf.field_rep_id::text AS master_field_rep_id,
-                lower(regexp_replace(NULLIF(btrim(alias_value), ''), '[^a-zA-Z0-9]', '', 'g')) AS rep_key,
-                COALESCE(NULLIF(initcap(btrim(cfr.state)), ''), 'UNKNOWN') AS state_normalized
+                mi.alias_key AS rep_key,
+                COALESCE(mi.state_normalized, NULLIF(initcap(btrim(cfr.state)), ''), 'UNKNOWN') AS state_normalized
             FROM silver.map_brand_campaign_to_campaign m
             JOIN bronze.campaign_campaignfieldrep ccf
-              ON NULLIF(btrim(ccf.campaign_id), '') = NULLIF(btrim(m.campaign_id_resolved), '')
+              ON lower(regexp_replace(NULLIF(btrim(ccf.campaign_id), ''), '[^a-zA-Z0-9]', '', 'g')) IN (
+                    lower(regexp_replace(COALESCE(NULLIF(btrim(m.campaign_id_resolved), ''), ''), '[^a-zA-Z0-9]', '', 'g')),
+                    lower(regexp_replace(COALESCE(NULLIF(btrim(m.brand_campaign_id), ''), ''), '[^a-zA-Z0-9]', '', 'g'))
+                 )
             LEFT JOIN bronze.campaign_fieldrep cfr
               ON cfr.id::text = ccf.field_rep_id::text
-            LEFT JOIN bronze.auth_user au
-              ON au.id::text = cfr.user_id::text
-            LEFT JOIN bronze.user_management_user uu
-              ON lower(regexp_replace(NULLIF(btrim(uu.field_id), ''), '[^a-zA-Z0-9]', '', 'g'))
-                 = lower(regexp_replace(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), '[^a-zA-Z0-9]', '', 'g'))
-              OR lower(regexp_replace(NULLIF(btrim(uu.email), ''), '[^a-zA-Z0-9]', '', 'g'))
-                 = lower(regexp_replace(NULLIF(btrim(au.email), ''), '[^a-zA-Z0-9]', '', 'g'))
-            LEFT JOIN bronze.sharing_management_fieldrepresentative sfr
-              ON lower(regexp_replace(NULLIF(btrim(sfr.field_id), ''), '[^a-zA-Z0-9]', '', 'g'))
-                 = lower(regexp_replace(NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''), '[^a-zA-Z0-9]', '', 'g'))
-              OR lower(regexp_replace(NULLIF(btrim(sfr.email), ''), '[^a-zA-Z0-9]', '', 'g'))
-                 = lower(regexp_replace(NULLIF(btrim(au.email), ''), '[^a-zA-Z0-9]', '', 'g'))
-            CROSS JOIN LATERAL (
-                VALUES
-                    (ccf.field_rep_id::text),
-                    (cfr.id::text),
-                    (cfr.brand_supplied_field_rep_id),
-                    (cfr.user_id),
-                    (au.username),
-                    (au.email),
-                    (uu.id::text),
-                    (uu.field_id),
-                    (uu.username),
-                    (uu.email),
-                    (sfr.id::text),
-                    (sfr.field_id),
-                    (sfr.email),
-                    (sfr.gmail),
-                    (sfr.whatsapp_number)
-            ) aliases(alias_value)
-            WHERE NULLIF(btrim(alias_value), '') IS NOT NULL
+            JOIN silver.map_field_rep_identity mi
+              ON mi.canonical_field_rep_id = ccf.field_rep_id::text
+             AND mi.alias_type IN ('local_user_id', 'local_field_id', 'brand_field_id', 'auth_email', 'auth_username', 'local_email', 'local_username', 'legacy_rep_id', 'legacy_field_id', 'legacy_email', 'legacy_gmail', 'legacy_whatsapp')
+            WHERE mi.alias_key <> ''
             UNION ALL
             SELECT DISTINCT
                 m.brand_campaign_id,
@@ -523,15 +767,13 @@ def build_silver(run_id: str) -> None:
                 'ASSIGNED_TO_CAMPAIGN_REP'::text AS inclusion_reason
             FROM campaign_rep_aliases cra
             JOIN silver.dim_doctor d
-              ON lower(regexp_replace(NULLIF(btrim(d.rep_id_normalized), ''), '[^a-zA-Z0-9]', '', 'g'))
-                 = cra.rep_key
-              OR lower(regexp_replace(NULLIF(btrim(d.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
-                 = cra.rep_key
+              ON d.field_rep_id_resolved = cra.master_field_rep_id
+              OR lower(regexp_replace(NULLIF(btrim(d.rep_id_normalized), ''), '[^a-zA-Z0-9]', '', 'g')) = cra.rep_key
             UNION
             SELECT
                 t.brand_campaign_id,
                 t.doctor_identity_key,
-                t.field_rep_id AS field_rep_id_resolved,
+                COALESCE(t.field_rep_master_id_resolved, t.field_rep_id) AS field_rep_id_resolved,
                 'OBSERVED_IN_TRANSACTION'::text AS inclusion_reason
             FROM silver.fact_collateral_transaction t
             UNION
@@ -557,7 +799,16 @@ def build_silver(run_id: str) -> None:
     execute(
         """
         CREATE TABLE silver.doctor_action_first_seen AS
-        WITH tx AS (
+        WITH latest_transaction_rows AS (
+            SELECT DISTINCT ON (transaction_identity_key)
+                *
+            FROM silver.fact_collateral_transaction
+            ORDER BY
+                transaction_identity_key,
+                COALESCE(NULLIF(updated_at_ts,''), NULLIF(last_viewed_at_ts,''), NULLIF(created_at_ts,''), NULLIF(transaction_date_ts,''), NULLIF(_ingested_at,'')) DESC NULLS LAST,
+                id DESC
+        ),
+        tx AS (
             SELECT
                 brand_campaign_id,
                 collateral_id,
@@ -571,7 +822,7 @@ def build_silver(run_id: str) -> None:
                        OR NULLIF(viewed_last_page_at_ts,'') IS NOT NULL
                 ) AS pdf_download_first_ts,
                 MAX(COALESCE(NULLIF(updated_at_ts,''), NULLIF(last_viewed_at_ts,''))) AS last_activity_tx_ts
-            FROM silver.fact_collateral_transaction
+            FROM latest_transaction_rows
             GROUP BY brand_campaign_id, collateral_id, doctor_identity_key
         ),
         share AS (

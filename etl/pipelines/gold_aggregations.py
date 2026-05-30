@@ -77,12 +77,18 @@ def build_gold(run_id: str) -> None:
                     brand_campaign_id,
                     collateral_id,
                     doctor_identity_key,
-                    id AS source_latest_transaction_id,
+                    transaction_id AS source_latest_transaction_id,
                     doctor_master_id_resolved,
-                    field_rep_id
+                    COALESCE(field_rep_master_id_resolved, field_rep_id) AS field_rep_id
                 FROM silver.fact_collateral_transaction
                 WHERE brand_campaign_id = %s
-                ORDER BY brand_campaign_id, collateral_id, doctor_identity_key, COALESCE(updated_at_ts, created_at_ts, transaction_date_ts) DESC, id DESC
+                ORDER BY
+                    brand_campaign_id,
+                    collateral_id,
+                    doctor_identity_key,
+                    COALESCE(NULLIF(updated_at_ts,''), NULLIF(last_viewed_at_ts,''), NULLIF(created_at_ts,''), NULLIF(transaction_date_ts,''), NULLIF(_ingested_at,'')) DESC NULLS LAST,
+                    transaction_identity_key DESC,
+                    id DESC
             )
             SELECT
                 a.brand_campaign_id,
