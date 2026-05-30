@@ -64,6 +64,8 @@ The page is dry-run first. It compares source columns only, ignoring RAW audit c
 - RAW total-row reduction equals the archived/deleted duplicate count.
 - BRONZE, SILVER, and GOLD table row counts for the selected scope are unchanged.
 
+Future Inclinic ETL runs also skip exact RAW payloads that already exist. The RAW loader stores `_source_payload_hash`, backfills it for older rows, and inserts only source rows whose exact source-column payload has not been seen before. If a source row keeps the same `id` but any source value changes, it is still inserted as a new RAW version.
+
 Select the system, choose the earliest layer to clear, and enter the campaign/entity key. The planner previews every matching table before deletion.
 
 - RAW means RAW, BRONZE, SILVER, and GOLD are included.

@@ -7,7 +7,7 @@ from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 
 import dashboard.views
-from etl.pipelines import bronze_transform, silver_transform
+from etl.pipelines import bronze_transform, raw_ingestion, silver_transform
 from dashboard.internal_data_admin import (
     ColumnInfo,
     RAW_AUDIT_COLUMN_NAMES,
@@ -79,6 +79,7 @@ class DashboardRoutingTests(SimpleTestCase):
             ColumnInfo("campaign_id", "text", True, 2, None, False, False),
             ColumnInfo("_record_hash", "text", True, 3, None, False, False),
             ColumnInfo("_ingested_at", "text", True, 4, None, False, False),
+            ColumnInfo("_source_payload_hash", "text", True, 5, None, False, False),
         ]
         info = TableInfo("raw_server2", "sharing_management_sharelog", columns, [])
 
@@ -188,6 +189,49 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(snapshot["table_count"], 2)
         self.assertEqual(snapshot["row_count"], 10)
         self.assertEqual([row["table"] for row in snapshot["rows"]], ["campaign_campaignfieldrep", "campaign_registry"])
+
+    def test_raw_ingestion_insert_skips_existing_exact_payload_hash(self):
+        cursor_mock = MagicMock()
+        cursor_mock.rowcount = 0
+        cursor_context = MagicMock()
+        cursor_context.__enter__.return_value = cursor_mock
+        cursor_context.__exit__.return_value = False
+        metadata = raw_ingestion._metadata_values("run-1", "2026-05-30T10:00:00+00:00", "mysql_server_1", "campaign_fieldrep", ["1", "Asha"])
+
+        with patch("etl.pipelines.raw_ingestion.cursor", return_value=cursor_context):
+            inserted = raw_ingestion._insert_raw_row(
+                "raw_server1",
+                "campaign_fieldrep",
+                ["id", "full_name"],
+                ["1", "Asha"],
+                metadata,
+            )
+
+        self.assertFalse(inserted)
+        query, params = cursor_mock.execute.call_args.args
+        self.assertIn("_source_payload_hash", query)
+        self.assertIn("WHERE NOT EXISTS", query)
+        self.assertIn("md5(jsonb_build_array(%s::text, %s::text)::text)", query)
+        self.assertEqual(params[:2], ["1", "Asha"])
+
+    def test_raw_ingestion_counts_inserted_and_skipped_rows(self):
+        rows = [{"id": "1", "full_name": "Asha"}, {"id": "1", "full_name": "Asha"}]
+        specs = {"mysql_server_1": {"campaign_fieldrep": ["id", "full_name"]}}
+
+        with patch("etl.pipelines.raw_ingestion.SOURCE_TABLE_SPECS", specs), patch(
+            "etl.pipelines.raw_ingestion.ensure_raw_tables",
+        ), patch(
+            "etl.pipelines.raw_ingestion._extract",
+            return_value=rows,
+        ), patch(
+            "etl.pipelines.raw_ingestion._insert_raw_row",
+            side_effect=[True, False],
+        ):
+            result = raw_ingestion.ingest_raw("run-1")
+
+        self.assertEqual(result["counts"]["raw_server1.campaign_fieldrep"], 1)
+        self.assertEqual(result["skipped_counts"]["raw_server1.campaign_fieldrep"], 1)
+        self.assertEqual(result["extracted_counts"]["raw_server1.campaign_fieldrep"], 2)
 
 
 class DashboardAccessViewTests(SimpleTestCase):

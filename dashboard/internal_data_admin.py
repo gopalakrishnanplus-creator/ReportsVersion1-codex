@@ -41,6 +41,7 @@ RAW_AUDIT_COLUMN_NAMES = frozenset(
         "_extract_started_at",
         "_extract_ended_at",
         "_record_hash",
+        "_source_payload_hash",
         "_is_deleted",
         "_dq_status",
         "_dq_errors",
@@ -407,7 +408,14 @@ def _raw_payload_sql(info: TableInfo) -> sql.Composable:
 
 
 def _raw_fingerprint_sql(info: TableInfo) -> sql.Composable:
-    return _raw_payload_sql(info)
+    payload_hash = sql.SQL("md5(({})::text)").format(_raw_payload_sql(info))
+    column_names = {column.name for column in info.columns}
+    if "_source_payload_hash" in column_names:
+        return sql.SQL("COALESCE(NULLIF({}, ''), {})").format(
+            sql.Identifier("_source_payload_hash"),
+            payload_hash,
+        )
+    return payload_hash
 
 
 def _raw_table_stats(info: TableInfo) -> dict[str, Any]:
@@ -803,6 +811,7 @@ def _archive_and_delete_raw_duplicates_for_table(
         raise DatabaseError(f"{info.schema}.{info.name} has no source columns to compare safely.")
 
     payload_sql = _raw_payload_sql(info)
+    fingerprint_sql = _raw_fingerprint_sql(info)
     order_sql = _raw_dedupe_order_sql(info)
     source_columns_json = json.dumps(source_columns)
     record_hash_sql = _nullable_source_column_sql(info, "_record_hash")
@@ -821,14 +830,25 @@ def _archive_and_delete_raw_duplicates_for_table(
             sql.SQL(
                 """
                 CREATE TEMP TABLE raw_dedupe_to_delete ON COMMIT DROP AS
-                WITH ranked AS (
+                WITH duplicate_fingerprints AS (
+                    SELECT row_fingerprint, COUNT(*)::bigint AS group_count
+                    FROM (
+                        SELECT {} AS row_fingerprint
+                        FROM {}.{}
+                    ) source_rows
+                    GROUP BY row_fingerprint
+                    HAVING COUNT(*) > 1
+                ),
+                ranked AS (
                     SELECT
                         ctid AS raw_ctid,
                         ctid::text AS source_ctid,
                         {} AS source_payload,
-                        ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {}) AS dedupe_rank,
-                        COUNT(*) OVER (PARTITION BY {}) AS duplicate_group_size
+                        ROW_NUMBER() OVER (PARTITION BY duplicates.row_fingerprint ORDER BY {}) AS dedupe_rank,
+                        duplicates.group_count AS duplicate_group_size
                     FROM {}.{}
+                    JOIN duplicate_fingerprints duplicates
+                      ON {} = duplicates.row_fingerprint
                 )
                 SELECT *
                 FROM ranked
@@ -837,12 +857,14 @@ def _archive_and_delete_raw_duplicates_for_table(
                 LIMIT %s
                 """
             ).format(
-                payload_sql,
-                payload_sql,
-                order_sql,
-                payload_sql,
+                fingerprint_sql,
                 sql.Identifier(info.schema),
                 sql.Identifier(info.name),
+                payload_sql,
+                order_sql,
+                sql.Identifier(info.schema),
+                sql.Identifier(info.name),
+                fingerprint_sql,
             ),
             [max_rows or RAW_DEDUPE_BATCH_SIZE],
         )
@@ -2150,7 +2172,7 @@ def internal_data_admin_raw_dedupe(request: HttpRequest) -> HttpResponse:
                         ),
                     }
                 )
-            except DatabaseError as exc:
+            except Exception as exc:
                 return _raw_dedupe_json_error(f"RAW dedupe failed and was rolled back: {exc}", status=500)
 
         if dedupe_action == "execute":
@@ -2188,7 +2210,7 @@ def internal_data_admin_raw_dedupe(request: HttpRequest) -> HttpResponse:
                     )
                     plan = _raw_dedupe_plan(selected_system)
                     report_snapshot = _raw_dedupe_report_snapshot(selected_system)
-                except DatabaseError as exc:
+                except Exception as exc:
                     messages.error(request, f"RAW dedupe failed and was rolled back: {exc}")
 
     return render(

@@ -2,13 +2,26 @@ from etl.connectors.postgres import execute
 from etl.utils.specs import SOURCE_TABLE_SPECS, AUDIT_COLUMNS
 
 
+def _quote_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _ensure_raw_audit_columns(raw_schema: str, table: str) -> None:
+    table_ref = f"{_quote_identifier(raw_schema)}.{_quote_identifier(table)}"
+    for column in AUDIT_COLUMNS:
+        execute(f"ALTER TABLE {table_ref} ADD COLUMN IF NOT EXISTS {_quote_identifier(column)} TEXT;")
+
+
 def ensure_bronze_tables() -> None:
     execute("CREATE SCHEMA IF NOT EXISTS bronze;")
     for tables in SOURCE_TABLE_SPECS.values():
         for table, columns in tables.items():
             bronze_cols = columns + AUDIT_COLUMNS + ["_bronze_deduped_at", "_bronze_source_raw_ingested_at"]
-            column_sql = ", ".join(f'"{c}" TEXT' for c in bronze_cols)
-            execute(f"CREATE TABLE IF NOT EXISTS bronze.{table} ({column_sql});")
+            column_sql = ", ".join(f"{_quote_identifier(c)} TEXT" for c in bronze_cols)
+            table_ref = f"{_quote_identifier('bronze')}.{_quote_identifier(table)}"
+            execute(f"CREATE TABLE IF NOT EXISTS {table_ref} ({column_sql});")
+            for column in bronze_cols:
+                execute(f"ALTER TABLE {table_ref} ADD COLUMN IF NOT EXISTS {_quote_identifier(column)} TEXT;")
 
 
 def _dedup_order_expression(columns: list[str]) -> str:
@@ -41,12 +54,15 @@ def build_bronze() -> None:
     for server, tables in SOURCE_TABLE_SPECS.items():
         raw_schema = "raw_server1" if server == "mysql_server_1" else "raw_server2"
         for table, columns in tables.items():
-            execute(f"TRUNCATE TABLE bronze.{table};")
-            base_cols = ",".join(f'"{c}"' for c in columns + AUDIT_COLUMNS)
+            _ensure_raw_audit_columns(raw_schema, table)
+            bronze_table_ref = f"{_quote_identifier('bronze')}.{_quote_identifier(table)}"
+            raw_table_ref = f"{_quote_identifier(raw_schema)}.{_quote_identifier(table)}"
+            execute(f"TRUNCATE TABLE {bronze_table_ref};")
+            base_cols = ",".join(_quote_identifier(c) for c in columns + AUDIT_COLUMNS)
             dedup_order = _dedup_order_expression(columns)
             execute(
                 f"""
-                INSERT INTO bronze.{table} ({base_cols}, _bronze_deduped_at, _bronze_source_raw_ingested_at)
+                INSERT INTO {bronze_table_ref} ({base_cols}, "_bronze_deduped_at", "_bronze_source_raw_ingested_at")
                 SELECT {base_cols}, NOW()::text, "_ingested_at"
                 FROM (
                     SELECT *,
@@ -54,7 +70,7 @@ def build_bronze() -> None:
                             PARTITION BY COALESCE("id", _record_hash)
                             ORDER BY {dedup_order}
                         ) AS rn
-                    FROM {raw_schema}.{table}
+                    FROM {raw_table_ref}
                 ) q
                 WHERE rn = 1
                 """
