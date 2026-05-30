@@ -398,21 +398,29 @@ def _source_fingerprint_columns(info: TableInfo) -> list[str]:
     return [column.name for column in info.columns if column.name not in RAW_AUDIT_COLUMN_NAMES]
 
 
-def _raw_payload_sql(info: TableInfo) -> sql.Composable:
+def _qualified_column_sql(column: str, relation: str | None = None) -> sql.Composable:
+    if relation:
+        return sql.SQL("{}.{}").format(sql.Identifier(relation), sql.Identifier(column))
+    return sql.Identifier(column)
+
+
+def _raw_payload_sql(info: TableInfo, relation: str | None = None) -> sql.Composable:
     source_columns = _source_fingerprint_columns(info)
     if source_columns:
         return sql.SQL("jsonb_build_array({})").format(
-            sql.SQL(", ").join(sql.Identifier(column) for column in source_columns)
+            sql.SQL(", ").join(_qualified_column_sql(column, relation) for column in source_columns)
         )
+    if relation:
+        return sql.SQL("jsonb_build_array({}.ctid::text)").format(sql.Identifier(relation))
     return sql.SQL("jsonb_build_array(ctid::text)")
 
 
-def _raw_fingerprint_sql(info: TableInfo) -> sql.Composable:
-    payload_hash = sql.SQL("md5(({})::text)").format(_raw_payload_sql(info))
+def _raw_fingerprint_sql(info: TableInfo, relation: str | None = None) -> sql.Composable:
+    payload_hash = sql.SQL("md5(({})::text)").format(_raw_payload_sql(info, relation=relation))
     column_names = {column.name for column in info.columns}
     if "_source_payload_hash" in column_names:
         return sql.SQL("COALESCE(NULLIF({}, ''), {})").format(
-            sql.Identifier("_source_payload_hash"),
+            _qualified_column_sql("_source_payload_hash", relation),
             payload_hash,
         )
     return payload_hash
@@ -783,13 +791,16 @@ def _ensure_raw_dedupe_archive_table() -> None:
     )
 
 
-def _raw_dedupe_order_sql(info: TableInfo) -> sql.SQL:
+def _raw_dedupe_order_sql(info: TableInfo, relation: str | None = None) -> sql.SQL:
     column_names = {column.name for column in info.columns}
     parts: list[sql.Composable] = []
     for column in ("_ingested_at", "_extract_ended_at", "_extract_started_at", "_ingestion_run_id"):
         if column in column_names:
-            parts.append(sql.SQL("NULLIF({}, '') DESC NULLS LAST").format(sql.Identifier(column)))
-    parts.append(sql.SQL("ctid DESC"))
+            parts.append(sql.SQL("NULLIF({}, '') DESC NULLS LAST").format(_qualified_column_sql(column, relation)))
+    if relation:
+        parts.append(sql.SQL("{}.ctid DESC").format(sql.Identifier(relation)))
+    else:
+        parts.append(sql.SQL("ctid DESC"))
     return sql.SQL(", ").join(parts)
 
 
@@ -810,9 +821,10 @@ def _archive_and_delete_raw_duplicates_for_table(
     if not source_columns:
         raise DatabaseError(f"{info.schema}.{info.name} has no source columns to compare safely.")
 
-    payload_sql = _raw_payload_sql(info)
-    fingerprint_sql = _raw_fingerprint_sql(info)
-    order_sql = _raw_dedupe_order_sql(info)
+    payload_sql = _raw_payload_sql(info, relation="src")
+    source_fingerprint_sql = _raw_fingerprint_sql(info, relation="source_rows")
+    ranked_fingerprint_sql = _raw_fingerprint_sql(info, relation="src")
+    order_sql = _raw_dedupe_order_sql(info, relation="src")
     source_columns_json = json.dumps(source_columns)
     record_hash_sql = _nullable_source_column_sql(info, "_record_hash")
     ingested_at_sql = _nullable_source_column_sql(info, "_ingested_at")
@@ -834,19 +846,19 @@ def _archive_and_delete_raw_duplicates_for_table(
                     SELECT row_fingerprint, COUNT(*)::bigint AS group_count
                     FROM (
                         SELECT {} AS row_fingerprint
-                        FROM {}.{}
+                        FROM {}.{} AS source_rows
                     ) source_rows
                     GROUP BY row_fingerprint
                     HAVING COUNT(*) > 1
                 ),
                 ranked AS (
                     SELECT
-                        ctid AS raw_ctid,
-                        ctid::text AS source_ctid,
+                        src.ctid AS raw_ctid,
+                        src.ctid::text AS source_ctid,
                         {} AS source_payload,
                         ROW_NUMBER() OVER (PARTITION BY duplicates.row_fingerprint ORDER BY {}) AS dedupe_rank,
                         duplicates.group_count AS duplicate_group_size
-                    FROM {}.{}
+                    FROM {}.{} AS src
                     JOIN duplicate_fingerprints duplicates
                       ON {} = duplicates.row_fingerprint
                 )
@@ -857,14 +869,14 @@ def _archive_and_delete_raw_duplicates_for_table(
                 LIMIT %s
                 """
             ).format(
-                fingerprint_sql,
+                source_fingerprint_sql,
                 sql.Identifier(info.schema),
                 sql.Identifier(info.name),
                 payload_sql,
                 order_sql,
                 sql.Identifier(info.schema),
                 sql.Identifier(info.name),
-                fingerprint_sql,
+                ranked_fingerprint_sql,
             ),
             [max_rows or RAW_DEDUPE_BATCH_SIZE],
         )
