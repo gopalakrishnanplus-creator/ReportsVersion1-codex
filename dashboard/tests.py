@@ -17,8 +17,11 @@ from dashboard.internal_data_admin import (
     _cleanup_candidate_columns,
     _cleanup_inverse_match_condition,
     _raw_dedupe_confirmation_phrase,
+    _raw_dedupe_order_sql,
     _raw_dedupe_report_snapshot,
     _raw_dedupe_validation,
+    _raw_fingerprint_sql,
+    _raw_payload_sql,
     _is_raw_table_ref,
     _is_relevant_schema,
     _layer_key_for_schema,
@@ -189,6 +192,27 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(snapshot["table_count"], 2)
         self.assertEqual(snapshot["row_count"], 10)
         self.assertEqual([row["table"] for row in snapshot["rows"]], ["campaign_campaignfieldrep", "campaign_registry"])
+
+    def test_raw_dedupe_sql_qualifies_ctid_in_join_scope(self):
+        info = TableInfo(
+            "raw_pe_master",
+            "catalog_videolanguage_raw",
+            [
+                ColumnInfo("id", "text", True, 1, None, False, False),
+                ColumnInfo("_ingested_at", "text", True, 2, None, False, False),
+                ColumnInfo("_source_payload_hash", "text", True, 3, None, False, False),
+            ],
+            [],
+        )
+
+        payload_sql = repr(_raw_payload_sql(info, relation="src"))
+        fingerprint_sql = repr(_raw_fingerprint_sql(info, relation="src"))
+        order_sql = repr(_raw_dedupe_order_sql(info, relation="src"))
+
+        self.assertIn("Identifier('src')", payload_sql)
+        self.assertIn("Identifier('src')", fingerprint_sql)
+        self.assertIn("Identifier('src')", order_sql)
+        self.assertIn("SQL('.ctid DESC')", order_sql)
 
     def test_raw_ingestion_insert_skips_existing_exact_payload_hash(self):
         cursor_mock = MagicMock()
