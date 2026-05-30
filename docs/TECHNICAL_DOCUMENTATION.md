@@ -177,6 +177,7 @@ Execution order:
 ### RAW Pipeline (`raw_ingestion.py`)
 - Creates RAW schemas and tables from canonical source specs.
 - Loads rows with audit metadata (`_ingestion_run_id`, `_record_hash`, etc.).
+- Stores `_source_payload_hash` for exact source-column payloads and skips rows already present in RAW, preventing repeated ETL runs from re-appending identical records while preserving changed versions.
 
 ### BRONZE Pipeline (`bronze_transform.py`)
 - Rebuilds deduplicated rows using `ROW_NUMBER()` partitioning.
@@ -414,4 +415,3 @@ python manage.py runserver
 - Campaign login: `http://127.0.0.1:8000/campaign/<brand_campaign_id>/login/`
 - Campaign report: `http://127.0.0.1:8000/campaign/<brand_campaign_id>/`
 - Admin: `http://127.0.0.1:8000/admin/`
-
