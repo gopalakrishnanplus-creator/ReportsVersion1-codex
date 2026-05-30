@@ -53,7 +53,9 @@ def run_pipeline(run_id: str | None = None, trigger_type: str = "manual", skip_r
 
             notes = {
                 "raw_portal_counts": raw_portal.get("counts", {}),
+                "raw_portal_skipped_counts": raw_portal.get("skipped_counts", {}),
                 "raw_master_counts": raw_master.get("counts", {}),
+                "raw_master_skipped_counts": raw_master.get("skipped_counts", {}),
                 "bronze_counts": bronze_counts,
                 "silver_counts": silver_counts,
                 "silver_issues": silver_issues,

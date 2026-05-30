@@ -1,18 +1,51 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.http import HttpResponse
 from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve, reverse
 
+from etl.pe_reports import storage as pe_storage
 from etl.pe_reports.gold import _latest_business_date, build_benchmark_row, compute_health_components
 from etl.pe_reports.silver import attribute_banner_click_row, attribute_share_row, match_campaign_doctors, rollup_share_funnel
+from etl.pe_reports.specs import RAW_AUDIT_COLUMNS
 from etl.pe_reports.utils import clean_text, week_end_saturday
 from pe_reports.reporting import build_dashboard_payload
 
 
 class PeReportsLogicTests(SimpleTestCase):
+    def test_raw_source_insert_uses_payload_hash_guard(self):
+        cursor_mock = MagicMock()
+        cursor_context = MagicMock()
+        cursor_context.__enter__.return_value = cursor_mock
+        cursor_context.__exit__.return_value = False
+        connection_mock = MagicMock()
+        connection_mock.cursor.return_value = cursor_context
+
+        with patch("etl.pe_reports.storage.ensure_text_table") as ensure_table, patch(
+            "etl.pe_reports.storage.ensure_source_payload_hash"
+        ) as ensure_hash, patch("etl.pe_reports.storage.connection", connection_mock), patch(
+            "etl.pe_reports.storage.execute_values",
+            return_value=[(1,)],
+        ) as execute_values_mock:
+            inserted = pe_storage.insert_new_source_rows(
+                "raw_pe_master",
+                "campaign_fieldrep_raw",
+                ["id", "full_name"],
+                ["_record_hash", "_source_payload_hash"],
+                [{"id": "1", "full_name": "Asha", "_record_hash": "row-hash"}],
+            )
+
+        self.assertEqual(inserted, 1)
+        self.assertIn("_source_payload_hash", RAW_AUDIT_COLUMNS)
+        ensure_table.assert_called_once()
+        ensure_hash.assert_called_once_with("raw_pe_master", "campaign_fieldrep_raw", ["id", "full_name"])
+        _, query, values = execute_values_mock.call_args.args
+        self.assertIn("ROW_NUMBER() OVER (PARTITION BY source_payload_hash", query)
+        self.assertIn('existing."_source_payload_hash" = deduped.source_payload_hash', query)
+        self.assertEqual(values, [["1", "Asha", "row-hash"]])
+
     def test_campaign_doctor_mapping_prefers_logical_id_then_email_then_phone(self):
         mapped = match_campaign_doctors(
             [

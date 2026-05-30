@@ -65,7 +65,9 @@ def run_pipeline(run_id: str | None = None, trigger_type: str = "manual") -> dic
 
             notes = {
                 "raw_mysql_counts": raw_mysql.get("counts", {}),
+                "raw_mysql_skipped_counts": raw_mysql.get("skipped_counts", {}),
                 "raw_api_counts": raw_api.get("counts", {}),
+                "raw_api_skipped_counts": raw_api.get("skipped_counts", {}),
                 "bronze_counts": bronze_counts,
                 "silver_counts": silver_result.get("counts", {}),
                 "gold_tables": gold_result.get("tables", []),

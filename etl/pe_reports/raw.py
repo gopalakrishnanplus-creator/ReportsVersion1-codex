@@ -9,7 +9,7 @@ from etl.pe_reports.control import get_watermark, log_step, upsert_watermark
 from etl.pe_reports.mysql_master import MasterMySQLExtractionError, extract_rows as extract_master_rows
 from etl.pe_reports.mysql_portal import PortalMySQLExtractionError, extract_rows as extract_portal_rows
 from etl.pe_reports.specs import MASTER_TABLE_SPECS, PORTAL_TABLE_SPECS, RAW_AUDIT_COLUMNS, RAW_MASTER_SCHEMA, RAW_PORTAL_SCHEMA, SourceTableSpec
-from etl.pe_reports.storage import append_rows, ensure_text_table
+from etl.pe_reports.storage import ensure_text_table, insert_new_source_rows
 from etl.pe_reports.utils import clean_text, hash_fields, parse_datetime
 
 
@@ -59,6 +59,8 @@ def _ingest_specs(
     error_type: type[Exception],
 ) -> dict[str, Any]:
     counts: dict[str, int] = {}
+    skipped_counts: dict[str, int] = {}
+    extracted_counts: dict[str, int] = {}
     errors: dict[str, str] = {}
     max_watermarks: dict[str, str] = {}
 
@@ -78,8 +80,10 @@ def _ingest_specs(
                     if candidate and (max_watermark_value is None or candidate > max_watermark_value):
                         max_watermark_value = candidate
 
-            append_rows(schema, spec.raw_table, spec.columns + RAW_AUDIT_COLUMNS, prepared_rows)
-            counts[name] = len(prepared_rows)
+            inserted_count = insert_new_source_rows(schema, spec.raw_table, spec.columns, RAW_AUDIT_COLUMNS, prepared_rows)
+            counts[name] = inserted_count
+            skipped_counts[name] = len(prepared_rows) - inserted_count
+            extracted_counts[name] = len(rows)
             if max_watermark_value:
                 max_watermarks[name] = max_watermark_value
             current_watermark = get_watermark(source_name, name)
@@ -93,13 +97,15 @@ def _ingest_specs(
                 "incremental" if spec.watermark_field else "snapshot",
                 run_id,
             )
-            log_step(run_id, f"extract_{source_name}", name, "SUCCESS", rows_read=len(rows), rows_written=len(prepared_rows))
+            log_step(run_id, f"extract_{source_name}", name, "SUCCESS", rows_read=len(rows), rows_written=inserted_count)
         except error_type as exc:  # type: ignore[arg-type]
             counts[name] = 0
+            skipped_counts[name] = 0
+            extracted_counts[name] = 0
             errors[name] = str(exc)
             log_step(run_id, f"extract_{source_name}", name, "FAIL", error_message=str(exc))
 
-    return {"counts": counts, "errors": errors, "max_watermarks": max_watermarks}
+    return {"counts": counts, "skipped_counts": skipped_counts, "extracted_counts": extracted_counts, "errors": errors, "max_watermarks": max_watermarks}
 
 
 def ingest_portal_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
