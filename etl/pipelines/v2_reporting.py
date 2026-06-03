@@ -28,6 +28,16 @@ RFA_DEFAULT_DB = "rfa_master_dev"
 INCLINIC_DEFAULT_DB = "inclinic_live"
 RAW_V2_MASTER_SCHEMA = "raw_v2_master"
 RAW_V2_INCLINIC_SCHEMA = "raw_v2_inclinic"
+BRONZE_COMPAT_SCHEMA = "bronze"
+BRONZE_LEGACY_ARCHIVE_SCHEMA = "bronze_legacy_archive"
+BRONZE_COMPAT_TABLES = (
+    "campaign_fieldrep",
+    "campaign_campaignfieldrep",
+    "campaign_campaign",
+    "campaign_management_campaign",
+    "collateral_management_collateral",
+    "collateral_management_campaigncollateral",
+)
 
 
 def _now() -> str:
@@ -67,6 +77,10 @@ def _norm(value: Any) -> str:
 
 def _source_digits(value: Any) -> str:
     return "".join(ch for ch in _clean(value) if ch.isdigit())
+
+
+def _qident(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
 
 
 def _md5(*parts: Any) -> str:
@@ -1572,18 +1586,56 @@ def _first_seen_rows(fact_tx: list[dict[str, Any]], fact_share: list[dict[str, A
     return list(grouped.values())
 
 
+def _bronze_relation_kind(table: str) -> str:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT c.relkind
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s
+              AND c.relname = %s
+            """,
+            [BRONZE_COMPAT_SCHEMA, table],
+        )
+        row = cursor.fetchone()
+    return str(row[0]) if row else ""
+
+
+def _archive_existing_bronze_relation(table: str, relkind: str) -> None:
+    ensure_schema(BRONZE_LEGACY_ARCHIVE_SCHEMA)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    archive_name = f"{table}__legacy_{timestamp}"
+    archive_command = "ALTER MATERIALIZED VIEW" if relkind == "m" else "ALTER TABLE"
+    source_ref = f"{_qident(BRONZE_COMPAT_SCHEMA)}.{_qident(table)}"
+    renamed_ref = f"{_qident(BRONZE_COMPAT_SCHEMA)}.{_qident(archive_name)}"
+    execute(f"{archive_command} {source_ref} RENAME TO {_qident(archive_name)};")
+    execute(
+        f"{archive_command} {renamed_ref} "
+        f"SET SCHEMA {_qident(BRONZE_LEGACY_ARCHIVE_SCHEMA)};"
+    )
+
+
+def _prepare_bronze_compat_relation(table: str) -> None:
+    relkind = _bronze_relation_kind(table)
+    if not relkind:
+        return
+    if relkind == "v":
+        execute(f"DROP VIEW {_qident(BRONZE_COMPAT_SCHEMA)}.{_qident(table)} CASCADE;")
+        return
+    if relkind in {"r", "p", "f", "m"}:
+        _archive_existing_bronze_relation(table, relkind)
+        return
+    raise RuntimeError(
+        f"Cannot create V2 bronze compatibility view for bronze.{table}: "
+        f"unexpected relation type '{relkind}'. Existing object was not changed."
+    )
+
+
 def _create_bronze_views() -> None:
-    ensure_schema("bronze")
-    for table in (
-        "campaign_fieldrep",
-        "campaign_campaignfieldrep",
-        "campaign_campaign",
-        "campaign_management_campaign",
-        "collateral_management_collateral",
-        "collateral_management_campaigncollateral",
-    ):
-        execute(f'DROP VIEW IF EXISTS bronze."{table}" CASCADE;')
-        execute(f'DROP TABLE IF EXISTS bronze."{table}" CASCADE;')
+    ensure_schema(BRONZE_COMPAT_SCHEMA)
+    for table in BRONZE_COMPAT_TABLES:
+        _prepare_bronze_compat_relation(table)
 
     execute(
         """
@@ -1711,16 +1763,10 @@ def _create_bronze_views() -> None:
 
 
 def _drop_bronze_views() -> None:
-    ensure_schema("bronze")
-    for table in (
-        "campaign_fieldrep",
-        "campaign_campaignfieldrep",
-        "campaign_campaign",
-        "campaign_management_campaign",
-        "collateral_management_collateral",
-        "collateral_management_campaigncollateral",
-    ):
-        execute(f'DROP VIEW IF EXISTS bronze."{table}" CASCADE;')
+    ensure_schema(BRONZE_COMPAT_SCHEMA)
+    for table in BRONZE_COMPAT_TABLES:
+        if _bronze_relation_kind(table) == "v":
+            execute(f"DROP VIEW {_qident(BRONZE_COMPAT_SCHEMA)}.{_qident(table)} CASCADE;")
 
 
 def _record_dq_issues(run_id: str, source: dict[str, list[dict[str, Any]]]) -> dict[str, int]:
