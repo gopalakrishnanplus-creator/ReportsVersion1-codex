@@ -1128,13 +1128,21 @@ def _field_rep_insight_rows(
                         (
                             rule.rule_type = 'keep_doctor_with_field_rep'
                             AND rule.expected_field_rep_brand_supplied_key <> ''
-                            AND {_normalized_sql('COALESCE(ar_rule.field_rep_brand_supplied_id, ar_rule.field_rep_display_id, ar_rule.field_rep_id)')} <> rule.expected_field_rep_brand_supplied_key
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM assigned_rep_keys expected_scope
+                                WHERE expected_scope.field_rep_id = ar_rule.field_rep_id
+                                  AND expected_scope.rep_key = rule.expected_field_rep_brand_supplied_key
+                            )
                             AND (
                                 COALESCE(NULLIF(btrim(rule.affected_field_rep_brand_supplied_ids), ''), '') = ''
-                                OR {_normalized_sql('COALESCE(ar_rule.field_rep_brand_supplied_id, ar_rule.field_rep_display_id, ar_rule.field_rep_id)')} IN (
-                                    SELECT lower(regexp_replace(affected.value, '[^a-zA-Z0-9]+', '', 'g'))
+                                OR EXISTS (
+                                    SELECT 1
                                     FROM regexp_split_to_table(rule.affected_field_rep_brand_supplied_ids, '[,/\\s]+') AS affected(value)
-                                    WHERE regexp_replace(affected.value, '[^a-zA-Z0-9]+', '', 'g') <> ''
+                                    JOIN assigned_rep_keys affected_scope
+                                      ON affected_scope.field_rep_id = ar_rule.field_rep_id
+                                     AND affected_scope.rep_key = lower(regexp_replace(affected.value, '[^a-zA-Z0-9]+', '', 'g'))
+                                    WHERE lower(regexp_replace(affected.value, '[^a-zA-Z0-9]+', '', 'g')) <> ''
                                 )
                             )
                         )
@@ -1142,7 +1150,12 @@ def _field_rep_insight_rows(
                             rule.rule_type = 'exclude_invalid_doctor_phone'
                             AND (
                                 rule.field_rep_brand_supplied_key = ''
-                                OR rule.field_rep_brand_supplied_key = {_normalized_sql('COALESCE(ar_rule.field_rep_brand_supplied_id, ar_rule.field_rep_display_id, ar_rule.field_rep_id)')}
+                                OR EXISTS (
+                                    SELECT 1
+                                    FROM assigned_rep_keys invalid_scope
+                                    WHERE invalid_scope.field_rep_id = ar_rule.field_rep_id
+                                      AND invalid_scope.rep_key = rule.field_rep_brand_supplied_key
+                                )
                             )
                             AND (
                                 rule.doctor_name_key = ''
@@ -1299,6 +1312,7 @@ def _field_rep_insight_rows(
         ),
         activity_source AS (
             SELECT
+                ad.brand_campaign_id,
                 ad.activity_row_id,
                 ad.doctor_key,
                 ad.doctor_name,
@@ -1457,6 +1471,7 @@ def _field_rep_insight_rows(
         ),
         activity_key_candidates AS (
             SELECT
+                brand_campaign_id,
                 activity_row_id,
                 doctor_key,
                 doctor_name,
@@ -1475,33 +1490,34 @@ def _field_rep_insight_rows(
             FROM activity_source
             WHERE COALESCE(email_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, master_rep_key, 'campaign_fieldrep_id'::text, 20
+            SELECT brand_campaign_id, activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, master_rep_key, 'campaign_fieldrep_id'::text, 20
             FROM activity_source
             WHERE COALESCE(master_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, brand_rep_key, 'brand_field_id'::text, 30
+            SELECT brand_campaign_id, activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, brand_rep_key, 'brand_field_id'::text, 30
             FROM activity_source
             WHERE COALESCE(brand_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'local_user_id'::text, 50
+            SELECT brand_campaign_id, activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'local_user_id'::text, 50
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'auth_user_id'::text, 50
+            SELECT brand_campaign_id, activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'auth_user_id'::text, 50
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'legacy_rep_id'::text, 50
+            SELECT brand_campaign_id, activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'legacy_rep_id'::text, 50
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'campaign_fieldrep_id'::text, 50
+            SELECT brand_campaign_id, activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'campaign_fieldrep_id'::text, 50
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
         ),
         activity_candidate_matches AS (
             SELECT
                 ark.field_rep_id,
+                akc.brand_campaign_id,
                 akc.activity_row_id,
                 akc.doctor_key,
                 akc.doctor_name,
@@ -1521,6 +1537,62 @@ def _field_rep_insight_rows(
             JOIN assigned_rep_keys ark
               ON ark.rep_key = akc.rep_key
              AND ark.key_type = akc.key_type
+            JOIN assigned_reps ar_rule
+              ON ar_rule.field_rep_id = ark.field_rep_id
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM active_reporting_correction_rules rule
+                WHERE rule.campaign_key = {_normalized_sql('akc.brand_campaign_id')}
+                  AND (
+                      (
+                          rule.doctor_phone_digits <> ''
+                          AND regexp_replace(COALESCE(akc.doctor_phone, akc.doctor_key, ''), '[^0-9]', '', 'g') = rule.doctor_phone_digits
+                      )
+                      OR (
+                          rule.doctor_phone_last10 <> ''
+                          AND right(regexp_replace(COALESCE(akc.doctor_phone, akc.doctor_key, ''), '[^0-9]', '', 'g'), 10) = rule.doctor_phone_last10
+                      )
+                  )
+                  AND (
+                      (
+                          rule.rule_type = 'keep_doctor_with_field_rep'
+                          AND rule.expected_field_rep_brand_supplied_key <> ''
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM assigned_rep_keys expected_scope
+                              WHERE expected_scope.field_rep_id = ar_rule.field_rep_id
+                                AND expected_scope.rep_key = rule.expected_field_rep_brand_supplied_key
+                          )
+                          AND (
+                              COALESCE(NULLIF(btrim(rule.affected_field_rep_brand_supplied_ids), ''), '') = ''
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM regexp_split_to_table(rule.affected_field_rep_brand_supplied_ids, '[,/\\s]+') AS affected(value)
+                                  JOIN assigned_rep_keys affected_scope
+                                    ON affected_scope.field_rep_id = ar_rule.field_rep_id
+                                   AND affected_scope.rep_key = lower(regexp_replace(affected.value, '[^a-zA-Z0-9]+', '', 'g'))
+                                  WHERE lower(regexp_replace(affected.value, '[^a-zA-Z0-9]+', '', 'g')) <> ''
+                              )
+                          )
+                      )
+                      OR (
+                          rule.rule_type = 'exclude_invalid_doctor_phone'
+                          AND (
+                              rule.field_rep_brand_supplied_key = ''
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM assigned_rep_keys invalid_scope
+                                  WHERE invalid_scope.field_rep_id = ar_rule.field_rep_id
+                                    AND invalid_scope.rep_key = rule.field_rep_brand_supplied_key
+                              )
+                          )
+                          AND (
+                              rule.doctor_name_key = ''
+                              OR rule.doctor_name_key = {_normalized_sql("COALESCE(akc.doctor_name, '')")}
+                          )
+                      )
+                  )
+            )
         ),
         best_activity_candidate_source AS (
             SELECT
@@ -1567,6 +1639,47 @@ def _field_rep_insight_rows(
                 m.key_type,
                 m.field_rep_id
         ),
+        rule_corrected_activity AS (
+            SELECT DISTINCT
+                ar_expected.field_rep_id,
+                src.activity_row_id,
+                src.doctor_key,
+                src.doctor_name,
+                src.doctor_phone,
+                src.sent_flag,
+                src.viewed_flag,
+                src.video_flag,
+                src.pdf_flag,
+                src.source_field_rep_id,
+                src.source_field_rep_email,
+                src.source_brand_rep_id,
+                CASE
+                    WHEN COALESCE(NULLIF(src.evidence_source, ''), '') = '' THEN 'reporting_correction_rule'
+                    ELSE src.evidence_source || ', reporting_correction_rule'
+                END AS evidence_source
+            FROM activity_source src
+            JOIN active_reporting_correction_rules rule
+              ON rule.rule_type = 'keep_doctor_with_field_rep'
+             AND rule.campaign_key = {_normalized_sql('src.brand_campaign_id')}
+             AND rule.expected_field_rep_brand_supplied_key <> ''
+             AND (
+                (
+                    rule.doctor_phone_digits <> ''
+                    AND regexp_replace(COALESCE(src.doctor_phone, src.doctor_key, ''), '[^0-9]', '', 'g') = rule.doctor_phone_digits
+                )
+                OR (
+                    rule.doctor_phone_last10 <> ''
+                    AND right(regexp_replace(COALESCE(src.doctor_phone, src.doctor_key, ''), '[^0-9]', '', 'g'), 10) = rule.doctor_phone_last10
+                )
+             )
+            JOIN assigned_reps ar_expected
+              ON EXISTS (
+                SELECT 1
+                FROM assigned_rep_keys expected_scope
+                WHERE expected_scope.field_rep_id = ar_expected.field_rep_id
+                  AND expected_scope.rep_key = rule.expected_field_rep_brand_supplied_key
+              )
+        ),
         doctor_matched_activity AS (
             SELECT
                 NULL::text AS field_rep_id,
@@ -1610,6 +1723,32 @@ def _field_rep_insight_rows(
                 SELECT 1
                 FROM doctor_matched_activity dmatch
                 WHERE dmatch.activity_row_id = src.activity_row_id
+            )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM rule_corrected_activity rca
+                WHERE rca.activity_row_id = src.activity_row_id
+            )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM active_reporting_correction_rules rule
+                WHERE rule.campaign_key = {_normalized_sql('src.brand_campaign_id')}
+                  AND rule.rule_type IN ('keep_doctor_with_field_rep', 'exclude_invalid_doctor_phone')
+                  AND (
+                    (
+                        rule.doctor_phone_digits <> ''
+                        AND regexp_replace(COALESCE(src.doctor_phone, src.doctor_key, ''), '[^0-9]', '', 'g') = rule.doctor_phone_digits
+                    )
+                    OR (
+                        rule.doctor_phone_last10 <> ''
+                        AND right(regexp_replace(COALESCE(src.doctor_phone, src.doctor_key, ''), '[^0-9]', '', 'g'), 10) = rule.doctor_phone_last10
+                    )
+                  )
+                  AND (
+                    rule.rule_type = 'keep_doctor_with_field_rep'
+                    OR rule.doctor_name_key = ''
+                    OR rule.doctor_name_key = {_normalized_sql("COALESCE(src.doctor_name, '')")}
+                  )
             )
         ),
         reporting_reps AS (
@@ -1659,6 +1798,22 @@ def _field_rep_insight_rows(
                 source_brand_rep_id,
                 evidence_source
             FROM doctor_matched_activity
+            UNION ALL
+            SELECT
+                field_rep_id,
+                activity_row_id,
+                doctor_key,
+                doctor_name,
+                doctor_phone,
+                sent_flag,
+                viewed_flag,
+                video_flag,
+                pdf_flag,
+                source_field_rep_id,
+                source_field_rep_email,
+                source_brand_rep_id,
+                evidence_source
+            FROM rule_corrected_activity
             UNION ALL
             SELECT
                 field_rep_id,
