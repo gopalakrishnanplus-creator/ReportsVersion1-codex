@@ -1,10 +1,17 @@
 (function () {
   const pageLoading = document.getElementById('page-loading');
-  function showPageLoading() {
+  const pageLoadingText = pageLoading?.querySelector('[data-loading-text]');
+  function showPageLoading(message) {
+    if (pageLoadingText && message) {
+      pageLoadingText.textContent = message;
+    }
     pageLoading?.classList.remove('hidden');
   }
   function hidePageLoading() {
     pageLoading?.classList.add('hidden');
+    if (pageLoadingText) {
+      pageLoadingText.textContent = 'Loading...';
+    }
   }
 
   window.addEventListener('pageshow', hidePageLoading);
@@ -209,6 +216,55 @@
     URL.revokeObjectURL(url);
   }
 
+  function contentDispositionFilename(headerValue) {
+    const value = String(headerValue || '');
+    const utfMatch = value.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utfMatch?.[1]) {
+      try {
+        return decodeURIComponent(utfMatch[1].replace(/"/g, ''));
+      } catch (error) {
+        return utfMatch[1].replace(/"/g, '');
+      }
+    }
+    const plainMatch = value.match(/filename="?([^";]+)"?/i);
+    return plainMatch?.[1] || '';
+  }
+
+  function triggerFileDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename || `download_${campaignDownloadKey()}.xls`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function downloadServerFile(link) {
+    const href = link?.getAttribute('href') || '';
+    if (!href) return;
+    const fallbackFilename = link.getAttribute('download') || `download_${campaignDownloadKey()}.xls`;
+    showPageLoading('Preparing download...');
+    link.setAttribute('aria-busy', 'true');
+    link.classList.add('is-loading');
+    try {
+      const response = await fetch(href, { credentials: 'same-origin' });
+      if (!response.ok) {
+        throw new Error(`Download failed with status ${response.status}`);
+      }
+      const blob = await response.blob();
+      const filename = contentDispositionFilename(response.headers.get('content-disposition')) || fallbackFilename;
+      triggerFileDownload(blob, filename);
+    } catch (error) {
+      window.location.href = href;
+    } finally {
+      hidePageLoading();
+      link.removeAttribute('aria-busy');
+      link.classList.remove('is-loading');
+    }
+  }
+
   function collectDoctorDetailRows() {
     const rows = [];
     Array.from(fieldRepTable.querySelectorAll('.doctor-count-btn')).forEach((button) => {
@@ -354,6 +410,14 @@
       downloadExcelWorkbook('doctors_requiring_manual_mapping', workbook);
     });
   }
+
+  document.querySelectorAll('a[data-server-download="true"]').forEach((link) => {
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      downloadServerFile(link);
+    });
+  });
 
   const oldCollateralsBtn = document.getElementById('old-collaterals-btn');
   const oldCollateralsPanel = document.getElementById('old_collaterals_panel');

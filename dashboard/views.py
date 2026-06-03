@@ -3389,6 +3389,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         "actions": ["Continue current execution and monitor weekly movement."],
     }
     collateral_cards = {"current": {}, "best": {}, "benchmark": {}}
+    collateral_comparison_ids: set[str] = set()
+    show_collateral_comparison_extras = False
 
     context_metrics = {
         "campaign_health": 0.0,
@@ -3438,6 +3440,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         brand_campaign_variants = _unique_non_empty([selected_campaign, *brand_campaign_variants])
 
         schedule_rows = _current_schedule_rows(requested_campaign)
+        collateral_comparison_ids.update(_unique_non_empty(row.get("collateral_id") for row in schedule_rows))
+        show_collateral_comparison_extras = len(collateral_comparison_ids) > 1
         current_collateral_ids: list[str] = []
         schedule_start_raw = None
         schedule_end_raw = None
@@ -3603,6 +3607,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 collateral_health_source = _collateral_health_rows(requested_campaign, brand_campaign_variants)
             except (ProgrammingError, OperationalError):
                 collateral_health_source = []
+            collateral_comparison_ids.update(_unique_non_empty(row.get("collateral_id") for row in collateral_health_source))
+            show_collateral_comparison_extras = len(collateral_comparison_ids) > 1
             collateral_scores = [
                 _engagement_health_score(
                     _to_float(row.get("reached")),
@@ -3937,6 +3943,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         "old_collaterals": old_collaterals,
         "current_field_rep_collateral_id": current_field_rep_collateral_ids[0] if current_field_rep_collateral_ids else "",
         "collateral_cards": collateral_cards,
+        "show_collateral_comparison_extras": show_collateral_comparison_extras,
         "trend_labels": trend_labels,
         "reached_pct_series": [round(v, 1) for v in reached_pct_series],
         "opened_pct_series": [round(v, 1) for v in opened_pct_series],
