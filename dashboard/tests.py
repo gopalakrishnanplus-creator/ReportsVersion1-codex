@@ -1490,3 +1490,7 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertIn("exclude_invalid_doctor_phone", sql)
         self.assertIn("rule.expected_field_rep_brand_supplied_key", sql)
         self.assertIn("rule.affected_field_rep_brand_supplied_ids", sql)
+        self.assertIn("rule_corrected_activity AS", sql)
+        self.assertIn("FROM activity_key_candidates akc", sql)
+        self.assertIn("JOIN assigned_reps ar_rule", sql)
+        self.assertIn("FROM rule_corrected_activity", sql)
