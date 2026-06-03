@@ -330,7 +330,7 @@
     <section class="bottom-grid">
       <article id="collateral_comparison" class="card">
         <h3>Collateral Comparison</h3>
-        <div class="comparison-grid{% if not show_collateral_comparison_extras %} single{% endif %}">
+        <div class="comparison-grid single">
           <div class="comparison-card">
             <h4>Current Collateral</h4>
             <p class="label">{{ collateral_cards.current.title }}</p>
@@ -339,6 +339,8 @@
             <p>Video Viewed (&gt;50%) <b>{{ collateral_cards.current.video }}</b> ({{ collateral_cards.current.video_pct }}%)</p>
             <p>PDF Downloads <b>{{ collateral_cards.current.pdf }}</b> ({{ collateral_cards.current.pdf_pct }}%)</p>
           </div>
+          {% comment %}
+          Best Collateral and Benchmark Best are intentionally hidden for now.
           {% if show_collateral_comparison_extras %}
           <div class="comparison-card">
             <h4>Best Collateral</h4>
@@ -357,6 +359,7 @@
             <p>PDF Downloads <b>{{ collateral_cards.benchmark.pdf }}</b> ({{ collateral_cards.benchmark.pdf_pct }}%)</p>
           </div>
           {% endif %}
+          {% endcomment %}
         </div>
       </article>
 
