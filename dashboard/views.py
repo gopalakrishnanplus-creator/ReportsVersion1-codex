@@ -406,6 +406,41 @@ def _field_rep_alias_sql_parts() -> tuple[str, str, list[str]]:
     return "\n".join(joins), ",\n                " + ",\n                ".join(select_parts), key_columns
 
 
+def _active_reporting_correction_rules_cte() -> str:
+    if not _table_exists("ops", "reporting_data_correction_rule"):
+        return """
+        active_reporting_correction_rules AS (
+            SELECT
+                ''::text AS rule_type,
+                ''::text AS campaign_key,
+                ''::text AS doctor_phone_digits,
+                ''::text AS doctor_phone_last10,
+                ''::text AS doctor_name_key,
+                ''::text AS field_rep_brand_supplied_key,
+                ''::text AS expected_field_rep_brand_supplied_key,
+                ''::text AS affected_field_rep_brand_supplied_ids
+            WHERE FALSE
+        )
+        """
+    return f"""
+        active_reporting_correction_rules AS (
+            SELECT
+                rule_type,
+                {_normalized_sql('campaign_id')} AS campaign_key,
+                regexp_replace(COALESCE(doctor_phone, ''), '[^0-9]', '', 'g') AS doctor_phone_digits,
+                right(regexp_replace(COALESCE(NULLIF(doctor_phone_normalized, ''), doctor_phone, ''), '[^0-9]', '', 'g'), 10) AS doctor_phone_last10,
+                {_normalized_sql('doctor_name')} AS doctor_name_key,
+                {_normalized_sql('field_rep_brand_supplied_id')} AS field_rep_brand_supplied_key,
+                {_normalized_sql('expected_field_rep_brand_supplied_id')} AS expected_field_rep_brand_supplied_key,
+                COALESCE(affected_field_rep_brand_supplied_ids, '') AS affected_field_rep_brand_supplied_ids
+            FROM ops.reporting_data_correction_rule
+            WHERE is_active = TRUE
+              AND COALESCE(NULLIF(btrim(system_name), ''), 'inclinic') = 'inclinic'
+              AND rule_type IN ('keep_doctor_with_field_rep', 'exclude_invalid_doctor_phone')
+        )
+        """
+
+
 def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
     lookup_key = _normalize_lookup_key(selected_campaign)
     rows = _fetch_dicts(
@@ -900,6 +935,7 @@ def _field_rep_insight_rows(
 ) -> list[dict[str, Any]]:
     brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
     candidate_cte = _candidate_campaign_ids_cte(brand_placeholders)
+    correction_rules_cte = _active_reporting_correction_rules_cte()
     collateral_filter_action = ""
     if current_collateral_ids:
         collateral_placeholders = _placeholders(current_collateral_ids)
@@ -962,9 +998,11 @@ def _field_rep_insight_rows(
     return _fetch_dicts(
         f"""
         WITH {candidate_cte},
+        {correction_rules_cte},
         raw_assigned_reps AS (
             SELECT DISTINCT
                 ccf.field_rep_id::text AS field_rep_id,
+                NULLIF(btrim(cfr.brand_supplied_field_rep_id), '') AS field_rep_brand_supplied_id,
                 COALESCE(
                     NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''),
                     NULLIF(btrim(ccf.field_rep_id::text), '')
@@ -999,6 +1037,11 @@ def _field_rep_insight_rows(
                     field_rep_id,
                     'Unknown Field Rep'
                 ) AS field_rep_name,
+                COALESCE(
+                    MAX(NULLIF(field_rep_brand_supplied_id, '')),
+                    MAX(NULLIF(field_rep_display_id, '')),
+                    field_rep_id
+                ) AS field_rep_brand_supplied_id,
                 COALESCE(
                     MAX(NULLIF(state_normalized, '')),
                     'UNKNOWN'
@@ -1046,6 +1089,8 @@ def _field_rep_insight_rows(
             JOIN assigned_rep_keys ark
               ON {_normalized_sql('b.field_rep_id_resolved')} = ark.rep_key
              AND ark.key_type = 'campaign_fieldrep_id'
+            JOIN assigned_reps ar_rule
+              ON ar_rule.field_rep_id = ark.field_rep_id
             LEFT JOIN LATERAL (
                 SELECT d.name, d.phone, d.doctor_phone_normalized, d._silver_updated_at
                 FROM silver.dim_doctor d
@@ -1065,6 +1110,47 @@ def _field_rep_insight_rows(
             ) d_bridge ON TRUE
             WHERE {_normalized_sql('b.brand_campaign_id')} IN ({brand_placeholders})
               AND COALESCE(NULLIF(b.doctor_identity_key, ''), '') <> ''
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM active_reporting_correction_rules rule
+                  WHERE rule.campaign_key = {_normalized_sql('b.brand_campaign_id')}
+                    AND (
+                        (
+                            rule.doctor_phone_digits <> ''
+                            AND regexp_replace(COALESCE(d_bridge.phone, d_bridge.doctor_phone_normalized, ''), '[^0-9]', '', 'g') = rule.doctor_phone_digits
+                        )
+                        OR (
+                            rule.doctor_phone_last10 <> ''
+                            AND right(regexp_replace(COALESCE(d_bridge.phone, d_bridge.doctor_phone_normalized, ''), '[^0-9]', '', 'g'), 10) = rule.doctor_phone_last10
+                        )
+                    )
+                    AND (
+                        (
+                            rule.rule_type = 'keep_doctor_with_field_rep'
+                            AND rule.expected_field_rep_brand_supplied_key <> ''
+                            AND {_normalized_sql('COALESCE(ar_rule.field_rep_brand_supplied_id, ar_rule.field_rep_display_id, ar_rule.field_rep_id)')} <> rule.expected_field_rep_brand_supplied_key
+                            AND (
+                                COALESCE(NULLIF(btrim(rule.affected_field_rep_brand_supplied_ids), ''), '') = ''
+                                OR {_normalized_sql('COALESCE(ar_rule.field_rep_brand_supplied_id, ar_rule.field_rep_display_id, ar_rule.field_rep_id)')} IN (
+                                    SELECT lower(regexp_replace(affected.value, '[^a-zA-Z0-9]+', '', 'g'))
+                                    FROM regexp_split_to_table(rule.affected_field_rep_brand_supplied_ids, '[,/\\s]+') AS affected(value)
+                                    WHERE regexp_replace(affected.value, '[^a-zA-Z0-9]+', '', 'g') <> ''
+                                )
+                            )
+                        )
+                        OR (
+                            rule.rule_type = 'exclude_invalid_doctor_phone'
+                            AND (
+                                rule.field_rep_brand_supplied_key = ''
+                                OR rule.field_rep_brand_supplied_key = {_normalized_sql('COALESCE(ar_rule.field_rep_brand_supplied_id, ar_rule.field_rep_display_id, ar_rule.field_rep_id)')}
+                            )
+                            AND (
+                                rule.doctor_name_key = ''
+                                OR rule.doctor_name_key = {_normalized_sql("COALESCE(d_bridge.name, '')")}
+                            )
+                        )
+                    )
+              )
             ORDER BY
                 ark.field_rep_id,
                 b.doctor_identity_key,
