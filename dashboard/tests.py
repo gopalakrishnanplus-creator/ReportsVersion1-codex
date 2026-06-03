@@ -512,8 +512,10 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("share_rep_id_email_map AS", sql)
         self.assertIn("linked_share.field_rep_email", sql)
         self.assertIn("COALESCE(NULLIF(btrim(s.field_rep_email), ''), s.field_rep_id::text)", sql)
-        self.assertIn("lower(btrim(d.state_normalized)) IN ('null', 'none', 'unknown')", sql)
-        self.assertIn("lower(btrim(base.state_normalized)) IN ('null', 'none', 'unknown')", sql)
+        self.assertIn("state_normalized IS NOT NULL", sql)
+        self.assertIn("WHEN lower(regexp_replace(COALESCE(btrim(d.state_normalized)", sql)
+        self.assertIn("THEN 'Uttar Pradesh'", sql)
+        self.assertNotIn("THEN 'Aligarh'", sql)
         self.assertNotIn("state_normalized <> 'UNKNOWN'", sql)
         self.assertNotIn("total_state,0)/4.0", sql)
 
@@ -562,6 +564,9 @@ class DashboardAccessViewTests(SimpleTestCase):
     def test_united_kingdom_state_is_grouped_as_unknown(self):
         self.assertEqual(dashboard.views._display_state_name("United Kingdom"), "Unknown")
         self.assertEqual(dashboard.views._display_state_name("U.K"), "Unknown")
+        self.assertEqual(dashboard.views._display_state_name("Aligarh"), "Unknown")
+        self.assertEqual(dashboard.views._display_state_name("U.P."), "Uttar Pradesh")
+        self.assertEqual(dashboard.views._display_state_name("Delhi NCR"), "Delhi")
 
     def test_all_weeks_metrics_are_aggregated_not_latest_week_only(self):
         rows = [
