@@ -512,8 +512,10 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("share_rep_id_email_map AS", sql)
         self.assertIn("linked_share.field_rep_email", sql)
         self.assertIn("COALESCE(NULLIF(btrim(s.field_rep_email), ''), s.field_rep_id::text)", sql)
-        self.assertIn("lower(btrim(d.state_normalized)) IN ('null', 'none', 'unknown')", sql)
-        self.assertIn("lower(btrim(base.state_normalized)) IN ('null', 'none', 'unknown')", sql)
+        self.assertIn("state_normalized IS NOT NULL", sql)
+        self.assertIn("WHEN lower(regexp_replace(COALESCE(btrim(d.state_normalized)", sql)
+        self.assertIn("THEN 'Uttar Pradesh'", sql)
+        self.assertNotIn("THEN 'Aligarh'", sql)
         self.assertNotIn("state_normalized <> 'UNKNOWN'", sql)
         self.assertNotIn("total_state,0)/4.0", sql)
 
@@ -562,6 +564,9 @@ class DashboardAccessViewTests(SimpleTestCase):
     def test_united_kingdom_state_is_grouped_as_unknown(self):
         self.assertEqual(dashboard.views._display_state_name("United Kingdom"), "Unknown")
         self.assertEqual(dashboard.views._display_state_name("U.K"), "Unknown")
+        self.assertEqual(dashboard.views._display_state_name("Aligarh"), "Unknown")
+        self.assertEqual(dashboard.views._display_state_name("U.P."), "Uttar Pradesh")
+        self.assertEqual(dashboard.views._display_state_name("Delhi NCR"), "Delhi")
 
     def test_all_weeks_metrics_are_aggregated_not_latest_week_only(self):
         rows = [
@@ -1062,6 +1067,7 @@ class DashboardAccessViewTests(SimpleTestCase):
                 "best": {"title": "Week 1 Best", "reached": 30, "opened": 20, "video": 12, "pdf": 8, "reached_pct": 25, "opened_pct": 66.7, "video_pct": 60, "pdf_pct": 40},
                 "benchmark": {"reached": 40, "opened": 30, "video": 20, "pdf": 10, "reached_pct": 30, "opened_pct": 75, "video_pct": 66.7, "pdf_pct": 33.3},
             },
+            "show_collateral_comparison_extras": True,
             "trend_labels": [],
             "reached_pct_series": [],
             "opened_pct_series": [],
@@ -1103,6 +1109,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Field Rep ID")
         self.assertContains(response, "Download Excel")
         self.assertContains(response, "Old Collaterals")
+        self.assertContains(response, "Best Collateral")
+        self.assertContains(response, "Benchmark Best")
         self.assertContains(response, "/campaign/demo/collateral/11/field-rep-insights/")
         self.assertContains(response, "/campaign/demo/states/")
         self.assertContains(response, "Asha Mehta")
@@ -1122,6 +1130,83 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertNotContains(response, "Action Required This Week")
         self.assertNotContains(response, "Weekly KPI Table")
         self.assertNotContains(response, "Back to Menu")
+
+    def test_campaign_overview_hides_comparison_extras_for_single_collateral(self):
+        session = self.client.session
+        session["auth_demo"] = True
+        session.save()
+        self.client.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
+
+        context = {
+            "selected_campaign": "demo",
+            "brand_name": "Demo Brand",
+            "brand_logo_text": "Demo",
+            "company_logo_url": None,
+            "selected_schema": "gold_demo",
+            "weekly_rows": [],
+            "error_message": None,
+            "schedule_text": "Jun 01, 2026 - Jun 07, 2026",
+            "collateral_name": "Only Collateral",
+            "state_attention": [],
+            "state_attention_card": [],
+            "action_panel": {},
+            "field_rep_insights": [],
+            "field_rep_summary": {
+                "total_reps": 0,
+                "total_doctors_assigned": 0,
+                "doctors_sent": 0,
+                "doctors_viewed": 0,
+                "doctors_video_played": 0,
+                "doctors_pdf_downloaded": 0,
+            },
+            "old_collaterals": [],
+            "current_field_rep_collateral_id": "1",
+            "collateral_cards": {
+                "current": {"title": "Only Collateral", "reached": 10, "opened": 5, "video": 2, "pdf": 1, "reached_pct": 50, "opened_pct": 50, "video_pct": 40, "pdf_pct": 20},
+                "best": {"title": "Only Collateral", "reached": 11, "opened": 6, "video": 2, "pdf": 1, "reached_pct": 55, "opened_pct": 54.5, "video_pct": 33.3, "pdf_pct": 16.7},
+                "benchmark": {"reached": 12, "opened": 7, "video": 3, "pdf": 2, "reached_pct": 60, "opened_pct": 58.3, "video_pct": 42.9, "pdf_pct": 28.6},
+            },
+            "show_collateral_comparison_extras": False,
+            "trend_labels": [],
+            "reached_pct_series": [],
+            "opened_pct_series": [],
+            "pdf_pct_series": [],
+            "video_pct_series": [],
+            "week_options": [],
+            "selected_week": None,
+            "campaign_health": 0,
+            "campaign_wow": 0,
+            "campaign_benchmark_label": "Insufficient Data",
+            "campaign_color": "red",
+            "campaign_score_available": False,
+            "weekly_health": 0,
+            "weekly_wow": 0,
+            "weekly_benchmark_label": "Insufficient Data",
+            "weekly_color": "red",
+            "weekly_score_available": False,
+            "kpi_reached": 10,
+            "kpi_opened": 5,
+            "kpi_video": 2,
+            "kpi_pdf": 1,
+            "kpi_reached_pct": 50,
+            "kpi_opened_pct": 50,
+            "kpi_video_pct": 40,
+            "kpi_pdf_pct": 20,
+            "week_of": "All Weeks",
+        }
+
+        with patch(
+            "dashboard.views.build_report_access",
+            return_value=type("Access", (), {"session_key": "auth_demo"})(),
+        ), patch("dashboard.views._build_report_context", return_value=context):
+            response = self.client.get("/campaign/demo/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Current Collateral")
+        self.assertContains(response, "Only Collateral")
+        self.assertContains(response, 'class="comparison-grid single"')
+        self.assertNotContains(response, "<h4>Best Collateral</h4>")
+        self.assertNotContains(response, "<h4>Benchmark Best</h4>")
 
     def test_state_list_page_renders_full_state_view(self):
         session = self.client.session

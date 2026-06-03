@@ -5,12 +5,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>In-Clinic Sharing Dashboard</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260603v1">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260603v3">
 </head>
 <body>
   <div id="page-loading" class="page-loading hidden" aria-live="polite" aria-label="Loading page">
     <div class="loading-spinner" aria-hidden="true"></div>
-    <span>Loading...</span>
+    <span data-loading-text>Loading...</span>
   </div>
   <main id="report-root" class="dashboard">
     <section id="header" class="card header-card">
@@ -330,7 +330,7 @@
     <section class="bottom-grid">
       <article id="collateral_comparison" class="card">
         <h3>Collateral Comparison</h3>
-        <div class="comparison-grid">
+        <div class="comparison-grid{% if not show_collateral_comparison_extras %} single{% endif %}">
           <div class="comparison-card">
             <h4>Current Collateral</h4>
             <p class="label">{{ collateral_cards.current.title }}</p>
@@ -339,6 +339,7 @@
             <p>Video Viewed (&gt;50%) <b>{{ collateral_cards.current.video }}</b> ({{ collateral_cards.current.video_pct }}%)</p>
             <p>PDF Downloads <b>{{ collateral_cards.current.pdf }}</b> ({{ collateral_cards.current.pdf_pct }}%)</p>
           </div>
+          {% if show_collateral_comparison_extras %}
           <div class="comparison-card">
             <h4>Best Collateral</h4>
             <p class="label">{{ collateral_cards.best.title }}</p>
@@ -355,6 +356,7 @@
             <p>Video Viewed (&gt;50%) <b>{{ collateral_cards.benchmark.video }}</b> ({{ collateral_cards.benchmark.video_pct }}%)</p>
             <p>PDF Downloads <b>{{ collateral_cards.benchmark.pdf }}</b> ({{ collateral_cards.benchmark.pdf_pct }}%)</p>
           </div>
+          {% endif %}
         </div>
       </article>
 
@@ -386,6 +388,6 @@
   {{ video_pct_series|json_script:"trend-video" }}
   <script src="{% static 'sapa_growth/vendor/html2canvas.min.js' %}?v=20260603v2"></script>
   <script src="{% static 'sapa_growth/vendor/jspdf.umd.min.js' %}?v=20260603v2"></script>
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260603v2"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260603v3"></script>
 </body>
 </html>

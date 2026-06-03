@@ -164,22 +164,92 @@ def _normalized_sql(column_sql: str) -> str:
     return f"lower(regexp_replace(COALESCE(btrim({column_sql}), ''), '[^a-zA-Z0-9]', '', 'g'))"
 
 
+INDIAN_STATE_DISPLAY_BY_KEY = {
+    "andamanandnicobarislands": "Andaman and Nicobar Islands",
+    "andamanandnicobar": "Andaman and Nicobar Islands",
+    "andhrapradesh": "Andhra Pradesh",
+    "arunachalpradesh": "Arunachal Pradesh",
+    "assam": "Assam",
+    "bihar": "Bihar",
+    "chandigarh": "Chandigarh",
+    "chhattisgarh": "Chhattisgarh",
+    "chattisgarh": "Chhattisgarh",
+    "dadraandnagarhavelianddamananddiu": "Dadra and Nagar Haveli and Daman and Diu",
+    "dadraandnagarhaveli": "Dadra and Nagar Haveli and Daman and Diu",
+    "damananddiu": "Dadra and Nagar Haveli and Daman and Diu",
+    "delhi": "Delhi",
+    "delhincr": "Delhi",
+    "nctdelhi": "Delhi",
+    "nationalcapitalterritoryofdelhi": "Delhi",
+    "goa": "Goa",
+    "gujarat": "Gujarat",
+    "haryana": "Haryana",
+    "himachalpradesh": "Himachal Pradesh",
+    "jammuandkashmir": "Jammu & Kashmir",
+    "jammukashmir": "Jammu & Kashmir",
+    "jk": "Jammu & Kashmir",
+    "jharkhand": "Jharkhand",
+    "karnataka": "Karnataka",
+    "kerala": "Kerala",
+    "ladakh": "Ladakh",
+    "lakshadweep": "Lakshadweep",
+    "madhyapradesh": "Madhya Pradesh",
+    "maharashtra": "Maharashtra",
+    "manipur": "Manipur",
+    "meghalaya": "Meghalaya",
+    "mizoram": "Mizoram",
+    "nagaland": "Nagaland",
+    "odisha": "Odisha",
+    "orissa": "Odisha",
+    "odisa": "Odisha",
+    "puducherry": "Puducherry",
+    "pondicherry": "Puducherry",
+    "punjab": "Punjab",
+    "rajasthan": "Rajasthan",
+    "sikkim": "Sikkim",
+    "tamilnadu": "Tamil Nadu",
+    "telangana": "Telangana",
+    "telengana": "Telangana",
+    "telingana": "Telangana",
+    "tripura": "Tripura",
+    "uttarpradesh": "Uttar Pradesh",
+    "up": "Uttar Pradesh",
+    "uttarakhand": "Uttarakhand",
+    "uttrakhand": "Uttarakhand",
+    "westbengal": "West Bengal",
+}
+
+UNKNOWN_STATE_KEYS = {
+    "",
+    "null",
+    "none",
+    "unknown",
+    "unitedkingdom",
+    "uk",
+}
+
+
 def _valid_state_sql(column_sql: str) -> str:
-    return (
-        f"CASE WHEN {column_sql} IS NULL OR btrim({column_sql}) = '' "
-        f"OR lower(btrim({column_sql})) IN ('null', 'none', 'unknown') "
-        f"OR lower(btrim({column_sql})) IN ('united kingdom', 'uk', 'u.k.', 'u.k', 'u k') "
-        f"THEN NULL ELSE initcap(btrim({column_sql})) END"
+    state_key_sql = f"lower(regexp_replace(COALESCE(btrim({column_sql}), ''), '[^a-zA-Z0-9]', '', 'g'))"
+    unknown_values = ", ".join(f"'{key}'" for key in sorted(UNKNOWN_STATE_KEYS))
+    state_cases = " ".join(
+        f"WHEN {state_key_sql} = '{key}' THEN '{label}'"
+        for key, label in INDIAN_STATE_DISPLAY_BY_KEY.items()
     )
+    return f"CASE WHEN {state_key_sql} IN ({unknown_values}) THEN NULL {state_cases} ELSE NULL END"
+
+
+def _canonical_state_name(value: Any) -> str | None:
+    state_key = re.sub(r"[^a-zA-Z0-9]", "", str(value or "").strip().lower())
+    return INDIAN_STATE_DISPLAY_BY_KEY.get(state_key)
 
 
 def _is_unknown_state(value: Any) -> bool:
-    text = str(value or "").strip().lower()
-    return text in {"", "null", "none", "unknown", "united kingdom", "uk", "u.k.", "u.k", "u k"}
+    return _canonical_state_name(value) is None
 
 
 def _display_state_name(value: Any) -> str:
-    return "Unknown" if _is_unknown_state(value) else str(value).strip()
+    return _canonical_state_name(value) or "Unknown"
 
 
 def _state_sort_key(item: dict[str, Any]) -> tuple[int, str]:
@@ -1015,7 +1085,7 @@ def _field_rep_insight_rows(
                 ) AS field_rep_name,
                 {_normalized_sql('ccf.field_rep_id::text')} AS internal_rep_key,
                 {_normalized_sql('cfr.brand_supplied_field_rep_id')} AS external_rep_key,
-                COALESCE(NULLIF(initcap(btrim(cfr.state)), ''), 'UNKNOWN') AS state_normalized
+                COALESCE({_valid_state_sql('cfr.state')}, 'UNKNOWN') AS state_normalized
                 {alias_selects}
             FROM bronze.campaign_campaignfieldrep ccf
             JOIN candidate_campaign_ids ci
@@ -2002,6 +2072,7 @@ def _state_attention_source_rows(
                     SELECT {column} AS rep_key, state_normalized
                     FROM raw_rep_state_campaign
                     WHERE {column} <> ''
+                      AND state_normalized IS NOT NULL
         """.rstrip()
         for column in alias_key_columns
     )
@@ -2053,15 +2124,18 @@ def _state_attention_source_rows(
             WHERE cfr.state IS NOT NULL
               AND btrim(cfr.state) <> ''
               AND lower(btrim(cfr.state)) NOT IN ('null', 'none', 'unknown')
+              AND {_valid_state_sql('cfr.state')} IS NOT NULL
         ),
         rep_state_campaign AS (
             SELECT internal_rep_key AS rep_key, state_normalized
             FROM raw_rep_state_campaign
             WHERE internal_rep_key <> ''
+              AND state_normalized IS NOT NULL
             UNION
             SELECT external_rep_key AS rep_key, state_normalized
             FROM raw_rep_state_campaign
             WHERE external_rep_key <> ''
+              AND state_normalized IS NOT NULL
             {alias_state_unions}
         ),
         rep_state_global AS (
@@ -2072,13 +2146,14 @@ def _state_attention_source_rows(
             WHERE state IS NOT NULL
               AND btrim(state) <> ''
               AND lower(btrim(state)) NOT IN ('null', 'none', 'unknown')
+              AND {_valid_state_sql('state')} IS NOT NULL
         ),
         roster_candidates AS (
             SELECT DISTINCT
               d.doctor_identity_key AS doctor_key,
               COALESCE(
-                {_valid_state_sql('d.state_normalized')},
                 {_valid_state_sql('rsc.state_normalized')},
+                {_valid_state_sql('d.state_normalized')},
                 'UNKNOWN'
               ) AS state_normalized
             FROM rep_state_campaign rsc
@@ -2172,13 +2247,13 @@ def _state_attention_source_rows(
               COALESCE(
                 {_valid_state_sql('rb.state_normalized')},
                 {_valid_state_sql('base.state_normalized')},
-                {_valid_state_sql('d.state_normalized')},
                 {_valid_state_sql('rsc_tx.state_normalized')},
                 {_valid_state_sql('rsc_share.state_normalized')},
                 {_valid_state_sql('rsg_tx.state_normalized')},
                 {_valid_state_sql('rsg_share.state_normalized')},
                 {_valid_state_sql('fr_tx.state_normalized')},
                 {_valid_state_sql('fr_share.state_normalized')},
+                {_valid_state_sql('d.state_normalized')},
                 'UNKNOWN'
               ) AS state_normalized,
               COALESCE(
@@ -3389,6 +3464,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         "actions": ["Continue current execution and monitor weekly movement."],
     }
     collateral_cards = {"current": {}, "best": {}, "benchmark": {}}
+    collateral_comparison_ids: set[str] = set()
+    show_collateral_comparison_extras = False
 
     context_metrics = {
         "campaign_health": 0.0,
@@ -3438,6 +3515,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         brand_campaign_variants = _unique_non_empty([selected_campaign, *brand_campaign_variants])
 
         schedule_rows = _current_schedule_rows(requested_campaign)
+        collateral_comparison_ids.update(_unique_non_empty(row.get("collateral_id") for row in schedule_rows))
+        show_collateral_comparison_extras = len(collateral_comparison_ids) > 1
         current_collateral_ids: list[str] = []
         schedule_start_raw = None
         schedule_end_raw = None
@@ -3603,6 +3682,8 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 collateral_health_source = _collateral_health_rows(requested_campaign, brand_campaign_variants)
             except (ProgrammingError, OperationalError):
                 collateral_health_source = []
+            collateral_comparison_ids.update(_unique_non_empty(row.get("collateral_id") for row in collateral_health_source))
+            show_collateral_comparison_extras = len(collateral_comparison_ids) > 1
             collateral_scores = [
                 _engagement_health_score(
                     _to_float(row.get("reached")),
@@ -3937,6 +4018,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         "old_collaterals": old_collaterals,
         "current_field_rep_collateral_id": current_field_rep_collateral_ids[0] if current_field_rep_collateral_ids else "",
         "collateral_cards": collateral_cards,
+        "show_collateral_comparison_extras": show_collateral_comparison_extras,
         "trend_labels": trend_labels,
         "reached_pct_series": [round(v, 1) for v in reached_pct_series],
         "opened_pct_series": [round(v, 1) for v in opened_pct_series],

@@ -93,6 +93,7 @@ body.modal-open{overflow:hidden}
 .needs-attention{border-color:#f2b8b8;background:#fff8f8}
 .bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .comparison-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.comparison-grid.single{grid-template-columns:minmax(0,1fr)}
 .comparison-card{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fbfcff}
 .comparison-card h4{margin:0 0 4px}
 .comparison-card .label{font-size:13px;color:var(--muted);margin:0 0 8px}
