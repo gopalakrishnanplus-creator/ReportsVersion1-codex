@@ -332,7 +332,10 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertAlmostEqual(score, 66.7, places=1)
 
     def test_field_rep_insights_select_brand_supplied_rep_id_for_display(self):
-        with patch("dashboard.views._fetch_dicts", return_value=[]) as fetch_mock:
+        with patch("dashboard.views._fetch_dicts", return_value=[]) as fetch_mock, patch(
+            "dashboard.views._table_exists",
+            return_value=False,
+        ):
             dashboard.views._field_rep_insight_rows("brand-1", ["brand-1"], ["9"])
 
         sql = fetch_mock.call_args.args[0]
@@ -1462,3 +1465,28 @@ class V2ReportingPreservationTests(SimpleTestCase):
                 brand_by_rep_id=brand_by_rep_id,
             )
         )
+
+    def test_field_rep_insights_query_applies_active_reporting_correction_rules(self):
+        captured: dict[str, str] = {}
+
+        def fake_fetch(sql: str, params: list[object] | None = None) -> list[dict[str, object]]:
+            captured["sql"] = sql
+            return []
+
+        with patch("dashboard.views._table_exists", return_value=True), patch(
+            "dashboard.views._optional_table_exists",
+            return_value=False,
+        ), patch("dashboard.views._fetch_dicts", side_effect=fake_fetch):
+            dashboard.views._field_rep_insight_rows(
+                "83ce7fc7c965433ab2b9717394abe3c1",
+                ["83ce7fc7c965433ab2b9717394abe3c1"],
+                [],
+            )
+
+        sql = captured["sql"]
+        self.assertIn("active_reporting_correction_rules", sql)
+        self.assertIn("ops.reporting_data_correction_rule", sql)
+        self.assertIn("keep_doctor_with_field_rep", sql)
+        self.assertIn("exclude_invalid_doctor_phone", sql)
+        self.assertIn("rule.expected_field_rep_brand_supplied_key", sql)
+        self.assertIn("rule.affected_field_rep_brand_supplied_ids", sql)
