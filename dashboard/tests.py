@@ -1357,6 +1357,40 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertEqual(archived_values[1], "fact_collateral_transaction")
         self.assertEqual(archived_values[5], "missing_from_current_v2_source")
 
+    def test_bronze_compat_drop_skips_existing_tables(self):
+        with (
+            patch.object(v2_reporting, "ensure_schema"),
+            patch.object(v2_reporting, "_bronze_relation_kind", return_value="r"),
+            patch.object(v2_reporting, "execute") as execute_mock,
+        ):
+            v2_reporting._drop_bronze_views()
+
+        execute_mock.assert_not_called()
+
+    def test_bronze_compat_prepare_archives_existing_table_without_drop(self):
+        with (
+            patch.object(v2_reporting, "_bronze_relation_kind", return_value="r"),
+            patch.object(v2_reporting, "_archive_existing_bronze_relation") as archive_mock,
+            patch.object(v2_reporting, "execute") as execute_mock,
+        ):
+            v2_reporting._prepare_bronze_compat_relation("campaign_fieldrep")
+
+        archive_mock.assert_called_once_with("campaign_fieldrep", "r")
+        execute_mock.assert_not_called()
+
+    def test_bronze_compat_archive_moves_table_without_delete(self):
+        with (
+            patch.object(v2_reporting, "ensure_schema"),
+            patch.object(v2_reporting, "execute") as execute_mock,
+        ):
+            v2_reporting._archive_existing_bronze_relation("campaign_fieldrep", "r")
+
+        executed_sql = "\n".join(call.args[0] for call in execute_mock.call_args_list)
+        self.assertIn("ALTER TABLE", executed_sql)
+        self.assertIn("RENAME TO", executed_sql)
+        self.assertIn("SET SCHEMA", executed_sql)
+        self.assertNotIn("DROP TABLE", executed_sql)
+
     def test_reporting_correction_rules_are_campaign_and_rep_scoped(self):
         keep_rule = v2_reporting.ReportingCorrectionRule(
             correction_id="rule-1",
