@@ -10,6 +10,30 @@ from etl.sapa_growth.gold import build_gold
 from etl.sapa_growth.raw import ingest_api_sources, ingest_mysql_sources
 from etl.sapa_growth.silver import build_silver
 
+REQUIRED_V2_MYSQL_TABLES = (
+    "campaign_doctor",
+    "campaign_doctorcampaignenrollment",
+    "campaign_campaign",
+    "campaign_brand",
+    "campaign_fieldrep",
+    "campaign_campaignfieldrep",
+)
+
+
+def _validate_required_v2_source_counts(raw_mysql: dict[str, Any]) -> None:
+    extracted_counts = raw_mysql.get("extracted_counts", {}) or {}
+    empty_required = [
+        name
+        for name in REQUIRED_V2_MYSQL_TABLES
+        if int(extracted_counts.get(name) or 0) <= 0
+    ]
+    if empty_required:
+        raise RuntimeError(
+            "SAPA V2 source refresh safety check failed before bronze/silver/gold rebuild. "
+            "Required V2 source tables returned zero rows: "
+            f"{', '.join(empty_required)}. Existing SAPA reporting tables were not replaced."
+        )
+
 
 def run_pipeline(run_id: str | None = None, trigger_type: str = "manual") -> dict[str, Any]:
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -29,6 +53,7 @@ def run_pipeline(run_id: str | None = None, trigger_type: str = "manual") -> dic
                 error_summary = json.dumps({"raw_errors": raw_errors}, default=str)
                 log_run(run_id, "FAIL", trigger_type=trigger_type, notes=error_summary)
                 raise RuntimeError(f"SAPA raw extraction failed: {error_summary}")
+            _validate_required_v2_source_counts(raw_mysql)
 
             bronze_counts = build_bronze()
             log_step(run_id, "build_bronze", "bronze_sapa", "SUCCESS", rows_written=sum(bronze_counts.values()))

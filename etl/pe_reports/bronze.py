@@ -6,6 +6,7 @@ from etl.pe_reports.control import active_exclusion_rules
 from etl.pe_reports.specs import BRONZE_SCHEMA, MASTER_TABLE_SPECS, PORTAL_TABLE_SPECS, RAW_AUDIT_COLUMNS, RAW_MASTER_SCHEMA, RAW_PORTAL_SCHEMA, SourceTableSpec
 from etl.pe_reports.storage import fetch_table, replace_table
 from etl.pe_reports.utils import clean_text, parse_datetime
+from etl.v2_snapshot import current_v2_snapshot_keys, snapshot_row_key
 
 
 def _ordering_key(row: dict[str, Any], watermark_field: str | None) -> tuple[Any, ...]:
@@ -47,8 +48,22 @@ def _dedup_rows(rows: list[dict[str, Any]], spec: SourceTableSpec) -> list[dict[
     return list(latest_by_key.values())
 
 
+def _active_source_rows(rows: list[dict[str, Any]], spec: SourceTableSpec, current_keys: set[str] | None = None) -> list[dict[str, Any]]:
+    if spec.source_table.lower().endswith("_v2"):
+        v2_rows = [row for row in rows if clean_text(row.get("_source_table")) == spec.source_table]
+        if current_keys is None:
+            return v2_rows
+        return [row for row in v2_rows if snapshot_row_key(row, spec.key_columns) in current_keys]
+    return rows
+
+
 def _build_table(raw_schema: str, spec: SourceTableSpec, rules: list[dict[str, Any]]) -> int:
-    raw_rows = fetch_table(raw_schema, spec.raw_table)
+    current_keys = (
+        current_v2_snapshot_keys(raw_schema, spec.raw_table, spec.source_table)
+        if spec.source_table.lower().endswith("_v2")
+        else None
+    )
+    raw_rows = _active_source_rows(fetch_table(raw_schema, spec.raw_table), spec, current_keys)
     deduped = _dedup_rows(raw_rows, spec)
     filtered = [row for row in deduped if not _is_excluded(spec.bronze_table, row, rules)]
     replace_table(BRONZE_SCHEMA, spec.bronze_table, spec.columns + RAW_AUDIT_COLUMNS, filtered)

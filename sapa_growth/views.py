@@ -83,6 +83,8 @@ def menu(request: HttpRequest) -> HttpResponse:
 
 
 def login(request: HttpRequest, campaign_key: str | None = None) -> HttpResponse:
+    if not campaign_key:
+        return redirect(reverse("sapa_growth:menu"))
     scope_key = _campaign_scope_key(campaign_key)
     if is_authenticated(request, "sapa", scope_key):
         return redirect(_campaign_route("dashboard", campaign_key))
@@ -110,6 +112,8 @@ def login(request: HttpRequest, campaign_key: str | None = None) -> HttpResponse
 
 
 def access_page(request: HttpRequest, campaign_key: str | None = None) -> HttpResponse:
+    if not campaign_key:
+        return redirect(reverse("sapa_growth:menu"))
     selected_campaign = next((row for row in campaign_options() if (row.get("underlying_key") or "").strip() == (campaign_key or "").strip()), None)
     return render(
         request,
@@ -125,6 +129,8 @@ def access_page(request: HttpRequest, campaign_key: str | None = None) -> HttpRe
 
 
 def send_access_email_view(request: HttpRequest, campaign_key: str | None = None) -> HttpResponse:
+    if not campaign_key:
+        return redirect(reverse("sapa_growth:menu"))
     if request.method != "POST":
         return redirect(_campaign_route("access", campaign_key))
     recipient_email = request.POST.get("recipient_email", "")
@@ -152,6 +158,8 @@ def send_access_email_view(request: HttpRequest, campaign_key: str | None = None
 
 
 def dashboard(request: HttpRequest, campaign_key: str | None = None) -> HttpResponse:
+    if not campaign_key:
+        return redirect(reverse("sapa_growth:menu"))
     if not is_authenticated(request, "sapa", _campaign_scope_key(campaign_key)):
         return redirect(_campaign_route("login", campaign_key))
     filters = parse_global_filters(request.GET, campaign_key=campaign_key)

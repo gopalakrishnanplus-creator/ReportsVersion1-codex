@@ -125,15 +125,23 @@ def append_rows(schema: str, table: str, columns: list[str], rows: Iterable[dict
     insert_rows(schema, table, columns, rows)
 
 
-def insert_new_source_rows(schema: str, table: str, source_columns: list[str], audit_columns: list[str], rows: Iterable[dict[str, Any]]) -> int:
+def insert_new_source_rows(
+    schema: str,
+    table: str,
+    source_columns: list[str],
+    audit_columns: list[str],
+    rows: Iterable[dict[str, Any]],
+    fingerprint_columns: list[str] | None = None,
+) -> int:
     materialized = list(rows)
     if not materialized:
         return 0
 
+    fingerprint_columns = fingerprint_columns or source_columns
     all_columns = source_columns + audit_columns
     input_columns = source_columns + [column for column in audit_columns if column != SOURCE_PAYLOAD_HASH_COLUMN]
     ensure_text_table(schema, table, all_columns)
-    ensure_source_payload_hash(schema, table, source_columns)
+    ensure_source_payload_hash(schema, table, fingerprint_columns)
 
     table_ref = table_name(schema, table)
     input_column_sql = ", ".join(qident(column) for column in input_columns)
@@ -142,7 +150,7 @@ def insert_new_source_rows(schema: str, table: str, source_columns: list[str], a
         "deduped.source_payload_hash" if column == SOURCE_PAYLOAD_HASH_COLUMN else f"deduped.{qident(column)}"
         for column in all_columns
     )
-    payload_hash_sql = _payload_hash_sql(source_columns, relation="incoming")
+    payload_hash_sql = _payload_hash_sql(fingerprint_columns, relation="incoming")
     values = [[row.get(column) for column in input_columns] for row in materialized]
 
     query = f"""

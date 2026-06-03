@@ -1,8 +1,25 @@
 from django.contrib import admin
 from django.urls import include, path
-from dashboard.views import campaign_field_rep_collateral_insights, campaign_overview, campaign_state_list, menu_page, campaign_login, export_report, etl_debug_page, send_access_email_view, campaign_access_page, reports_home, campaign_performance_links_page, campaign_performance_page
+from dashboard.views import (
+    campaign_access_page,
+    campaign_field_rep_collateral_insights,
+    campaign_login,
+    campaign_overview,
+    campaign_performance_links_page,
+    campaign_performance_page,
+    campaign_state_list,
+    etl_debug_page,
+    export_collateral_field_rep_insights,
+    export_field_rep_insights,
+    export_report,
+    export_unmapped_doctors,
+    menu_page,
+    reports_home,
+    send_access_email_view,
+)
 from dashboard.internal_data_admin import (
     internal_data_admin_bulk_delete,
+    internal_data_admin_corrections,
     internal_data_admin_cleanup,
     internal_data_admin_delete,
     internal_data_admin_edit,
@@ -38,6 +55,7 @@ urlpatterns = [
     path("_internal/data-admin/raw-downloads/", internal_data_admin_raw_downloads, name="internal-data-admin-raw-downloads"),
     path("_internal/data-admin/raw-downloads/<str:schema>/<str:table>/download/", internal_data_admin_raw_download, name="internal-data-admin-raw-download"),
     path("_internal/data-admin/raw-dedupe/", internal_data_admin_raw_dedupe, name="internal-data-admin-raw-dedupe"),
+    path("_internal/data-admin/corrections/", internal_data_admin_corrections, name="internal-data-admin-corrections"),
     path("_internal/data-admin/cleanup/", internal_data_admin_cleanup, name="internal-data-admin-cleanup"),
     path("_internal/data-admin/<str:schema>/<str:table>/new/", internal_data_admin_new, name="internal-data-admin-new"),
     path("_internal/data-admin/<str:schema>/<str:table>/bulk-delete/", internal_data_admin_bulk_delete, name="internal-data-admin-bulk-delete"),
@@ -51,7 +69,14 @@ urlpatterns = [
     path("campaign/<str:brand_campaign_id>/send-access-email/", send_access_email_view, name="campaign-send-access-email"),
     path("campaign/<str:brand_campaign_id>/performance/", campaign_performance_page, name="campaign-performance-page-legacy"),
     path("campaign/<str:brand_campaign_id>/states/", campaign_state_list, name="campaign-state-list"),
+    path("campaign/<str:brand_campaign_id>/export/", export_report, name="campaign-export"),
+    path("campaign/<str:brand_campaign_id>/export/field-rep-insights/", export_field_rep_insights, name="campaign-field-rep-insights-export"),
+    path("campaign/<str:brand_campaign_id>/export/unmapped-doctors/", export_unmapped_doctors, name="campaign-unmapped-doctors-export"),
+    path(
+        "campaign/<str:brand_campaign_id>/collateral/<str:collateral_id>/field-rep-insights/export/",
+        export_collateral_field_rep_insights,
+        name="campaign-field-rep-insights-collateral-export",
+    ),
     path("campaign/<str:brand_campaign_id>/collateral/<str:collateral_id>/field-rep-insights/", campaign_field_rep_collateral_insights, name="campaign-field-rep-insights-collateral"),
     path("campaign/<str:brand_campaign_id>/", campaign_overview, name="campaign-overview-specific"),
-    path("campaign/<str:brand_campaign_id>/export/", export_report, name="campaign-export"),
 ]

@@ -1,0 +1,140 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}Reporting Corrections{% endblock %}
+{% block heading %}Reporting Corrections{% endblock %}
+
+{% block content %}
+<nav class="ida-toolbar">
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-home' %}">Back to Data Admin</a>
+</nav>
+
+<section class="ida-band">
+  <div>
+    <h2>Reporting-only correction rules</h2>
+    <p class="ida-muted">Use this only when source V2 is not yet corrected or when brand validation must be applied in reporting first. Rules never delete source, raw, or V2 rows; they are applied during ETL rebuild to derived reporting counts.</p>
+  </div>
+  <div class="ida-safety-note">
+    <strong>Safe behavior</strong>
+    <span>Deactivate a rule and rerun ETL to restore the derived rows from preserved reporting data.</span>
+  </div>
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Add Single Rule</p>
+  <form class="ida-form ida-record-form" method="post">
+    {% csrf_token %}
+    <input type="hidden" name="correction_action" value="add">
+    <div class="ida-field-grid">
+      <label class="ida-field">
+        <span>Correction type</span>
+        <select name="rule_type" required>
+          {% for type in rule_types %}
+          <option value="{{ type.key }}">{{ type.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="ida-field">
+        <span>Campaign ID</span>
+        <input type="text" name="campaign_id" placeholder="83ce7fc7c965433ab2b9717394abe3c1" required>
+      </label>
+      <label class="ida-field">
+        <span>Doctor phone</span>
+        <input type="text" name="doctor_phone" placeholder="7086179396" required>
+      </label>
+      <label class="ida-field">
+        <span>Doctor name</span>
+        <input type="text" name="doctor_name" placeholder="Dr Name">
+      </label>
+      <label class="ida-field">
+        <span>Field Rep Brand Supplied ID</span>
+        <input type="text" name="field_rep_brand_supplied_id" placeholder="Required for invalid-phone rules">
+      </label>
+      <label class="ida-field">
+        <span>Expected Field Rep Brand Supplied ID</span>
+        <input type="text" name="expected_field_rep_brand_supplied_id" placeholder="Required for duplicate assignment rules">
+      </label>
+      <label class="ida-field">
+        <span>Affected Field Rep IDs</span>
+        <input type="text" name="affected_field_rep_brand_supplied_ids" placeholder="Example: 2731, 1607">
+      </label>
+      <label class="ida-field ida-field-wide">
+        <span>Reason</span>
+        <input type="text" name="reason" placeholder="Brand confirmed correction on YYYY-MM-DD" required>
+      </label>
+    </div>
+    <button class="ida-button" type="submit">Create Correction Rule</button>
+  </form>
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Bulk Paste</p>
+  <p class="ida-muted">Paste CSV rows with this exact header. Keep one correction per row.</p>
+  <pre class="ida-sample-block">{{ sample_csv }}</pre>
+  <form class="ida-form" method="post">
+    {% csrf_token %}
+    <input type="hidden" name="correction_action" value="bulk_add">
+    <label class="ida-field">
+      <span>Correction CSV</span>
+      <textarea name="bulk_csv" rows="8" placeholder="{{ sample_csv }}"></textarea>
+    </label>
+    <button class="ida-button" type="submit">Create Rules From CSV</button>
+  </form>
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Rules</p>
+  <div class="ida-table-wrap">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Type</th>
+          <th>Campaign</th>
+          <th>Doctor</th>
+          <th>Field Rep Rule</th>
+          <th>Reason</th>
+          <th>Created</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rule in rules %}
+        <tr>
+          <td>{% if rule.is_active %}<strong>Active</strong>{% else %}Inactive{% endif %}</td>
+          <td><code>{{ rule.rule_type }}</code></td>
+          <td><code>{{ rule.campaign_id }}</code></td>
+          <td>
+            <strong>{{ rule.doctor_phone }}</strong>
+            {% if rule.doctor_name %}<br><span>{{ rule.doctor_name }}</span>{% endif %}
+          </td>
+          <td>
+            {% if rule.expected_field_rep_brand_supplied_id %}
+              Keep with <strong>{{ rule.expected_field_rep_brand_supplied_id }}</strong>
+              {% if rule.affected_field_rep_brand_supplied_ids %}<br><span>Exclude: {{ rule.affected_field_rep_brand_supplied_ids }}</span>{% endif %}
+            {% else %}
+              Exclude for <strong>{{ rule.field_rep_brand_supplied_id|default:"matching rep" }}</strong>
+            {% endif %}
+          </td>
+          <td>{{ rule.reason }}</td>
+          <td>{{ rule.created_at }}<br><span>{{ rule.created_by }}</span></td>
+          <td>
+            {% if rule.is_active %}
+            <form method="post">
+              {% csrf_token %}
+              <input type="hidden" name="correction_action" value="deactivate">
+              <input type="hidden" name="correction_id" value="{{ rule.correction_id }}">
+              <button class="ida-button ida-button-secondary" type="submit">Deactivate</button>
+            </form>
+            {% else %}
+            <span class="ida-muted">No action</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8">No reporting correction rules have been created.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

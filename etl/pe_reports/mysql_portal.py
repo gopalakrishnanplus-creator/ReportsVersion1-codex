@@ -54,9 +54,14 @@ def extract_rows(table: str, columns: list[str], watermark_field: str | None = N
 
                 query = f"SELECT {', '.join(f'`{column}`' for column in selected_columns)} FROM `{table}`"
                 params: list[Any] = []
+                where_clauses: list[str] = []
+                if table.lower().endswith("_v2") and "is_current" in available_columns:
+                    where_clauses.append("(`is_current` IS NULL OR CAST(`is_current` AS CHAR) IN ('1', 'true', 'TRUE', 't', 'T', 'yes', 'YES', 'y', 'Y'))")
                 if watermark_field and clean_text(watermark_start) and watermark_field in available_columns:
-                    query += f" WHERE `{watermark_field}` >= %s"
+                    where_clauses.append(f"`{watermark_field}` >= %s")
                     params.append(watermark_start)
+                if where_clauses:
+                    query += " WHERE " + " AND ".join(where_clauses)
 
                 cursor.execute(query, params)
                 while True:

@@ -31,6 +31,9 @@ def _campaign_system_report_path(payload: dict[str, object], system_key: str) ->
     if system_key == "patient_education":
         pe_campaign_id = str(identifiers.get("pe_campaign_id") or "").strip()
         return f"/pe-reports/campaign/{pe_campaign_id}/" if pe_campaign_id else None
+    if system_key == "rfa":
+        rfa_campaign_key = str(identifiers.get("rfa_campaign_key") or identifiers.get("resolved_campaign_id") or "").strip()
+        return f"/sapa-growth/campaign/{rfa_campaign_key}/" if rfa_campaign_key else None
     return None
 
 
@@ -69,13 +72,18 @@ def _attach_system_report_links(request: HttpRequest, payload: dict[str, object]
 
     campaign = payload.get("campaign")
     if isinstance(campaign, dict):
+        available_keys = {
+            str(item.get("key") or "").strip()
+            for item in payload.get("available_systems", [])
+            if isinstance(item, dict)
+        }
         system_links = {
             key: link_data.get("system_report_url")
             for key, link_data in section_links.items()
         }
         for key in ("rfa", "in_clinic", "patient_education"):
             if key not in system_links:
-                path = _campaign_system_report_path(payload, key)
+                path = _campaign_system_report_path(payload, key) if key in available_keys else None
                 system_links[key] = absolute_url(request, path) if path else None
         campaign["system_report_links"] = system_links
 

@@ -6,10 +6,13 @@ from django.http import HttpResponse
 from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve, reverse
 
+from etl.pe_reports import bronze as pe_bronze
+from etl.pe_reports import pipeline as pe_pipeline
+from etl.pe_reports import raw as pe_raw
 from etl.pe_reports import storage as pe_storage
 from etl.pe_reports.gold import _latest_business_date, build_benchmark_row, compute_health_components
 from etl.pe_reports.silver import attribute_banner_click_row, attribute_share_row, match_campaign_doctors, rollup_share_funnel
-from etl.pe_reports.specs import RAW_AUDIT_COLUMNS
+from etl.pe_reports.specs import RAW_AUDIT_COLUMNS, SourceTableSpec
 from etl.pe_reports.utils import clean_text, week_end_saturday
 from pe_reports.reporting import build_dashboard_payload
 
@@ -45,6 +48,104 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertIn("ROW_NUMBER() OVER (PARTITION BY source_payload_hash", query)
         self.assertIn('existing."_source_payload_hash" = deduped.source_payload_hash', query)
         self.assertEqual(values, [["1", "Asha", "row-hash"]])
+
+    def test_raw_source_insert_can_fingerprint_v2_source_table(self):
+        cursor_mock = MagicMock()
+        cursor_context = MagicMock()
+        cursor_context.__enter__.return_value = cursor_mock
+        cursor_context.__exit__.return_value = False
+        connection_mock = MagicMock()
+        connection_mock.cursor.return_value = cursor_context
+
+        with patch("etl.pe_reports.storage.ensure_text_table"), patch(
+            "etl.pe_reports.storage.ensure_source_payload_hash"
+        ) as ensure_hash, patch("etl.pe_reports.storage.connection", connection_mock), patch(
+            "etl.pe_reports.storage.execute_values",
+            return_value=[(1,)],
+        ) as execute_values_mock:
+            pe_storage.insert_new_source_rows(
+                "raw_pe_master",
+                "campaign_fieldrep_raw",
+                ["id", "full_name"],
+                ["_source_table", "_record_hash", "_source_payload_hash"],
+                [{"id": "1", "full_name": "Asha", "_source_table": "field_rep_v2", "_record_hash": "row-hash"}],
+                fingerprint_columns=["id", "full_name", "_source_table"],
+            )
+
+        ensure_hash.assert_called_once_with("raw_pe_master", "campaign_fieldrep_raw", ["id", "full_name", "_source_table"])
+        _, query, values = execute_values_mock.call_args.args
+        self.assertIn('"incoming"."_source_table"::text', query)
+        self.assertEqual(values, [["1", "Asha", "field_rep_v2", "row-hash"]])
+
+    def test_bronze_uses_only_v2_rows_for_v2_source_specs(self):
+        spec = SourceTableSpec(
+            source_table="pe_share_event_v2",
+            raw_table="sharing_shareactivity_raw",
+            bronze_table="sharing_shareactivity",
+            columns=["id", "public_id"],
+            key_columns=["public_id"],
+        )
+        rows = [
+            {"id": "1", "public_id": "legacy", "_source_table": "sharing_shareactivity"},
+            {"id": "2", "public_id": "v2-old", "_source_table": "pe_share_event_v2", "_ingestion_run_id": "run-1", "_ingested_at": "2026-06-02T00:00:00+00:00"},
+            {"id": "3", "public_id": "v2", "_source_table": "pe_share_event_v2", "_ingestion_run_id": "run-2", "_ingested_at": "2026-06-03T00:00:00+00:00"},
+        ]
+
+        self.assertEqual(
+            pe_bronze._active_source_rows(rows, spec, {"v2"}),
+            [{"id": "3", "public_id": "v2", "_source_table": "pe_share_event_v2", "_ingestion_run_id": "run-2", "_ingested_at": "2026-06-03T00:00:00+00:00"}],
+        )
+
+    def test_pipeline_refuses_empty_required_v2_source_counts(self):
+        raw_portal = {
+            "extracted_counts": {
+                "sharing_doctorsharesummary": 10,
+                "sharing_shareactivity": 0,
+                "publisher_campaign": 1,
+            }
+        }
+        raw_master = {
+            "extracted_counts": {
+                "campaign_doctor": 10,
+                "campaign_doctorcampaignenrollment": 10,
+                "campaign_campaign": 1,
+                "campaign_brand": 1,
+                "campaign_fieldrep": 5,
+                "campaign_campaignfieldrep": 5,
+            }
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "sharing_shareactivity"):
+            pe_pipeline._validate_required_v2_source_counts(raw_portal, raw_master)
+
+    def test_empty_v2_source_pull_does_not_replace_current_snapshot(self):
+        spec = SourceTableSpec(
+            source_table="pe_share_event_v2",
+            raw_table="sharing_shareactivity_raw",
+            bronze_table="sharing_shareactivity",
+            columns=["id", "public_id"],
+            key_columns=["public_id"],
+        )
+
+        with patch("etl.pe_reports.raw.extract_portal_rows", return_value=[]), patch(
+            "etl.pe_reports.raw.insert_new_source_rows",
+            return_value=0,
+        ), patch("etl.pe_reports.raw.record_v2_current_snapshot") as snapshot_mock, patch(
+            "etl.pe_reports.raw.get_watermark",
+            return_value=None,
+        ), patch("etl.pe_reports.raw.upsert_watermark"), patch("etl.pe_reports.raw.log_step"):
+            pe_raw._ingest_specs(
+                run_id="run-1",
+                extracted_at="2026-06-03T00:00:00+00:00",
+                schema="raw_pe_portal",
+                specs={"sharing_shareactivity": spec},
+                source_name="portal",
+                source_system_label="pe_portal",
+                extractor=pe_raw.extract_portal_rows,
+                error_type=Exception,
+            )
+
+        snapshot_mock.assert_not_called()
 
     def test_campaign_doctor_mapping_prefers_logical_id_then_email_then_phone(self):
         mapped = match_campaign_doctors(
