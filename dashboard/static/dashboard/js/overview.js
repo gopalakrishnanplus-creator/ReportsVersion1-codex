@@ -164,30 +164,194 @@
       .replace(/"/g, '&quot;');
   }
 
+  function parseDoctorPayload(button) {
+    try {
+      const doctors = JSON.parse(button?.dataset.doctors || '[]');
+      return Array.isArray(doctors) ? doctors : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function buildExcelTable(headers, rows) {
+    const headerHtml = headers.map((header) => `<th>${escapeExcelHtml(header)}</th>`).join('');
+    const bodyHtml = rows.map((row) => (
+      `<tr>${row.map((cell) => `<td>${escapeExcelHtml(cell)}</td>`).join('')}</tr>`
+    )).join('');
+    return `<table border="1"><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`;
+  }
+
+  function isMissingDoctorName(name) {
+    const normalized = String(name || '').trim().toLowerCase();
+    return !normalized || ['unknown doctor', 'unknown', 'null', 'none', '-'].includes(normalized);
+  }
+
+  function campaignDownloadKey() {
+    return (window.location.pathname.split('/')[2] || 'campaign').replace(/[^a-zA-Z0-9-_]/g, '_');
+  }
+
+  function shouldUseServerDownload(element) {
+    return Boolean(
+      element?.dataset?.serverDownload === 'true'
+      || (element?.tagName === 'A' && element.getAttribute('href'))
+    );
+  }
+
+  function downloadExcelWorkbook(prefix, workbook) {
+    const blob = new Blob([workbook], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${prefix}_${campaignDownloadKey()}.xls`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function collectDoctorDetailRows() {
+    const rows = [];
+    Array.from(fieldRepTable.querySelectorAll('.doctor-count-btn')).forEach((button) => {
+      const doctors = parseDoctorPayload(button);
+      const state = button.dataset.state || button.closest('tr')?.children?.[2]?.textContent.trim() || 'UNKNOWN';
+      doctors.forEach((doctor, index) => {
+        rows.push({
+          repId: button.dataset.repId || '',
+          repName: button.dataset.repName || '',
+          state,
+          metric: button.dataset.metricLabel || '',
+          index: index + 1,
+          doctorName: doctor?.name || '',
+          doctorPhone: doctor?.phone || '',
+          doctorKey: doctor?.doctor_key || '',
+        });
+      });
+    });
+    return rows;
+  }
+
   const fieldRepExcelBtn = document.getElementById('field-rep-excel-btn');
+  const unmappedDoctorsExcelBtn = document.getElementById('unmapped-doctors-excel-btn');
   const fieldRepTable = document.getElementById('field-rep-insights-table');
   if (fieldRepExcelBtn && fieldRepTable) {
     fieldRepExcelBtn.addEventListener('click', (event) => {
       event.stopPropagation();
-      const rows = Array.from(fieldRepTable.querySelectorAll('tr')).map((row) => (
-        Array.from(row.children).map((cell) => `<td>${escapeExcelHtml(cell.textContent.trim())}</td>`).join('')
+      if (shouldUseServerDownload(fieldRepExcelBtn)) return;
+      const summaryHeaders = Array.from(fieldRepTable.querySelectorAll('thead th')).map((cell) => cell.textContent.trim());
+      const summaryRows = Array.from(fieldRepTable.querySelectorAll('tbody tr')).map((row) => (
+        Array.from(row.children).map((cell) => cell.textContent.trim())
       ));
+      const doctorDetailRows = collectDoctorDetailRows().map((row) => [
+        row.repId,
+        row.repName,
+        row.state,
+        row.metric,
+        row.index,
+        row.doctorName,
+        row.doctorPhone,
+        row.doctorKey,
+      ]);
       const workbook = `
         <html>
           <head><meta charset="UTF-8"></head>
-          <body><table border="1">${rows.map((row) => `<tr>${row}</tr>`).join('')}</table></body>
+          <body>
+            <h2>Field Representative Summary</h2>
+            ${buildExcelTable(summaryHeaders, summaryRows)}
+            <br>
+            <h2>Doctor Details</h2>
+            ${buildExcelTable(
+              ['Field Rep ID', 'Field Representative', 'State', 'Metric', 'S. No.', 'Doctor Name', 'Doctor Number', 'Doctor Key'],
+              doctorDetailRows
+            )}
+          </body>
         </html>
       `;
-      const blob = new Blob([workbook], { type: 'application/vnd.ms-excel;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      const safeCampaign = (window.location.pathname.split('/')[2] || 'campaign').replace(/[^a-zA-Z0-9-_]/g, '_');
-      link.href = url;
-      link.download = `field_rep_insights_${safeCampaign}.xls`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      downloadExcelWorkbook('field_rep_insights', workbook);
+    });
+  }
+
+  if (unmappedDoctorsExcelBtn && fieldRepTable) {
+    unmappedDoctorsExcelBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (shouldUseServerDownload(unmappedDoctorsExcelBtn)) return;
+      const assignedDoctorKeysByRep = new Map();
+      collectDoctorDetailRows().forEach((row) => {
+        if (row.metric !== 'Doctors Assigned') return;
+        const doctorKey = row.doctorKey || row.doctorPhone;
+        if (!doctorKey) return;
+        if (!assignedDoctorKeysByRep.has(row.repId)) {
+          assignedDoctorKeysByRep.set(row.repId, new Set());
+        }
+        assignedDoctorKeysByRep.get(row.repId).add(doctorKey);
+      });
+      const correctionRowsByKey = new Map();
+      collectDoctorDetailRows().forEach((row) => {
+        const isUnmappedRep = row.repId === 'UNMAPPED_ACTIVITY';
+        const isUnknownName = isMissingDoctorName(row.doctorName);
+        const doctorKey = row.doctorKey || row.doctorPhone;
+        const assignedKeys = assignedDoctorKeysByRep.get(row.repId) || new Set();
+        const isActivityMetric = row.metric !== 'Doctors Assigned';
+        const isOutsideRoster = isActivityMetric && !isUnmappedRep && doctorKey && !assignedKeys.has(doctorKey);
+        if (!isUnmappedRep && !isUnknownName && !isOutsideRoster) return;
+        let issue = 'Doctor name missing or unknown';
+        if (isUnmappedRep) {
+          issue = 'No campaign-roster field rep mapping';
+        } else if (isOutsideRoster) {
+          issue = 'Activity doctor is not in assigned roster for this rep';
+        }
+        const key = [row.repId, row.doctorKey, row.doctorPhone, issue].join('|');
+        const existing = correctionRowsByKey.get(key) || {
+          repId: row.repId,
+          repName: row.repName,
+          metrics: new Set(),
+          doctorName: row.doctorName,
+          doctorPhone: row.doctorPhone,
+          doctorKey: row.doctorKey,
+          issue,
+        };
+        existing.metrics.add(row.metric);
+        correctionRowsByKey.set(key, existing);
+      });
+      const correctionRows = Array.from(correctionRowsByKey.values()).map((row, index) => [
+        index + 1,
+        row.issue,
+        row.repId,
+        row.repName,
+        Array.from(row.metrics).sort().join(', '),
+        row.doctorName,
+        row.doctorPhone,
+        row.doctorKey,
+        '',
+        '',
+        '',
+        row.doctorPhone,
+      ]);
+      const workbook = `
+        <html>
+          <head><meta charset="UTF-8"></head>
+          <body>
+            <h2>Doctors Requiring Manual Mapping</h2>
+            ${buildExcelTable(
+              [
+                'S. No.',
+                'Issue',
+                'Current Field Rep ID',
+                'Current Field Representative',
+                'Metric(s)',
+                'Current Doctor Name',
+                'Current Doctor Number',
+                'Doctor Key',
+                'Correct Field Rep Brand Supplied ID',
+                'Correct Field Rep Name / Email',
+                'Correct Doctor Name',
+                'Correct Doctor Number',
+              ],
+              correctionRows
+            )}
+          </body>
+        </html>
+      `;
+      downloadExcelWorkbook('doctors_requiring_manual_mapping', workbook);
     });
   }
 
@@ -262,19 +426,14 @@
     }
   }
 
-  function hasDisplayName(doctor) {
-    const name = String(doctor?.name || '').trim();
-    return Boolean(name && !['unknown doctor', 'unknown', 'null', 'none'].includes(name.toLowerCase()));
-  }
-
-  function doctorRowsHtml(doctors, showNames) {
+  function doctorRowsHtml(doctors) {
     if (!Array.isArray(doctors) || !doctors.length) {
       return '<tr class="empty-roster-row"><td colspan="3">No doctor names are available for this count.</td></tr>';
     }
     return doctors.map((doctor, index) => `
       <tr>
         <td>${index + 1}</td>
-        ${showNames ? `<td>${escapeHtml(doctor.name || '-')}</td>` : ''}
+        <td>${escapeHtml(isMissingDoctorName(doctor.name) ? 'Unknown Doctor' : doctor.name)}</td>
         <td>${escapeHtml(doctor.phone || '-')}</td>
       </tr>
     `).join('');
@@ -291,20 +450,17 @@
       }
       const repName = button.dataset.repName || button.dataset.repId || 'Field Representative';
       const metricLabel = button.dataset.metricLabel || 'Assigned Doctors';
-      const showNames = doctors.some(hasDisplayName);
       if (doctorRosterTitle) {
         doctorRosterTitle.textContent = `${metricLabel} - ${repName}`;
       }
       if (doctorRosterSubtitle) {
-        doctorRosterSubtitle.textContent = showNames
-          ? `${doctors.length} unique doctor${doctors.length === 1 ? '' : 's'} for ${metricLabel}.`
-          : `${doctors.length} unique doctor${doctors.length === 1 ? '' : 's'} for ${metricLabel}; names are not available in source logs.`;
+        doctorRosterSubtitle.textContent = `${doctors.length} unique doctor${doctors.length === 1 ? '' : 's'} for ${metricLabel}.`;
       }
       if (doctorRosterNameHeader) {
-        doctorRosterNameHeader.classList.toggle('hidden', !showNames);
+        doctorRosterNameHeader.classList.remove('hidden');
       }
       if (doctorRosterBody) {
-        doctorRosterBody.innerHTML = doctorRowsHtml(doctors, showNames);
+        doctorRosterBody.innerHTML = doctorRowsHtml(doctors);
       }
       setDoctorRosterPanel(true);
     });
@@ -332,6 +488,7 @@
   const downloadBtn = document.getElementById('download-pdf-btn');
   const reportRoot = document.getElementById('report-root');
   if (!downloadBtn || !reportRoot) return;
+  if (shouldUseServerDownload(downloadBtn)) return;
 
   downloadBtn.addEventListener('click', async () => {
     const originalText = downloadBtn.textContent;
@@ -348,53 +505,62 @@
       const pageWidth = pdfDoc.internal.pageSize.getWidth();
       const pageHeight = pdfDoc.internal.pageSize.getHeight();
       const margin = 9;
-      const sectionGap = 5;
       const contentWidth = pageWidth - margin * 2;
       const contentHeight = pageHeight - margin * 2;
-      let y = margin;
-      let hasContent = false;
 
       document.body.classList.add('pdf-exporting');
       await document.fonts?.ready;
-      await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const sections = [
-        document.getElementById('header'),
-        document.querySelector('.controls-card'),
-        document.querySelector('.top-grid'),
-        document.getElementById('kpi_tiles'),
-        document.querySelector('.bottom-grid'),
-      ].filter(Boolean);
+      const captureCanvas = await window.html2canvas(reportRoot, {
+        backgroundColor: '#f2f4f8',
+        useCORS: true,
+        scale: Math.min(2, window.devicePixelRatio || 1.5),
+        scrollX: 0,
+        scrollY: 0,
+        windowWidth: Math.max(1240, reportRoot.scrollWidth, document.documentElement.scrollWidth),
+        windowHeight: Math.max(reportRoot.scrollHeight, document.documentElement.scrollHeight),
+      });
 
-      for (const section of sections) {
-        const captureCanvas = await window.html2canvas(section, {
-          backgroundColor: '#ffffff',
-          useCORS: true,
-          scale: Math.min(2, window.devicePixelRatio || 1.5),
-          windowWidth: Math.max(1240, document.documentElement.scrollWidth),
-        });
-        if (!captureCanvas.width || !captureCanvas.height) continue;
+      if (!captureCanvas.width || !captureCanvas.height) {
+        throw new Error('Report capture was empty');
+      }
 
-        const imgData = captureCanvas.toDataURL('image/png');
-        let imgWidth = contentWidth;
-        let imgHeight = (captureCanvas.height * imgWidth) / captureCanvas.width;
-        let x = margin;
+      const sliceCanvas = document.createElement('canvas');
+      const sliceContext = sliceCanvas.getContext('2d');
+      if (!sliceContext) {
+        throw new Error('Unable to create PDF canvas context');
+      }
+      const maxSliceHeight = Math.max(1, Math.floor((captureCanvas.width * contentHeight) / contentWidth));
+      let sourceY = 0;
+      let pageIndex = 0;
 
-        if (imgHeight > contentHeight) {
-          const scale = contentHeight / imgHeight;
-          imgWidth *= scale;
-          imgHeight = contentHeight;
-          x = margin + (contentWidth - imgWidth) / 2;
-        }
+      while (sourceY < captureCanvas.height) {
+        const sliceHeight = Math.min(maxSliceHeight, captureCanvas.height - sourceY);
+        sliceCanvas.width = captureCanvas.width;
+        sliceCanvas.height = sliceHeight;
+        sliceContext.clearRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+        sliceContext.drawImage(
+          captureCanvas,
+          0,
+          sourceY,
+          captureCanvas.width,
+          sliceHeight,
+          0,
+          0,
+          captureCanvas.width,
+          sliceHeight,
+        );
 
-        if (hasContent && y + imgHeight > pageHeight - margin) {
+        if (pageIndex > 0) {
           pdfDoc.addPage();
-          y = margin;
         }
+        const imgData = sliceCanvas.toDataURL('image/png');
+        const imgHeight = (sliceHeight * contentWidth) / captureCanvas.width;
+        pdfDoc.addImage(imgData, 'PNG', margin, margin, contentWidth, imgHeight);
 
-        pdfDoc.addImage(imgData, 'PNG', x, y, imgWidth, imgHeight);
-        y += imgHeight + sectionGap;
-        hasContent = true;
+        sourceY += sliceHeight;
+        pageIndex += 1;
       }
 
       const safeCampaign = (window.location.pathname.split('/')[2] || 'campaign').replace(/[^a-zA-Z0-9-_]/g, '_');

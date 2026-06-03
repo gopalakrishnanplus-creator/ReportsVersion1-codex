@@ -11,6 +11,7 @@ from etl.pe_reports.mysql_portal import PortalMySQLExtractionError, extract_rows
 from etl.pe_reports.specs import MASTER_TABLE_SPECS, PORTAL_TABLE_SPECS, RAW_AUDIT_COLUMNS, RAW_MASTER_SCHEMA, RAW_PORTAL_SCHEMA, SourceTableSpec
 from etl.pe_reports.storage import ensure_text_table, insert_new_source_rows
 from etl.pe_reports.utils import clean_text, hash_fields, parse_datetime
+from etl.v2_snapshot import record_v2_current_snapshot
 
 
 def _audit_payload(run_id: str, source_system: str, source_table: str, extracted_at: str, values: list[Any]) -> dict[str, Any]:
@@ -65,22 +66,41 @@ def _ingest_specs(
     max_watermarks: dict[str, str] = {}
 
     for name, spec in specs.items():
+        is_v2_source = spec.source_table.lower().endswith("_v2")
         lookback_days = spec.lookback_days or int(settings.PE_REPORTS["LOOKBACK_DAYS"])
-        watermark_start = _watermark_start(source_name, name, spec.watermark_field, lookback_days)
+        watermark_start = None if is_v2_source else _watermark_start(source_name, name, spec.watermark_field, lookback_days)
         try:
             rows = extractor(spec.source_table, spec.columns, spec.watermark_field, watermark_start)
             prepared_rows: list[dict[str, Any]] = []
             max_watermark_value: str | None = None
             for row in rows:
                 payload = {column: row.get(column) for column in spec.columns}
-                payload.update(_audit_payload(run_id, source_system_label, name, extracted_at, [row.get(column) for column in spec.columns]))
+                payload.update(_audit_payload(run_id, source_system_label, spec.source_table, extracted_at, [row.get(column) for column in spec.columns]))
                 prepared_rows.append(payload)
                 if spec.watermark_field:
                     candidate = clean_text(row.get(spec.watermark_field))
                     if candidate and (max_watermark_value is None or candidate > max_watermark_value):
                         max_watermark_value = candidate
 
-            inserted_count = insert_new_source_rows(schema, spec.raw_table, spec.columns, RAW_AUDIT_COLUMNS, prepared_rows)
+            fingerprint_columns = spec.columns + ["_source_table"] if spec.source_table.lower().endswith("_v2") else spec.columns
+            inserted_count = insert_new_source_rows(
+                schema,
+                spec.raw_table,
+                spec.columns,
+                RAW_AUDIT_COLUMNS,
+                prepared_rows,
+                fingerprint_columns=fingerprint_columns,
+            )
+            if is_v2_source and prepared_rows:
+                record_v2_current_snapshot(
+                    raw_schema=schema,
+                    raw_table=spec.raw_table,
+                    source_table=spec.source_table,
+                    key_columns=spec.key_columns,
+                    rows=prepared_rows,
+                    run_id=run_id,
+                    extracted_at=extracted_at,
+                )
             counts[name] = inserted_count
             skipped_counts[name] = len(prepared_rows) - inserted_count
             extracted_counts[name] = len(rows)
@@ -94,7 +114,7 @@ def _ingest_specs(
                 spec.watermark_field,
                 max_watermark_value or previous_value,
                 lookback_days,
-                "incremental" if spec.watermark_field else "snapshot",
+                "snapshot" if is_v2_source else "incremental" if spec.watermark_field else "snapshot",
                 run_id,
             )
             log_step(run_id, f"extract_{source_name}", name, "SUCCESS", rows_read=len(rows), rows_written=inserted_count)

@@ -10,6 +10,46 @@ from etl.pe_reports.gold import build_gold
 from etl.pe_reports.raw import ensure_raw_tables, ingest_master_sources, ingest_portal_sources
 from etl.pe_reports.silver import build_silver
 
+REQUIRED_V2_PORTAL_TABLES = (
+    "sharing_doctorsharesummary",
+    "sharing_shareactivity",
+    "publisher_campaign",
+)
+
+REQUIRED_V2_MASTER_TABLES = (
+    "campaign_doctor",
+    "campaign_doctorcampaignenrollment",
+    "campaign_campaign",
+    "campaign_brand",
+    "campaign_fieldrep",
+    "campaign_campaignfieldrep",
+)
+
+
+def _empty_required_tables(raw_result: dict[str, Any], required_tables: tuple[str, ...]) -> list[str]:
+    extracted_counts = raw_result.get("extracted_counts", {}) or {}
+    return [
+        name
+        for name in required_tables
+        if int(extracted_counts.get(name) or 0) <= 0
+    ]
+
+
+def _validate_required_v2_source_counts(raw_portal: dict[str, Any], raw_master: dict[str, Any]) -> None:
+    empty_portal = _empty_required_tables(raw_portal, REQUIRED_V2_PORTAL_TABLES)
+    empty_master = _empty_required_tables(raw_master, REQUIRED_V2_MASTER_TABLES)
+    if empty_portal or empty_master:
+        parts = []
+        if empty_portal:
+            parts.append(f"portal={', '.join(empty_portal)}")
+        if empty_master:
+            parts.append(f"master={', '.join(empty_master)}")
+        raise RuntimeError(
+            "PE V2 source refresh safety check failed before bronze/silver/gold rebuild. "
+            "Required V2 source tables returned zero rows: "
+            f"{'; '.join(parts)}. Existing PE reporting tables were not replaced."
+        )
+
 
 def run_pipeline(run_id: str | None = None, trigger_type: str = "manual", skip_raw_extraction: bool = False) -> dict[str, Any]:
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -35,6 +75,8 @@ def run_pipeline(run_id: str | None = None, trigger_type: str = "manual", skip_r
                 error_summary = json.dumps({"raw_errors": raw_errors}, default=str)
                 log_run(run_id, "FAIL", trigger_type=trigger_type, notes=error_summary)
                 raise RuntimeError(f"PE raw extraction failed: {error_summary}")
+            if not skip_raw_extraction:
+                _validate_required_v2_source_counts(raw_portal, raw_master)
 
             bronze_counts = build_bronze()
             log_step(run_id, "build_bronze", "bronze_pe", "SUCCESS", rows_written=sum(bronze_counts.values()))

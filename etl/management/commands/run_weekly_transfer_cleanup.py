@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from django.core.management.base import BaseCommand, CommandError
 
 from etl.weekly_transfer_cleanup import run_weekly_transfer_cleanup
@@ -16,6 +18,13 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        enabled = os.environ.get("ENABLE_SOURCE_TRANSFER_DELETE_CLEANUP", "0").strip().lower()
+        if enabled not in {"1", "true", "yes", "y", "on"}:
+            raise CommandError(
+                "Source transfer cleanup is disabled. Set ENABLE_SOURCE_TRANSFER_DELETE_CLEANUP=1 only after "
+                "source deletion has been explicitly approved and reporting preservation has been verified."
+            )
+
         raw_domains = [item.strip() for item in str(options["domains"]).split(",") if item.strip()]
         if not raw_domains:
             raise CommandError("At least one cleanup domain must be provided.")

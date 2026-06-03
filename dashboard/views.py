@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import html
 import json
 import re
+import textwrap
 from datetime import datetime
 from typing import Any
 
@@ -14,7 +16,10 @@ from django.urls import reverse
 
 from etl.utils.specs import SOURCE_TABLE_SPECS
 from reporting.access import absolute_url, access_email_history, authenticate_session, build_report_access, send_access_email, validate_credentials
-from reporting.campaign_performance import CampaignPerformanceNotFound, _resolve_campaign_reference
+from reporting.campaign_performance import CampaignPerformanceNotFound, _configured_system_keys, _resolve_campaign_reference, _system_report_path
+
+
+UNMAPPED_ACTIVITY_FIELD_REP_ID = "__unmapped_activity__"
 
 
 def _fetch_dicts(sql: str, params=None):
@@ -332,7 +337,13 @@ def _field_rep_alias_sql_parts() -> tuple[str, str, list[str]]:
             f" OR ({_normalized_sql('sfr.gmail')} <> '' AND {_normalized_sql('sfr.gmail')} = {_normalized_sql('au.email')})"
         )
     else:
-        select_parts.extend(["''::text AS auth_user_id_key", "''::text AS auth_email_key", "''::text AS auth_username_key"])
+        select_parts.extend(
+            [
+                f"{_normalized_sql('cfr.user_id::text')} AS auth_user_id_key",
+                "''::text AS auth_email_key",
+                "''::text AS auth_username_key",
+            ]
+        )
         auth_email_match = ""
         auth_username_match = ""
         legacy_auth_email_match = ""
@@ -433,11 +444,29 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
             SELECT *
             FROM campaign_row
         ),
-        schedule_candidates AS (
+        raw_schedule_candidates AS (
             SELECT
                 sc.collateral_id,
-                COALESCE(sc.schedule_start_date, cs.campaign_start_date) AS schedule_start_date,
-                COALESCE(sc.schedule_end_date, cs.campaign_end_date) AS schedule_end_date,
+                COALESCE(
+                    CASE
+                        WHEN sc.schedule_start_date IS NULL
+                          OR btrim(sc.schedule_start_date::text) = ''
+                          OR lower(btrim(sc.schedule_start_date::text)) = 'null'
+                        THEN NULL
+                        ELSE sc.schedule_start_date::date
+                    END,
+                    cs.campaign_start_date
+                ) AS schedule_start_date,
+                COALESCE(
+                    CASE
+                        WHEN sc.schedule_end_date IS NULL
+                          OR btrim(sc.schedule_end_date::text) = ''
+                          OR lower(btrim(sc.schedule_end_date::text)) = 'null'
+                        THEN NULL
+                        ELSE sc.schedule_end_date::date
+                    END,
+                    cs.campaign_end_date
+                ) AS schedule_end_date,
                 sc.collateral_title,
                 COALESCE(
                     NULLIF(btrim(cs.brand_name), ''),
@@ -451,17 +480,22 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
                 END AS company_logo,
                 cs.campaign_name,
                 cs.campaign_match_rank,
-                cs.source_updated_at,
-                CASE
-                    WHEN COALESCE(sc.schedule_start_date, cs.campaign_start_date) <= CURRENT_DATE
-                     AND COALESCE(sc.schedule_end_date, cs.campaign_end_date) >= CURRENT_DATE THEN 0
-                    WHEN COALESCE(sc.schedule_start_date, cs.campaign_start_date) <= CURRENT_DATE THEN 1
-                    WHEN COALESCE(sc.schedule_start_date, cs.campaign_start_date) > CURRENT_DATE THEN 2
-                    ELSE 3
-                END AS schedule_rank
+                cs.source_updated_at
             FROM campaign_source cs
             LEFT JOIN silver.bridge_campaign_collateral_schedule sc
               ON sc.campaign_id_resolved::text = cs.id::text
+        ),
+        schedule_candidates AS (
+            SELECT
+                *,
+                CASE
+                    WHEN schedule_start_date <= CURRENT_DATE
+                     AND schedule_end_date >= CURRENT_DATE THEN 0
+                    WHEN schedule_start_date <= CURRENT_DATE THEN 1
+                    WHEN schedule_start_date > CURRENT_DATE THEN 2
+                    ELSE 3
+                END AS schedule_rank
+            FROM raw_schedule_candidates
         )
         SELECT *
         FROM schedule_candidates
@@ -545,11 +579,37 @@ def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list
               ON cfr.id::text = ccf.field_rep_id::text
             {alias_joins}
         ),
-        assigned_doctors AS (
-            SELECT DISTINCT d.doctor_identity_key
+        assigned_rep_keys AS (
+            SELECT field_rep_id, internal_rep_key AS rep_key, 40 AS match_rank
+            FROM assigned_reps
+            WHERE internal_rep_key <> ''
+        ),
+        campaign_roster_doctors AS (
+            SELECT DISTINCT ark.field_rep_id, b.doctor_identity_key
+            FROM silver.bridge_brand_campaign_doctor_base b
+            JOIN assigned_rep_keys ark
+              ON {_normalized_sql('b.field_rep_id_resolved')} = ark.rep_key
+            WHERE {_normalized_sql('b.brand_campaign_id')} IN ({brand_placeholders})
+              AND COALESCE(NULLIF(b.doctor_identity_key, ''), '') <> ''
+        ),
+        global_assigned_doctors AS (
+            SELECT DISTINCT ar.field_rep_id, d.doctor_identity_key
             FROM assigned_reps ar
             JOIN silver.dim_doctor d
               ON d.field_rep_id_resolved = ar.field_rep_id
+            WHERE COALESCE(NULLIF(d.doctor_identity_key, ''), '') <> ''
+        ),
+        assigned_doctors AS (
+            SELECT field_rep_id, doctor_identity_key
+            FROM campaign_roster_doctors
+            UNION ALL
+            SELECT field_rep_id, doctor_identity_key
+            FROM global_assigned_doctors
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM campaign_roster_doctors roster
+                WHERE roster.field_rep_id = global_assigned_doctors.field_rep_id
+            )
         ),
         declared_counts AS (
             SELECT MAX(
@@ -582,7 +642,7 @@ def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list
                 )
             END::int AS assigned_total
         """,
-        [*params, *brand_keys],
+        [*params, *brand_keys, *brand_keys],
     )
     return _to_int(rows[0].get("assigned_total")) if rows else 0
 
@@ -778,6 +838,7 @@ def _collateral_health_rows(
         WITH source_events AS (
             SELECT
                 a.collateral_id::text AS collateral_id,
+                a.brand_campaign_id::text AS brand_campaign_id,
                 COALESCE(NULLIF(a.doctor_identity_key,''), a.brand_campaign_id || ':' || a.collateral_id) AS doctor_key,
                 NULLIF(a.reached_first_ts, '') AS reached_first_ts,
                 NULLIF(a.opened_first_ts, '') AS opened_first_ts,
@@ -785,27 +846,46 @@ def _collateral_health_rows(
                 NULLIF(a.pdf_download_first_ts, '') AS pdf_download_first_ts
             FROM silver.doctor_action_first_seen a
             WHERE {_normalized_sql('a.brand_campaign_id')} IN ({brand_placeholders})
+              AND COALESCE(NULLIF(btrim(a.collateral_id::text), ''), '') <> ''
+        ),
+        collateral_stats AS (
+            SELECT
+                se.collateral_id,
+                COALESCE(MAX(NULLIF(c.collateral_title, '')), 'Collateral ' || se.collateral_id) AS collateral_title,
+                COUNT(DISTINCT doctor_key) FILTER (
+                    WHERE reached_first_ts IS NOT NULL
+                       OR opened_first_ts IS NOT NULL
+                       OR video_gt_50_first_ts IS NOT NULL
+                       OR pdf_download_first_ts IS NOT NULL
+                ) AS reached,
+                COUNT(DISTINCT doctor_key) FILTER (WHERE opened_first_ts IS NOT NULL) AS opened,
+                COUNT(DISTINCT doctor_key) FILTER (WHERE video_gt_50_first_ts IS NOT NULL) AS video,
+                COUNT(DISTINCT doctor_key) FILTER (WHERE pdf_download_first_ts IS NOT NULL) AS pdf,
+                COUNT(DISTINCT doctor_key) FILTER (
+                    WHERE video_gt_50_first_ts IS NOT NULL OR pdf_download_first_ts IS NOT NULL
+                ) AS consumed
+            FROM source_events se
+            LEFT JOIN silver.bridge_campaign_collateral_schedule c
+              ON c.collateral_id::text = se.collateral_id
+             AND (
+                  {_normalized_sql('c.campaign_id_resolved')} = {_normalized_sql('se.brand_campaign_id')}
+                  OR {_normalized_sql('c.campaign_id')} = {_normalized_sql('se.brand_campaign_id')}
+             )
+            GROUP BY se.collateral_id
         )
         SELECT
-            se.collateral_id,
-            COALESCE(MAX(NULLIF(c.collateral_title, '')), 'Collateral ' || se.collateral_id) AS collateral_title,
-            COUNT(DISTINCT doctor_key) FILTER (
-                WHERE reached_first_ts IS NOT NULL
-                   OR opened_first_ts IS NOT NULL
-                   OR video_gt_50_first_ts IS NOT NULL
-                   OR pdf_download_first_ts IS NOT NULL
-            ) AS reached,
-            COUNT(DISTINCT doctor_key) FILTER (WHERE opened_first_ts IS NOT NULL) AS opened,
-            COUNT(DISTINCT doctor_key) FILTER (WHERE video_gt_50_first_ts IS NOT NULL) AS video,
-            COUNT(DISTINCT doctor_key) FILTER (WHERE pdf_download_first_ts IS NOT NULL) AS pdf,
-            COUNT(DISTINCT doctor_key) FILTER (
-                WHERE video_gt_50_first_ts IS NOT NULL OR pdf_download_first_ts IS NOT NULL
-            ) AS consumed
-        FROM source_events se
-        LEFT JOIN silver.bridge_campaign_collateral_schedule c
-          ON c.collateral_id::text = se.collateral_id
-        GROUP BY se.collateral_id
-        ORDER BY se.collateral_id
+            collateral_id,
+            collateral_title,
+            reached,
+            opened,
+            video,
+            pdf,
+            consumed,
+            CASE WHEN reached = 0 THEN 0 ELSE ROUND((opened::numeric / reached) * 100, 2) END AS opened_pct,
+            CASE WHEN opened = 0 THEN 0 ELSE ROUND((video::numeric / opened) * 100, 2) END AS video_pct,
+            CASE WHEN opened = 0 THEN 0 ELSE ROUND((pdf::numeric / opened) * 100, 2) END AS pdf_pct
+        FROM collateral_stats
+        ORDER BY collateral_id
         """,
         brand_keys,
     )
@@ -815,15 +895,15 @@ def _field_rep_insight_rows(
     selected_campaign: str,
     brand_campaign_variants: list[str],
     current_collateral_ids: list[str],
+    period_start: Any = None,
+    period_end: Any = None,
 ) -> list[dict[str, Any]]:
     brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
     candidate_cte = _candidate_campaign_ids_cte(brand_placeholders)
-    collateral_filter_tx = ""
-    collateral_filter_share = ""
+    collateral_filter_action = ""
     if current_collateral_ids:
         collateral_placeholders = _placeholders(current_collateral_ids)
-        collateral_filter_tx = f"AND tx.collateral_id::text IN ({collateral_placeholders})"
-        collateral_filter_share = f"AND s.collateral_id::text IN ({collateral_placeholders})"
+        collateral_filter_action = f"AND a.collateral_id::text IN ({collateral_placeholders})"
 
     alias_joins, alias_selects, alias_key_columns = _field_rep_alias_sql_parts()
     alias_key_rank = {
@@ -874,9 +954,8 @@ def _field_rep_insight_rows(
         *brand_keys,
         _normalize_lookup_key(selected_campaign),
         *brand_keys,
-        *current_collateral_ids,
-        *brand_keys,
-        *current_collateral_ids,
+        period_start,
+        period_end,
         *brand_keys,
         *current_collateral_ids,
     ]
@@ -949,16 +1028,101 @@ def _field_rep_insight_rows(
             WHERE external_rep_key <> ''
             {alias_key_unions}
         ),
-        assigned_doctor_matches AS (
+        campaign_roster_matches AS (
+            SELECT DISTINCT ON (ark.field_rep_id, b.doctor_identity_key)
+                ark.field_rep_id,
+                b.doctor_identity_key,
+                COALESCE(NULLIF(btrim(d_bridge.name), ''), 'Unknown Doctor') AS doctor_name,
+                NULLIF(btrim(COALESCE(d_bridge.phone, d_bridge.doctor_phone_normalized)), '') AS doctor_phone,
+                NULLIF(btrim(COALESCE(d_bridge._silver_updated_at, b._silver_updated_at)), '') AS doctor_updated_at,
+                0 AS source_rank,
+                ark.match_rank AS match_rank,
+                CASE
+                    WHEN NULLIF(btrim(d_bridge.name), '') IS NULL
+                      OR lower(btrim(d_bridge.name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                    THEN 1 ELSE 0
+                END AS name_rank
+            FROM silver.bridge_brand_campaign_doctor_base b
+            JOIN assigned_rep_keys ark
+              ON {_normalized_sql('b.field_rep_id_resolved')} = ark.rep_key
+             AND ark.key_type = 'campaign_fieldrep_id'
+            LEFT JOIN LATERAL (
+                SELECT d.name, d.phone, d.doctor_phone_normalized, d._silver_updated_at
+                FROM silver.dim_doctor d
+                WHERE d.doctor_identity_key = b.doctor_identity_key
+                   OR (
+                      COALESCE(NULLIF(b.doctor_master_id_resolved, ''), '') <> ''
+                      AND d.id::text = b.doctor_master_id_resolved
+                   )
+                ORDER BY
+                    CASE
+                        WHEN NULLIF(btrim(d.name), '') IS NULL
+                          OR lower(btrim(d.name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                        THEN 1 ELSE 0
+                    END,
+                    d.id DESC
+                LIMIT 1
+            ) d_bridge ON TRUE
+            WHERE {_normalized_sql('b.brand_campaign_id')} IN ({brand_placeholders})
+              AND COALESCE(NULLIF(b.doctor_identity_key, ''), '') <> ''
+            ORDER BY
+                ark.field_rep_id,
+                b.doctor_identity_key,
+                ark.match_rank,
+                CASE
+                    WHEN NULLIF(btrim(d_bridge.name), '') IS NULL
+                      OR lower(btrim(d_bridge.name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                    THEN 1 ELSE 0
+                END,
+                NULLIF(btrim(COALESCE(d_bridge._silver_updated_at, b._silver_updated_at)), '') DESC NULLS LAST,
+                ark.field_rep_id
+        ),
+        global_doctor_matches AS (
             SELECT
                 ar.field_rep_id,
                 d.doctor_identity_key,
                 COALESCE(NULLIF(btrim(d.name), ''), 'Unknown Doctor') AS doctor_name,
-                NULLIF(btrim(COALESCE(d.phone, d.doctor_phone_normalized)), '') AS doctor_phone
+                NULLIF(btrim(COALESCE(d.phone, d.doctor_phone_normalized)), '') AS doctor_phone,
+                NULLIF(btrim(d._silver_updated_at), '') AS doctor_updated_at,
+                1 AS source_rank,
+                100 AS match_rank,
+                CASE
+                    WHEN NULLIF(btrim(d.name), '') IS NULL
+                      OR lower(btrim(d.name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                    THEN 1 ELSE 0
+                END AS name_rank
             FROM assigned_reps ar
             LEFT JOIN silver.dim_doctor d
               ON d.field_rep_id_resolved = ar.field_rep_id
             WHERE COALESCE(NULLIF(d.doctor_identity_key, ''), '') <> ''
+        ),
+        raw_assigned_doctor_matches AS (
+            SELECT
+                field_rep_id,
+                doctor_identity_key,
+                doctor_name,
+                doctor_phone,
+                doctor_updated_at,
+                source_rank,
+                match_rank,
+                name_rank
+            FROM campaign_roster_matches
+        ),
+        assigned_doctor_matches AS (
+            SELECT DISTINCT ON (field_rep_id, doctor_identity_key)
+                field_rep_id,
+                doctor_identity_key,
+                doctor_name,
+                doctor_phone
+            FROM raw_assigned_doctor_matches
+            ORDER BY
+                field_rep_id,
+                doctor_identity_key,
+                source_rank,
+                match_rank,
+                name_rank,
+                doctor_updated_at DESC NULLS LAST,
+                field_rep_id
         ),
         assigned_doctor_rows AS (
             SELECT
@@ -989,119 +1153,221 @@ def _field_rep_insight_rows(
             FROM assigned_doctor_rows
             GROUP BY field_rep_id
         ),
-        share_rep_id_email_map AS (
-            SELECT DISTINCT ON ({_normalized_sql('s.field_rep_id::text')})
-                {_normalized_sql('s.field_rep_id::text')} AS source_rep_id_key,
-                {_normalized_sql('s.field_rep_email')} AS mapped_email_key
-            FROM silver.fact_share_log s
-            WHERE {_normalized_sql('s.brand_campaign_id')} IN ({brand_placeholders})
-              {collateral_filter_share}
-              AND {_normalized_sql('s.field_rep_id::text')} <> ''
-              AND {_normalized_sql('s.field_rep_email')} <> ''
-            ORDER BY
-                {_normalized_sql('s.field_rep_id::text')},
-                COALESCE(s.updated_at_ts, s.created_at_ts, s.share_timestamp_ts) DESC NULLS LAST,
-                s.id DESC
+        activity_period AS (
+            SELECT %s::date AS period_start, %s::date AS period_end
+        ),
+        action_dates AS (
+            SELECT
+                a.brand_campaign_id,
+                a.collateral_id,
+                'action:' || COALESCE(a.brand_campaign_id, '') || ':' || COALESCE(a.collateral_id, '') || ':' ||
+                    COALESCE(NULLIF(a.doctor_identity_key, ''), a.brand_campaign_id || ':' || a.collateral_id) AS activity_row_id,
+                COALESCE(NULLIF(a.doctor_identity_key, ''), a.brand_campaign_id || ':' || a.collateral_id) AS doctor_key,
+                COALESCE(
+                    NULLIF(btrim(d_action.name), ''),
+                    NULLIF(btrim(tx_action.doctor_name), '')
+                ) AS doctor_name,
+                COALESCE(
+                    NULLIF(btrim(d_action.phone), ''),
+                    NULLIF(btrim(d_action.doctor_phone_normalized), ''),
+                    NULLIF(btrim(tx_action.doctor_number), ''),
+                    ''
+                ) AS doctor_phone,
+                CASE WHEN a.reached_first_ts IS NULL OR btrim(a.reached_first_ts) = '' OR lower(btrim(a.reached_first_ts)) = 'null' THEN NULL ELSE a.reached_first_ts::date END AS reached_first_date,
+                CASE WHEN a.opened_first_ts IS NULL OR btrim(a.opened_first_ts) = '' OR lower(btrim(a.opened_first_ts)) = 'null' THEN NULL ELSE a.opened_first_ts::date END AS opened_first_date,
+                CASE WHEN a.video_gt_50_first_ts IS NULL OR btrim(a.video_gt_50_first_ts) = '' OR lower(btrim(a.video_gt_50_first_ts)) = 'null' THEN NULL ELSE a.video_gt_50_first_ts::date END AS video_gt_50_first_date,
+                CASE WHEN a.pdf_download_first_ts IS NULL OR btrim(a.pdf_download_first_ts) = '' OR lower(btrim(a.pdf_download_first_ts)) = 'null' THEN NULL ELSE a.pdf_download_first_ts::date END AS pdf_download_first_date
+            FROM silver.doctor_action_first_seen a
+            LEFT JOIN LATERAL (
+                SELECT d.name, d.phone, d.doctor_phone_normalized
+                FROM silver.dim_doctor d
+                WHERE d.doctor_identity_key = a.doctor_identity_key
+                ORDER BY
+                    CASE
+                        WHEN NULLIF(btrim(d.name), '') IS NULL
+                          OR lower(btrim(d.name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                        THEN 1 ELSE 0
+                    END,
+                    d._silver_updated_at DESC NULLS LAST,
+                    d.id DESC
+                LIMIT 1
+            ) d_action ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT tx.doctor_name, tx.doctor_number
+                FROM silver.fact_collateral_transaction tx
+                WHERE {_normalized_sql('tx.brand_campaign_id')} = {_normalized_sql('a.brand_campaign_id')}
+                  AND tx.collateral_id::text = a.collateral_id::text
+                  AND tx.doctor_identity_key = a.doctor_identity_key
+                ORDER BY
+                    CASE
+                        WHEN NULLIF(btrim(tx.doctor_name), '') IS NULL
+                          OR lower(btrim(tx.doctor_name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                        THEN 1 ELSE 0
+                    END,
+                    COALESCE(tx.updated_at_ts, tx.created_at_ts, tx.transaction_date_ts) DESC NULLS LAST,
+                    tx.id DESC
+                LIMIT 1
+            ) tx_action ON TRUE
+            WHERE {_normalized_sql('a.brand_campaign_id')} IN ({brand_placeholders})
+              {collateral_filter_action}
         ),
         activity_source AS (
             SELECT
-                'tx:' || tx.id::text AS activity_row_id,
-                COALESCE(NULLIF(tx.doctor_phone_normalized, ''), tx.doctor_identity_key) AS doctor_key,
-                COALESCE(
-                    NULLIF(btrim(tx.doctor_name), ''),
-                    NULLIF(btrim(d_tx.name), '')
-                ) AS doctor_name,
-                COALESCE(
-                    NULLIF(btrim(tx.doctor_number), ''),
-                    NULLIF(btrim(d_tx.phone), ''),
-                    NULLIF(tx.doctor_phone_normalized, ''),
-                    ''
-                ) AS doctor_phone,
-                COALESCE(
-                    NULLIF({_normalized_sql('linked_share.field_rep_email')}, ''),
-                    NULLIF(rep_email_map.mapped_email_key, ''),
-                    NULLIF({_normalized_sql('tx.field_rep_email')}, '')
-                ) AS email_rep_key,
-                {_normalized_sql('tx.field_rep_master_id_resolved')} AS master_rep_key,
-                {_normalized_sql('tx.brand_supplied_field_rep_id_resolved')} AS brand_rep_key,
-                {_normalized_sql('tx.field_rep_id')} AS numeric_rep_key,
-                1 AS sent_flag,
-                CASE WHEN tx.has_viewed_flag = '1' OR NULLIF(tx.opened_event_ts, '') IS NOT NULL THEN 1 ELSE 0 END AS viewed_flag,
+                ad.activity_row_id,
+                ad.doctor_key,
+                ad.doctor_name,
+                ad.doctor_phone,
+                COALESCE(rep_evidence.email_rep_key, '') AS email_rep_key,
+                COALESCE(rep_evidence.master_rep_key, '') AS master_rep_key,
+                COALESCE(rep_evidence.brand_rep_key, '') AS brand_rep_key,
+                COALESCE(rep_evidence.numeric_rep_key, '') AS numeric_rep_key,
+                COALESCE(rep_evidence.source_field_rep_id, '') AS source_field_rep_id,
+                COALESCE(rep_evidence.source_field_rep_email, '') AS source_field_rep_email,
+                COALESCE(rep_evidence.source_brand_rep_id, '') AS source_brand_rep_id,
+                COALESCE(rep_evidence.evidence_source, '') AS evidence_source,
                 CASE
-                    WHEN tx.video_view_gt_50_flag = '1'
-                      OR COALESCE(tx.last_video_percentage_num, 0) > 0
-                      OR COALESCE(tx.video_watch_percentage_num, 0) > 0
-                      OR NULLIF(tx.video_lt_50_at_ts, '') IS NOT NULL
-                      OR NULLIF(tx.video_gt_50_at_ts, '') IS NOT NULL
-                      OR NULLIF(tx.video_100_at_ts, '') IS NOT NULL
+                    WHEN (
+                        ad.reached_first_date IS NOT NULL
+                        AND (p.period_start IS NULL OR ad.reached_first_date >= p.period_start)
+                        AND (p.period_end IS NULL OR ad.reached_first_date <= p.period_end)
+                    ) OR (
+                        ad.opened_first_date IS NOT NULL
+                        AND (p.period_start IS NULL OR ad.opened_first_date >= p.period_start)
+                        AND (p.period_end IS NULL OR ad.opened_first_date <= p.period_end)
+                    ) OR (
+                        ad.video_gt_50_first_date IS NOT NULL
+                        AND (p.period_start IS NULL OR ad.video_gt_50_first_date >= p.period_start)
+                        AND (p.period_end IS NULL OR ad.video_gt_50_first_date <= p.period_end)
+                    ) OR (
+                        ad.pdf_download_first_date IS NOT NULL
+                        AND (p.period_start IS NULL OR ad.pdf_download_first_date >= p.period_start)
+                        AND (p.period_end IS NULL OR ad.pdf_download_first_date <= p.period_end)
+                    )
+                    THEN 1 ELSE 0
+                END AS sent_flag,
+                CASE
+                    WHEN ad.opened_first_date IS NOT NULL
+                     AND (p.period_start IS NULL OR ad.opened_first_date >= p.period_start)
+                     AND (p.period_end IS NULL OR ad.opened_first_date <= p.period_end)
+                    THEN 1 ELSE 0
+                END AS viewed_flag,
+                CASE
+                    WHEN ad.video_gt_50_first_date IS NOT NULL
+                     AND (p.period_start IS NULL OR ad.video_gt_50_first_date >= p.period_start)
+                     AND (p.period_end IS NULL OR ad.video_gt_50_first_date <= p.period_end)
                     THEN 1 ELSE 0
                 END AS video_flag,
                 CASE
-                    WHEN tx.downloaded_pdf_flag = '1'
-                      OR lower(COALESCE(tx.pdf_completed, '')) IN ('1', 'true', 't', 'yes')
-                      OR NULLIF(tx.viewed_last_page_at_ts, '') IS NOT NULL
+                    WHEN ad.pdf_download_first_date IS NOT NULL
+                     AND (p.period_start IS NULL OR ad.pdf_download_first_date >= p.period_start)
+                     AND (p.period_end IS NULL OR ad.pdf_download_first_date <= p.period_end)
                     THEN 1 ELSE 0
                 END AS pdf_flag
-            FROM silver.fact_collateral_transaction tx
-            LEFT JOIN silver.fact_share_log linked_share
-              ON {_normalized_sql('linked_share.brand_campaign_id')} = {_normalized_sql('tx.brand_campaign_id')}
-             AND linked_share.collateral_id::text = tx.collateral_id::text
-             AND linked_share.id::text = COALESCE(
-                 NULLIF(btrim(tx.sm_engagement_id), ''),
-                 NULLIF(btrim(tx.share_management_engagement_id), '')
-             )
-            LEFT JOIN share_rep_id_email_map rep_email_map
-              ON rep_email_map.source_rep_id_key = {_normalized_sql('tx.field_rep_id')}
+            FROM action_dates ad
+            CROSS JOIN activity_period p
             LEFT JOIN LATERAL (
-                SELECT d.name, d.phone, d.doctor_phone_normalized
-                FROM silver.dim_doctor d
-                WHERE d.doctor_identity_key = tx.doctor_identity_key
-                   OR (
-                      COALESCE(NULLIF(tx.doctor_phone_normalized, ''), '') <> ''
-                      AND d.doctor_phone_normalized = tx.doctor_phone_normalized
-                   )
+                SELECT
+                    rep.email_rep_key,
+                    rep.master_rep_key,
+                    rep.brand_rep_key,
+                    rep.numeric_rep_key,
+                    rep.source_field_rep_id,
+                    rep.source_field_rep_email,
+                    rep.source_brand_rep_id,
+                    rep.evidence_source
+                FROM (
+                    SELECT
+                        NULLIF({_normalized_sql('tx.field_rep_email')}, '') AS email_rep_key,
+                        COALESCE(
+                            NULLIF({_normalized_sql('tx.field_rep_master_id_resolved')}, ''),
+                            NULLIF({_normalized_sql('tx.field_rep_id')}, '')
+                        ) AS master_rep_key,
+                        COALESCE(
+                            NULLIF({_normalized_sql('tx.brand_supplied_field_rep_id_resolved')}, ''),
+                            NULLIF({_normalized_sql('tx.field_rep_unique_id')}, '')
+                        ) AS brand_rep_key,
+                        NULLIF({_normalized_sql('tx.field_rep_id')}, '') AS numeric_rep_key,
+                        COALESCE(NULLIF(btrim(tx.field_rep_id), ''), '') AS source_field_rep_id,
+                        COALESCE(NULLIF(btrim(tx.field_rep_email), ''), '') AS source_field_rep_email,
+                        COALESCE(
+                            NULLIF(btrim(tx.brand_supplied_field_rep_id_resolved), ''),
+                            NULLIF(btrim(tx.field_rep_unique_id), ''),
+                            ''
+                        ) AS source_brand_rep_id,
+                        'collateral_transaction'::text AS evidence_source,
+                        10 AS source_rank,
+                        COALESCE(
+                            NULLIF(tx.opened_event_ts, ''),
+                            NULLIF(tx.video_gt_50_event_ts, ''),
+                            NULLIF(tx.pdf_download_event_ts, ''),
+                            NULLIF(tx.reached_event_ts, ''),
+                            NULLIF(tx.updated_at_ts, ''),
+                            NULLIF(tx.created_at_ts, ''),
+                            NULLIF(tx.transaction_date_ts, '')
+                        ) AS evidence_ts,
+                        tx.id AS source_id
+                    FROM silver.fact_collateral_transaction tx
+                    WHERE {_normalized_sql('tx.brand_campaign_id')} = {_normalized_sql('ad.brand_campaign_id')}
+                      AND tx.collateral_id::text = ad.collateral_id::text
+                      AND tx.doctor_identity_key = ad.doctor_key
+                      AND COALESCE(
+                            NULLIF({_normalized_sql('tx.field_rep_master_id_resolved')}, ''),
+                            NULLIF({_normalized_sql('tx.field_rep_id')}, ''),
+                            NULLIF({_normalized_sql('tx.brand_supplied_field_rep_id_resolved')}, ''),
+                            NULLIF({_normalized_sql('tx.field_rep_unique_id')}, ''),
+                            NULLIF({_normalized_sql('tx.field_rep_email')}, '')
+                          ) IS NOT NULL
+                      AND lower(btrim(COALESCE(tx._dq_errors, ''))) NOT IN ('missing', 'conflict', 'ambiguous')
+                    UNION ALL
+                    SELECT
+                        NULLIF({_normalized_sql('s.field_rep_email')}, '') AS email_rep_key,
+                        NULLIF({_normalized_sql('s.field_rep_id::text')}, '') AS master_rep_key,
+                        ''::text AS brand_rep_key,
+                        ''::text AS numeric_rep_key,
+                        COALESCE(NULLIF(btrim(s.field_rep_id::text), ''), '') AS source_field_rep_id,
+                        COALESCE(NULLIF(btrim(s.field_rep_email), ''), '') AS source_field_rep_email,
+                        ''::text AS source_brand_rep_id,
+                        'share_log'::text AS evidence_source,
+                        20 AS source_rank,
+                        COALESCE(
+                            NULLIF(s.share_timestamp_ts, ''),
+                            NULLIF(s.updated_at_ts, ''),
+                            NULLIF(s.created_at_ts, ''),
+                            NULLIF(s.reached_event_ts, '')
+                        ) AS evidence_ts,
+                        s.id AS source_id
+                    FROM silver.fact_share_log s
+                    WHERE {_normalized_sql('s.brand_campaign_id')} = {_normalized_sql('ad.brand_campaign_id')}
+                      AND s.collateral_id::text = ad.collateral_id::text
+                      AND s.doctor_identity_key = ad.doctor_key
+                      AND COALESCE(
+                            NULLIF({_normalized_sql('s.field_rep_id::text')}, ''),
+                            NULLIF({_normalized_sql('s.field_rep_email')}, '')
+                          ) IS NOT NULL
+                ) rep
                 ORDER BY
-                    CASE WHEN d.doctor_identity_key = tx.doctor_identity_key THEN 0 ELSE 1 END,
-                    d.id DESC
+                    rep.source_rank,
+                    rep.evidence_ts DESC NULLS LAST,
+                    rep.source_id DESC NULLS LAST
                 LIMIT 1
-            ) d_tx ON TRUE
-            WHERE {_normalized_sql('tx.brand_campaign_id')} IN ({brand_placeholders})
-              {collateral_filter_tx}
-            UNION ALL
-            SELECT
-                'share:' || s.id::text AS activity_row_id,
-                COALESCE(NULLIF(s.doctor_identifier_normalized, ''), s.doctor_identity_key) AS doctor_key,
-                NULLIF(btrim(d_share.name), '') AS doctor_name,
-                COALESCE(
-                    NULLIF(btrim(d_share.phone), ''),
-                    NULLIF(s.doctor_identifier_normalized, ''),
-                    NULLIF(btrim(s.doctor_identifier), ''),
-                    ''
-                ) AS doctor_phone,
-                NULLIF({_normalized_sql('s.field_rep_email')}, '') AS email_rep_key,
-                ''::text AS master_rep_key,
-                ''::text AS brand_rep_key,
-                {_normalized_sql('s.field_rep_id::text')} AS numeric_rep_key,
-                1 AS sent_flag,
-                0 AS viewed_flag,
-                0 AS video_flag,
-                0 AS pdf_flag
-            FROM silver.fact_share_log s
-            LEFT JOIN LATERAL (
-                SELECT d.name, d.phone, d.doctor_phone_normalized
-                FROM silver.dim_doctor d
-                WHERE d.doctor_identity_key = s.doctor_identity_key
-                   OR (
-                      COALESCE(NULLIF(s.doctor_identifier_normalized, ''), '') <> ''
-                      AND d.doctor_phone_normalized = s.doctor_identifier_normalized
-                   )
-                ORDER BY
-                    CASE WHEN d.doctor_identity_key = s.doctor_identity_key THEN 0 ELSE 1 END,
-                    d.id DESC
-                LIMIT 1
-            ) d_share ON TRUE
-            WHERE {_normalized_sql('s.brand_campaign_id')} IN ({brand_placeholders})
-              {collateral_filter_share}
+            ) rep_evidence ON TRUE
+            WHERE (
+                ad.reached_first_date IS NOT NULL
+                AND (p.period_start IS NULL OR ad.reached_first_date >= p.period_start)
+                AND (p.period_end IS NULL OR ad.reached_first_date <= p.period_end)
+            ) OR (
+                ad.opened_first_date IS NOT NULL
+                AND (p.period_start IS NULL OR ad.opened_first_date >= p.period_start)
+                AND (p.period_end IS NULL OR ad.opened_first_date <= p.period_end)
+            ) OR (
+                ad.video_gt_50_first_date IS NOT NULL
+                AND (p.period_start IS NULL OR ad.video_gt_50_first_date >= p.period_start)
+                AND (p.period_end IS NULL OR ad.video_gt_50_first_date <= p.period_end)
+            ) OR (
+                ad.pdf_download_first_date IS NOT NULL
+                AND (p.period_start IS NULL OR ad.pdf_download_first_date >= p.period_start)
+                AND (p.period_end IS NULL OR ad.pdf_download_first_date <= p.period_end)
+            )
         ),
         activity_key_candidates AS (
             SELECT
@@ -1113,47 +1379,216 @@ def _field_rep_insight_rows(
                 viewed_flag,
                 video_flag,
                 pdf_flag,
+                source_field_rep_id,
+                source_field_rep_email,
+                source_brand_rep_id,
+                evidence_source,
                 email_rep_key AS rep_key,
                 'email'::text AS key_type,
                 10 AS source_rank
             FROM activity_source
             WHERE COALESCE(email_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, master_rep_key, 'campaign_fieldrep_id'::text, 20
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, master_rep_key, 'campaign_fieldrep_id'::text, 20
             FROM activity_source
             WHERE COALESCE(master_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, brand_rep_key, 'brand_field_id'::text, 30
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, brand_rep_key, 'brand_field_id'::text, 30
             FROM activity_source
             WHERE COALESCE(brand_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'local_user_id'::text, 50
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'local_user_id'::text, 50
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
             UNION ALL
-            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, numeric_rep_key, 'legacy_rep_id'::text, 70
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'auth_user_id'::text, 50
+            FROM activity_source
+            WHERE COALESCE(numeric_rep_key, '') <> ''
+            UNION ALL
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'legacy_rep_id'::text, 50
+            FROM activity_source
+            WHERE COALESCE(numeric_rep_key, '') <> ''
+            UNION ALL
+            SELECT activity_row_id, doctor_key, doctor_name, doctor_phone, sent_flag, viewed_flag, video_flag, pdf_flag, source_field_rep_id, source_field_rep_email, source_brand_rep_id, evidence_source, numeric_rep_key, 'campaign_fieldrep_id'::text, 50
             FROM activity_source
             WHERE COALESCE(numeric_rep_key, '') <> ''
         ),
-        matched_activity AS (
-            SELECT DISTINCT ON (akc.activity_row_id)
+        activity_candidate_matches AS (
+            SELECT
                 ark.field_rep_id,
+                akc.activity_row_id,
                 akc.doctor_key,
                 akc.doctor_name,
                 akc.doctor_phone,
                 akc.sent_flag,
                 akc.viewed_flag,
                 akc.video_flag,
-                akc.pdf_flag
+                akc.pdf_flag,
+                akc.source_field_rep_id,
+                akc.source_field_rep_email,
+                akc.source_brand_rep_id,
+                akc.evidence_source,
+                akc.source_rank,
+                ark.match_rank,
+                akc.key_type
             FROM activity_key_candidates akc
             JOIN assigned_rep_keys ark
               ON ark.rep_key = akc.rep_key
              AND ark.key_type = akc.key_type
+        ),
+        best_activity_candidate_source AS (
+            SELECT
+                activity_row_id,
+                MIN(source_rank) AS best_source_rank
+            FROM activity_candidate_matches
+            GROUP BY activity_row_id
+        ),
+        unambiguous_activity_matches AS (
+            SELECT
+                m.activity_row_id,
+                MIN(m.field_rep_id) AS field_rep_id,
+                b.best_source_rank
+            FROM activity_candidate_matches m
+            JOIN best_activity_candidate_source b
+              ON b.activity_row_id = m.activity_row_id
+             AND b.best_source_rank = m.source_rank
+            GROUP BY m.activity_row_id, b.best_source_rank
+            HAVING COUNT(DISTINCT m.field_rep_id) = 1
+        ),
+        direct_matched_activity AS (
+            SELECT DISTINCT ON (m.activity_row_id)
+                u.field_rep_id,
+                m.activity_row_id,
+                m.doctor_key,
+                m.doctor_name,
+                m.doctor_phone,
+                m.sent_flag,
+                m.viewed_flag,
+                m.video_flag,
+                m.pdf_flag,
+                m.source_field_rep_id,
+                m.source_field_rep_email,
+                m.source_brand_rep_id,
+                m.evidence_source
+            FROM activity_candidate_matches m
+            JOIN unambiguous_activity_matches u
+              ON u.activity_row_id = m.activity_row_id
+             AND u.field_rep_id = m.field_rep_id
+             AND u.best_source_rank = m.source_rank
             ORDER BY
-                akc.activity_row_id,
-                akc.source_rank,
-                ark.match_rank,
-                ark.field_rep_id
+                m.activity_row_id,
+                m.match_rank,
+                m.key_type,
+                m.field_rep_id
+        ),
+        doctor_matched_activity AS (
+            SELECT
+                NULL::text AS field_rep_id,
+                src.activity_row_id,
+                src.doctor_key,
+                src.doctor_name,
+                src.doctor_phone,
+                src.sent_flag,
+                src.viewed_flag,
+                src.video_flag,
+                src.pdf_flag,
+                src.source_field_rep_id,
+                src.source_field_rep_email,
+                src.source_brand_rep_id,
+                src.evidence_source
+            FROM activity_source src
+            WHERE FALSE
+        ),
+        unmatched_activity AS (
+            SELECT
+                '{UNMAPPED_ACTIVITY_FIELD_REP_ID}'::text AS field_rep_id,
+                src.activity_row_id,
+                src.doctor_key,
+                src.doctor_name,
+                src.doctor_phone,
+                src.sent_flag,
+                src.viewed_flag,
+                src.video_flag,
+                src.pdf_flag,
+                src.source_field_rep_id,
+                src.source_field_rep_email,
+                src.source_brand_rep_id,
+                src.evidence_source
+            FROM activity_source src
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM direct_matched_activity dm
+                WHERE dm.activity_row_id = src.activity_row_id
+            )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM doctor_matched_activity dmatch
+                WHERE dmatch.activity_row_id = src.activity_row_id
+            )
+        ),
+        reporting_reps AS (
+            SELECT
+                field_rep_id,
+                field_rep_display_id,
+                field_rep_name,
+                state_normalized
+            FROM assigned_reps
+            UNION ALL
+            SELECT
+                '{UNMAPPED_ACTIVITY_FIELD_REP_ID}'::text AS field_rep_id,
+                'UNMAPPED_ACTIVITY'::text AS field_rep_display_id,
+                'Unmapped Activity'::text AS field_rep_name,
+                'UNKNOWN'::text AS state_normalized
+            WHERE EXISTS (SELECT 1 FROM unmatched_activity)
+        ),
+        matched_activity AS (
+            SELECT
+                field_rep_id,
+                activity_row_id,
+                doctor_key,
+                doctor_name,
+                doctor_phone,
+                sent_flag,
+                viewed_flag,
+                video_flag,
+                pdf_flag,
+                source_field_rep_id,
+                source_field_rep_email,
+                source_brand_rep_id,
+                evidence_source
+            FROM direct_matched_activity
+            UNION ALL
+            SELECT
+                field_rep_id,
+                activity_row_id,
+                doctor_key,
+                doctor_name,
+                doctor_phone,
+                sent_flag,
+                viewed_flag,
+                video_flag,
+                pdf_flag,
+                source_field_rep_id,
+                source_field_rep_email,
+                source_brand_rep_id,
+                evidence_source
+            FROM doctor_matched_activity
+            UNION ALL
+            SELECT
+                field_rep_id,
+                activity_row_id,
+                doctor_key,
+                doctor_name,
+                doctor_phone,
+                sent_flag,
+                viewed_flag,
+                video_flag,
+                pdf_flag,
+                source_field_rep_id,
+                source_field_rep_email,
+                source_brand_rep_id,
+                evidence_source
+            FROM unmatched_activity
         ),
         activity_doctor_rows AS (
             SELECT
@@ -1169,6 +1604,10 @@ def _field_rep_insight_rows(
                     MIN(NULLIF(ad.doctor_phone, '')),
                     ''
                 ) AS doctor_phone,
+                STRING_AGG(DISTINCT NULLIF(ma.source_field_rep_id, ''), ', ' ORDER BY NULLIF(ma.source_field_rep_id, '')) AS source_field_rep_id,
+                STRING_AGG(DISTINCT NULLIF(ma.source_field_rep_email, ''), ', ' ORDER BY NULLIF(ma.source_field_rep_email, '')) AS source_field_rep_email,
+                STRING_AGG(DISTINCT NULLIF(ma.source_brand_rep_id, ''), ', ' ORDER BY NULLIF(ma.source_brand_rep_id, '')) AS source_brand_rep_id,
+                STRING_AGG(DISTINCT NULLIF(ma.evidence_source, ''), ', ' ORDER BY NULLIF(ma.evidence_source, '')) AS evidence_source,
                 MAX(ma.sent_flag) AS sent_flag,
                 MAX(ma.viewed_flag) AS viewed_flag,
                 MAX(ma.video_flag) AS video_flag,
@@ -1197,7 +1636,11 @@ def _field_rep_insight_rows(
                         jsonb_build_object(
                             'name', doctor_name,
                             'phone', COALESCE(doctor_phone, ''),
-                            'doctor_key', doctor_key
+                            'doctor_key', doctor_key,
+                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
+                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
+                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
+                            'evidence_source', COALESCE(evidence_source, '')
                         )
                         ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
                     ) FILTER (WHERE sent_flag = 1),
@@ -1208,7 +1651,11 @@ def _field_rep_insight_rows(
                         jsonb_build_object(
                             'name', doctor_name,
                             'phone', COALESCE(doctor_phone, ''),
-                            'doctor_key', doctor_key
+                            'doctor_key', doctor_key,
+                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
+                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
+                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
+                            'evidence_source', COALESCE(evidence_source, '')
                         )
                         ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
                     ) FILTER (WHERE viewed_flag = 1),
@@ -1219,7 +1666,11 @@ def _field_rep_insight_rows(
                         jsonb_build_object(
                             'name', doctor_name,
                             'phone', COALESCE(doctor_phone, ''),
-                            'doctor_key', doctor_key
+                            'doctor_key', doctor_key,
+                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
+                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
+                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
+                            'evidence_source', COALESCE(evidence_source, '')
                         )
                         ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
                     ) FILTER (WHERE video_flag = 1),
@@ -1230,7 +1681,11 @@ def _field_rep_insight_rows(
                         jsonb_build_object(
                             'name', doctor_name,
                             'phone', COALESCE(doctor_phone, ''),
-                            'doctor_key', doctor_key
+                            'doctor_key', doctor_key,
+                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
+                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
+                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
+                            'evidence_source', COALESCE(evidence_source, '')
                         )
                         ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
                     ) FILTER (WHERE pdf_flag = 1),
@@ -1261,12 +1716,13 @@ def _field_rep_insight_rows(
                     OR COALESCE(ab.doctors_video_played, 0) > 0
                     OR COALESCE(ab.doctors_pdf_downloaded, 0) > 0
                  )
-                THEN 'No campaign doctor roster match; engagement comes from share/transaction logs.'
+                THEN 'No campaign doctor roster match; engagement comes from consolidated doctor action metrics.'
                 WHEN COALESCE(ab.doctors_sent, 0) > COALESCE(ad.total_doctors_assigned, 0)
                 THEN 'Engagement exceeds campaign roster matches; check doctor roster or rep mapping.'
                 ELSE ''
-            END AS assignment_note
-        FROM assigned_reps ar
+            END AS assignment_note,
+            (ar.field_rep_id = '{UNMAPPED_ACTIVITY_FIELD_REP_ID}') AS is_unmapped_activity
+        FROM reporting_reps ar
         LEFT JOIN assigned_doctors ad ON ad.field_rep_id = ar.field_rep_id
         LEFT JOIN activity_for_rep ab ON ab.field_rep_id = ar.field_rep_id
         ORDER BY
@@ -1630,15 +2086,430 @@ def _build_media_logo_url(company_logo_path: Any) -> str | None:
 
 
 def _format_field_rep_summary(field_rep_insights: list[dict[str, Any]], total_doctors: int = 0) -> dict[str, int]:
+    assigned_rep_rows = [row for row in field_rep_insights if not row.get("is_unmapped_activity")]
     return {
-        "total_reps": len(field_rep_insights),
-        "total_doctors_assigned": total_doctors or sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights),
+        "total_reps": len(assigned_rep_rows),
+        "total_doctors_assigned": sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights),
         "doctors_sent": sum(_to_int(row.get("doctors_sent")) for row in field_rep_insights),
         "doctors_viewed": sum(_to_int(row.get("doctors_viewed")) for row in field_rep_insights),
         "doctors_video_played": sum(_to_int(row.get("doctors_video_played")) for row in field_rep_insights),
         "doctors_pdf_downloaded": sum(_to_int(row.get("doctors_pdf_downloaded")) for row in field_rep_insights),
         "assignment_issue_count": sum(1 for row in field_rep_insights if row.get("assignment_note")),
     }
+
+
+def _safe_filename_part(value: Any, fallback: str = "download") -> str:
+    text = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(value or "").strip()).strip("_")
+    return text or fallback
+
+
+def _export_filename(prefix: str, context: dict[str, Any], extension: str, extra: Any = "") -> str:
+    campaign = _safe_filename_part(context.get("selected_campaign"), "campaign")
+    week = context.get("selected_week")
+    suffix_parts = [campaign]
+    if extra:
+        suffix_parts.append(_safe_filename_part(extra, "detail"))
+    suffix_parts.append(f"week_{week}" if week else "all_weeks")
+    timestamp = datetime.now().strftime("%Y%m%d")
+    return f"{_safe_filename_part(prefix)}_{'_'.join(suffix_parts)}_{timestamp}.{extension.lstrip('.')}"
+
+
+def _json_list(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not value:
+        return []
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+def _excel_cell(value: Any) -> str:
+    return html.escape(str(value if value is not None else ""))
+
+
+def _excel_table(headers: list[str], rows: list[list[Any]]) -> str:
+    header_html = "".join(f"<th>{_excel_cell(header)}</th>" for header in headers)
+    body_html = "".join(
+        "<tr>" + "".join(f"<td>{_excel_cell(cell)}</td>" for cell in row) + "</tr>"
+        for row in rows
+    )
+    return f'<table border="1"><thead><tr>{header_html}</tr></thead><tbody>{body_html}</tbody></table>'
+
+
+def _excel_response(filename: str, sections: list[tuple[str, list[str], list[list[Any]]]]) -> HttpResponse:
+    section_html = []
+    for title, headers, rows in sections:
+        section_html.append(f"<h2>{_excel_cell(title)}</h2>")
+        section_html.append(_excel_table(headers, rows))
+        section_html.append("<br>")
+    workbook = (
+        "<html><head><meta charset=\"UTF-8\"></head><body>"
+        + "".join(section_html)
+        + "</body></html>"
+    )
+    response = HttpResponse(workbook, content_type="application/vnd.ms-excel; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+FIELD_REP_SUMMARY_EXPORT_HEADERS = [
+    "Field Rep ID",
+    "Field Representative",
+    "State",
+    "Doctors Assigned",
+    "Collateral Sent",
+    "Viewed",
+    "Video Played",
+    "PDF / Collateral Saved",
+]
+
+
+FIELD_REP_DOCTOR_EXPORT_HEADERS = [
+    "Field Rep ID",
+    "Field Representative",
+    "State",
+    "Metric",
+    "S. No.",
+    "Doctor Name",
+    "Doctor Number",
+    "Doctor Key",
+]
+
+
+FIELD_REP_DOCTOR_METRICS = [
+    ("Doctors Assigned", "assigned_doctors_json"),
+    ("Collateral Sent", "sent_doctors_json"),
+    ("Viewed", "viewed_doctors_json"),
+    ("Video Played", "video_doctors_json"),
+    ("PDF / Collateral Saved", "pdf_doctors_json"),
+]
+
+
+def _field_rep_summary_export_rows(field_rep_insights: list[dict[str, Any]]) -> list[list[Any]]:
+    return [
+        [
+            row.get("field_rep_id", ""),
+            row.get("field_rep_name", ""),
+            row.get("state_normalized", "UNKNOWN") or "UNKNOWN",
+            _to_int(row.get("total_doctors_assigned")),
+            _to_int(row.get("doctors_sent")),
+            _to_int(row.get("doctors_viewed")),
+            _to_int(row.get("doctors_video_played")),
+            _to_int(row.get("doctors_pdf_downloaded")),
+        ]
+        for row in field_rep_insights
+    ]
+
+
+def _field_rep_doctor_detail_export_rows(field_rep_insights: list[dict[str, Any]]) -> list[list[Any]]:
+    detail_rows: list[list[Any]] = []
+    for row in field_rep_insights:
+        for metric_label, json_key in FIELD_REP_DOCTOR_METRICS:
+            for index, doctor in enumerate(_json_list(row.get(json_key)), start=1):
+                detail_rows.append(
+                    [
+                        row.get("field_rep_id", ""),
+                        row.get("field_rep_name", ""),
+                        row.get("state_normalized", "UNKNOWN") or "UNKNOWN",
+                        metric_label,
+                        index,
+                        doctor.get("name", ""),
+                        doctor.get("phone", ""),
+                        doctor.get("doctor_key", ""),
+                    ]
+                )
+    return detail_rows
+
+
+def _field_rep_insights_excel_response(
+    context: dict[str, Any],
+    filename_prefix: str = "field_rep_insights",
+    filename_extra: Any = "",
+) -> HttpResponse:
+    field_rep_insights = context.get("field_rep_insights") or []
+    filename = _export_filename(filename_prefix, context, "xls", filename_extra)
+    return _excel_response(
+        filename,
+        [
+            (
+                "Field Representative Summary",
+                FIELD_REP_SUMMARY_EXPORT_HEADERS,
+                _field_rep_summary_export_rows(field_rep_insights),
+            ),
+            (
+                "Doctor Details",
+                FIELD_REP_DOCTOR_EXPORT_HEADERS,
+                _field_rep_doctor_detail_export_rows(field_rep_insights),
+            ),
+        ],
+    )
+
+
+def _is_missing_doctor_name(value: Any) -> bool:
+    normalized = str(value or "").strip().lower()
+    return normalized in {"", "unknown doctor", "unknown", "null", "none", "-"}
+
+
+def _manual_mapping_export_rows(field_rep_insights: list[dict[str, Any]]) -> list[list[Any]]:
+    assigned_keys_by_rep: dict[str, set[str]] = {}
+    detail_records: list[dict[str, Any]] = []
+    for row in field_rep_insights:
+        rep_id = str(row.get("field_rep_id") or "")
+        rep_name = str(row.get("field_rep_name") or "")
+        for metric_label, json_key in FIELD_REP_DOCTOR_METRICS:
+            for doctor in _json_list(row.get(json_key)):
+                doctor_key = str(doctor.get("doctor_key") or "")
+                doctor_phone = str(doctor.get("phone") or "")
+                effective_key = doctor_key or doctor_phone
+                record = {
+                    "rep_id": rep_id,
+                    "rep_name": rep_name,
+                    "metric": metric_label,
+                    "doctor_name": doctor.get("name", ""),
+                    "doctor_phone": doctor_phone,
+                    "doctor_key": doctor_key,
+                    "effective_key": effective_key,
+                    "source_field_rep_id": doctor.get("source_field_rep_id", ""),
+                    "source_field_rep_email": doctor.get("source_field_rep_email", ""),
+                    "source_brand_rep_id": doctor.get("source_brand_rep_id", ""),
+                    "evidence_source": doctor.get("evidence_source", ""),
+                }
+                detail_records.append(record)
+                if metric_label == "Doctors Assigned" and effective_key:
+                    assigned_keys_by_rep.setdefault(rep_id, set()).add(effective_key)
+
+    correction_rows_by_key: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for record in detail_records:
+        rep_id = record["rep_id"]
+        doctor_key = record["doctor_key"]
+        doctor_phone = record["doctor_phone"]
+        effective_key = record["effective_key"]
+        assigned_keys = assigned_keys_by_rep.get(rep_id, set())
+        is_unmapped_rep = rep_id in {"UNMAPPED_ACTIVITY", UNMAPPED_ACTIVITY_FIELD_REP_ID}
+        is_activity_metric = record["metric"] != "Doctors Assigned"
+        is_outside_roster = is_activity_metric and not is_unmapped_rep and bool(effective_key) and effective_key not in assigned_keys
+        is_unknown_name = _is_missing_doctor_name(record["doctor_name"])
+        if not is_unmapped_rep and not is_unknown_name and not is_outside_roster:
+            continue
+
+        issue = "Doctor name missing or unknown"
+        if is_unmapped_rep:
+            issue = "Unmapped or ambiguous field-rep activity"
+        elif is_outside_roster:
+            issue = "Activity doctor is not in assigned roster for this rep"
+
+        key = (rep_id, doctor_key, doctor_phone, issue)
+        existing = correction_rows_by_key.setdefault(
+            key,
+            {
+                "issue": issue,
+                "rep_id": rep_id,
+                "rep_name": record["rep_name"],
+                "metrics": set(),
+                "doctor_name": record["doctor_name"],
+                "doctor_phone": doctor_phone,
+                "doctor_key": doctor_key,
+                "source_field_rep_id": record.get("source_field_rep_id", ""),
+                "source_field_rep_email": record.get("source_field_rep_email", ""),
+                "source_brand_rep_id": record.get("source_brand_rep_id", ""),
+                "evidence_source": record.get("evidence_source", ""),
+            },
+        )
+        existing["metrics"].add(record["metric"])
+
+    return [
+        [
+            index,
+            row["issue"],
+            row["rep_id"],
+            row["rep_name"],
+            ", ".join(sorted(row["metrics"])),
+            row["doctor_name"],
+            row["doctor_phone"],
+            row["doctor_key"],
+            row.get("source_field_rep_id", ""),
+            row.get("source_field_rep_email", ""),
+            row.get("source_brand_rep_id", ""),
+            row.get("evidence_source", ""),
+            "",
+            "",
+            "",
+            row["doctor_phone"],
+        ]
+        for index, row in enumerate(correction_rows_by_key.values(), start=1)
+    ]
+
+
+def _manual_mapping_excel_response(context: dict[str, Any]) -> HttpResponse:
+    filename = _export_filename("doctors_requiring_manual_mapping", context, "xls")
+    return _excel_response(
+        filename,
+        [
+            (
+                "Doctors Requiring Manual Mapping",
+                [
+                    "S. No.",
+                    "Issue",
+                    "Current Field Rep ID",
+                    "Current Field Representative",
+                    "Metric(s)",
+                    "Current Doctor Name",
+                    "Current Doctor Number",
+                    "Doctor Key",
+                    "Source Field Rep ID",
+                    "Source Field Rep Email",
+                    "Source Brand Supplied Field Rep ID",
+                    "Source Evidence Table",
+                    "Correct Field Rep Brand Supplied ID",
+                    "Correct Field Rep Name / Email",
+                    "Correct Doctor Name",
+                    "Correct Doctor Number",
+                ],
+                _manual_mapping_export_rows(context.get("field_rep_insights") or []),
+            )
+        ],
+    )
+
+
+def _pdf_escape(value: Any) -> str:
+    text = str(value if value is not None else "")
+    text = text.encode("latin-1", "replace").decode("latin-1")
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _pdf_pages(lines: list[str], title: str, width: int = 92, max_lines: int = 52) -> list[list[str]]:
+    wrapped: list[str] = []
+    for line in lines:
+        raw = str(line if line is not None else "")
+        if not raw:
+            wrapped.append("")
+            continue
+        wrapped.extend(textwrap.wrap(raw, width=width, replace_whitespace=True, drop_whitespace=True) or [""])
+
+    pages: list[list[str]] = []
+    current: list[str] = []
+    for line in wrapped:
+        if len(current) >= max_lines:
+            pages.append(current)
+            current = []
+        current.append(line)
+    if current or not pages:
+        pages.append(current)
+    return [[title, "", *page] for page in pages]
+
+
+def _build_pdf_bytes(title: str, lines: list[str]) -> bytes:
+    pages = _pdf_pages(lines, title)
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    page_refs: list[str] = []
+    for page in pages:
+        page_obj_id = len(objects) + 1
+        content_obj_id = page_obj_id + 1
+        page_refs.append(f"{page_obj_id} 0 R")
+
+        content_lines = ["BT", "/F1 15 Tf", "50 805 Td"]
+        first_line = True
+        for line_index, line in enumerate(page):
+            if not first_line:
+                content_lines.append("0 -14 Td")
+            if line_index == 2:
+                content_lines.append("/F1 10 Tf")
+            content_lines.append(f"({_pdf_escape(line)}) Tj")
+            first_line = False
+        content_lines.append("ET")
+        content = "\n".join(content_lines).encode("latin-1", "replace")
+        page_obj = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+            f"/Resources << /Font << /F1 3 0 R >> >> /Contents {content_obj_id} 0 R >>"
+        ).encode("latin-1")
+        content_obj = b"<< /Length " + str(len(content)).encode("ascii") + b" >>\nstream\n" + content + b"\nendstream"
+        objects.extend([page_obj, content_obj])
+
+    objects[1] = f"<< /Type /Pages /Kids [{' '.join(page_refs)}] /Count {len(page_refs)} >>".encode("latin-1")
+
+    pdf = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(pdf))
+        pdf.extend(f"{index} 0 obj\n".encode("ascii"))
+        pdf.extend(obj)
+        pdf.extend(b"\nendobj\n")
+    xref_offset = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    pdf.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    pdf.extend(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n".encode("ascii")
+    )
+    return bytes(pdf)
+
+
+def _pdf_response(filename: str, title: str, lines: list[str]) -> HttpResponse:
+    response = HttpResponse(_build_pdf_bytes(title, lines), content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+def _campaign_pdf_lines(context: dict[str, Any]) -> list[str]:
+    lines = [
+        f"Brand: {context.get('brand_name') or ''}",
+        f"Campaign: {context.get('selected_campaign') or ''}",
+        f"Collateral: {context.get('collateral_name') or ''}",
+        f"Schedule: {context.get('schedule_text') or ''}",
+        f"Period: {context.get('week_of') or 'All Weeks'}",
+        "",
+        "Key Metrics",
+        f"Campaign Health: {context.get('campaign_health', 0)}/100",
+        f"Weekly Campaign Health: {context.get('weekly_health', 0)}/100",
+        f"Doctors Reached (Unique): {context.get('kpi_reached', 0)} ({context.get('kpi_reached_pct', 0)}%)",
+        f"Doctors Opened (Unique): {context.get('kpi_opened', 0)} ({context.get('kpi_opened_pct', 0)}%)",
+        f"Video Viewed (Unique): {context.get('kpi_video', 0)} (>50% viewed: {context.get('kpi_video_pct', 0)}%)",
+        f"PDF Downloads (Unique): {context.get('kpi_pdf', 0)} ({context.get('kpi_pdf_pct', 0)}%)",
+        "",
+        "Field Representative Summary",
+    ]
+    summary = context.get("field_rep_summary") or {}
+    lines.extend(
+        [
+            f"Field Reps: {summary.get('total_reps', 0)}",
+            f"Doctors Assigned: {summary.get('total_doctors_assigned', 0)}",
+            f"Collateral Sent: {summary.get('doctors_sent', 0)}",
+            f"Viewed: {summary.get('doctors_viewed', 0)}",
+            f"Video Played: {summary.get('doctors_video_played', 0)}",
+            f"PDF / Collateral Saved: {summary.get('doctors_pdf_downloaded', 0)}",
+            "",
+            "Field Rep Breakdown",
+            "Field Rep ID | Name | State | Assigned | Sent | Viewed | Video | Saved",
+        ]
+    )
+    for row in context.get("field_rep_insights") or []:
+        lines.append(
+            " | ".join(
+                [
+                    str(row.get("field_rep_id", "")),
+                    str(row.get("field_rep_name", "")),
+                    str(row.get("state_normalized", "UNKNOWN") or "UNKNOWN"),
+                    str(_to_int(row.get("total_doctors_assigned"))),
+                    str(_to_int(row.get("doctors_sent"))),
+                    str(_to_int(row.get("doctors_viewed"))),
+                    str(_to_int(row.get("doctors_video_played"))),
+                    str(_to_int(row.get("doctors_pdf_downloaded"))),
+                ]
+            )
+        )
+    if context.get("error_message"):
+        lines.extend(["", f"Data issue: {context.get('error_message')}"])
+    return lines
 
 
 def _collateral_display_name(row: dict[str, Any], fallback: str = "Collateral") -> str:
@@ -1740,74 +2611,165 @@ def _campaign_list() -> list[dict[str, Any]]:
 
 def _campaign_performance_link_rows(request: HttpRequest) -> list[dict[str, Any]]:
     try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT to_regclass('bronze.campaign_campaign')")
-            campaign_table_exists = cursor.fetchone()[0] is not None
-            cursor.execute("SELECT to_regclass('silver.map_brand_campaign_to_campaign')")
-            mapping_table_exists = cursor.fetchone()[0] is not None
-        if not campaign_table_exists:
+        source_rows: list[dict[str, Any]] = []
+        if _table_exists("raw_sapa_mysql", "campaign_campaign_raw"):
+            source_rows.extend(
+                _fetch_dicts(
+                    """
+                    SELECT
+                      id::text AS campaign_id,
+                      COALESCE(NULLIF(btrim(name), ''), id::text) AS campaign_name,
+                      CASE WHEN lower(COALESCE(system_rfa, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_rfa,
+                      CASE WHEN lower(COALESCE(system_ic, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_ic,
+                      CASE WHEN lower(COALESCE(system_pe, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_pe,
+                      NULLIF(btrim(brand_manager_login_link), '') AS brand_manager_login_link,
+                      0 AS source_priority
+                    FROM raw_sapa_mysql.campaign_campaign_raw
+                    WHERE
+                      lower(COALESCE(system_rfa, '')) IN ('1', 'true', 't', 'yes')
+                      OR lower(COALESCE(system_ic, '')) IN ('1', 'true', 't', 'yes')
+                      OR lower(COALESCE(system_pe, '')) IN ('1', 'true', 't', 'yes')
+                    """
+                )
+            )
+        if _table_exists("bronze", "campaign_campaign"):
+            source_rows.extend(
+                _fetch_dicts(
+                    """
+                    SELECT
+                      id::text AS campaign_id,
+                      COALESCE(NULLIF(btrim(name), ''), id::text) AS campaign_name,
+                      CASE WHEN lower(COALESCE(system_rfa, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_rfa,
+                      CASE WHEN lower(COALESCE(system_ic, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_ic,
+                      CASE WHEN lower(COALESCE(system_pe, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_pe,
+                      NULLIF(btrim(brand_manager_login_link), '') AS brand_manager_login_link,
+                      10 AS source_priority
+                    FROM bronze.campaign_campaign
+                    WHERE
+                      lower(COALESCE(system_rfa, '')) IN ('1', 'true', 't', 'yes')
+                      OR lower(COALESCE(system_ic, '')) IN ('1', 'true', 't', 'yes')
+                      OR lower(COALESCE(system_pe, '')) IN ('1', 'true', 't', 'yes')
+                    """
+                )
+            )
+        if _table_exists("raw_pe_master", "campaign_campaign_raw"):
+            source_rows.extend(
+                _fetch_dicts(
+                    """
+                    SELECT
+                      id::text AS campaign_id,
+                      COALESCE(NULLIF(btrim(name), ''), id::text) AS campaign_name,
+                      FALSE AS system_rfa,
+                      FALSE AS system_ic,
+                      CASE WHEN lower(COALESCE(system_pe, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_pe,
+                      ''::text AS brand_manager_login_link,
+                      20 AS source_priority
+                    FROM raw_pe_master.campaign_campaign_raw
+                    WHERE lower(COALESCE(system_pe, '')) IN ('1', 'true', 't', 'yes')
+                    """
+                )
+            )
+        if _table_exists("gold_global", "campaign_registry"):
+            source_rows.extend(
+                _fetch_dicts(
+                    """
+                    SELECT
+                      COALESCE(NULLIF(btrim(campaign_id_resolved), ''), brand_campaign_id)::text AS campaign_id,
+                      COALESCE(NULLIF(btrim(campaign_id_resolved), ''), brand_campaign_id)::text AS campaign_name,
+                      FALSE AS system_rfa,
+                      TRUE AS system_ic,
+                      FALSE AS system_pe,
+                      ''::text AS brand_manager_login_link,
+                      30 AS source_priority
+                    FROM gold_global.campaign_registry
+                    """
+                )
+            )
+        if _table_exists("gold_pe_global", "campaign_registry"):
+            source_rows.extend(
+                _fetch_dicts(
+                    """
+                    SELECT
+                      COALESCE(NULLIF(btrim(campaign_id_original), ''), campaign_id_normalized)::text AS campaign_id,
+                      COALESCE(NULLIF(btrim(campaign_name), ''), campaign_id_original, campaign_id_normalized)::text AS campaign_name,
+                      FALSE AS system_rfa,
+                      FALSE AS system_ic,
+                      TRUE AS system_pe,
+                      ''::text AS brand_manager_login_link,
+                      40 AS source_priority
+                    FROM gold_pe_global.campaign_registry
+                    """
+                )
+            )
+        if _table_exists("gold_sapa_global", "campaign_registry"):
+            source_rows.extend(
+                _fetch_dicts(
+                    """
+                    SELECT
+                      campaign_key::text AS campaign_id,
+                      COALESCE(NULLIF(btrim(campaign_label), ''), campaign_key)::text AS campaign_name,
+                      TRUE AS system_rfa,
+                      FALSE AS system_ic,
+                      FALSE AS system_pe,
+                      ''::text AS brand_manager_login_link,
+                      50 AS source_priority
+                    FROM gold_sapa_global.campaign_registry
+                    """
+                )
+            )
+        if not source_rows:
             return []
-
-        mapping_join = ""
-        mapping_select = "NULL::text AS brand_campaign_id"
-        if mapping_table_exists:
-            mapping_join = """
-                LEFT JOIN (
-                    SELECT campaign_id_resolved, MIN(brand_campaign_id) AS brand_campaign_id
-                    FROM silver.map_brand_campaign_to_campaign
-                    GROUP BY campaign_id_resolved
-                ) mapped
-                  ON mapped.campaign_id_resolved = cc.id::text
-            """
-            mapping_select = "NULLIF(btrim(mapped.brand_campaign_id), '') AS brand_campaign_id"
-
-        rows = _fetch_dicts(
-            f"""
-            SELECT
-              cc.id::text AS campaign_id,
-              COALESCE(NULLIF(btrim(cc.name), ''), cc.id::text) AS campaign_name,
-              CASE WHEN lower(COALESCE(cc.system_rfa, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_rfa,
-              CASE WHEN lower(COALESCE(cc.system_ic, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_ic,
-              CASE WHEN lower(COALESCE(cc.system_pe, '')) IN ('1', 'true', 't', 'yes') THEN TRUE ELSE FALSE END AS system_pe,
-              NULLIF(btrim(cc.brand_manager_login_link), '') AS brand_manager_login_link,
-              {mapping_select}
-            FROM bronze.campaign_campaign cc
-            {mapping_join}
-            WHERE
-              lower(COALESCE(cc.system_rfa, '')) IN ('1', 'true', 't', 'yes')
-              OR lower(COALESCE(cc.system_ic, '')) IN ('1', 'true', 't', 'yes')
-              OR lower(COALESCE(cc.system_pe, '')) IN ('1', 'true', 't', 'yes')
-            ORDER BY COALESCE(NULLIF(btrim(cc.name), ''), cc.id::text)
-            """
-        )
     except (ProgrammingError, OperationalError):
         return []
 
-    output = []
-    for row in rows:
-        systems = []
-        if row.get("system_rfa"):
-            systems.append("RFA")
-        if row.get("system_ic"):
-            systems.append("InClinic")
-        if row.get("system_pe"):
-            systems.append("PE")
+    rows_by_key: dict[str, dict[str, Any]] = {}
+    for row in source_rows:
         campaign_id = _normalize_campaign_id(row.get("campaign_id"))
-        brand_campaign_id = str(row.get("brand_campaign_id") or "").strip()
-        in_clinic_report_url = absolute_url(request, f"/campaign/{brand_campaign_id}/") if row.get("system_ic") and brand_campaign_id else ""
-        pe_report_url = ""
-        if (row.get("system_ic") and not in_clinic_report_url) or row.get("system_pe"):
-            try:
-                reference = _resolve_campaign_reference(campaign_id)
-            except CampaignPerformanceNotFound:
-                reference = None
-            if row.get("system_ic") and not in_clinic_report_url and reference and reference.brand_campaign_id:
-                in_clinic_report_url = absolute_url(request, f"/campaign/{reference.brand_campaign_id}/")
-            if row.get("system_pe") and reference and reference.pe_campaign_id:
-                pe_report_url = absolute_url(request, f"/pe-reports/campaign/{reference.pe_campaign_id}/")
+        lookup_key = _normalize_lookup_key(campaign_id)
+        if not lookup_key:
+            continue
+        current = rows_by_key.get(lookup_key)
+        row_priority = _to_int(row.get("source_priority"), 100)
+        if current is None or row_priority < _to_int(current.get("source_priority"), 100):
+            current = dict(row)
+            current["campaign_id"] = campaign_id
+            rows_by_key[lookup_key] = current
+        else:
+            current["system_rfa"] = bool(current.get("system_rfa") or row.get("system_rfa"))
+            current["system_ic"] = bool(current.get("system_ic") or row.get("system_ic"))
+            current["system_pe"] = bool(current.get("system_pe") or row.get("system_pe"))
+            if not current.get("brand_manager_login_link") and row.get("brand_manager_login_link"):
+                current["brand_manager_login_link"] = row.get("brand_manager_login_link")
+
+    output = []
+    for row in sorted(rows_by_key.values(), key=lambda item: ((item.get("campaign_name") or item.get("campaign_id") or "").lower(), item.get("campaign_id") or "")):
+        campaign_id = _normalize_campaign_id(row.get("campaign_id"))
+        try:
+            reference = _resolve_campaign_reference(campaign_id)
+        except CampaignPerformanceNotFound:
+            reference = None
+        system_keys = _configured_system_keys(reference) if reference else []
+        if not system_keys:
+            if row.get("system_rfa"):
+                system_keys.append("rfa")
+            if row.get("system_ic"):
+                system_keys.append("in_clinic")
+            if row.get("system_pe"):
+                system_keys.append("patient_education")
+        systems = []
+        for key in system_keys:
+            if key == "rfa":
+                systems.append("RFA")
+            elif key == "in_clinic":
+                systems.append("InClinic")
+            elif key == "patient_education":
+                systems.append("PE")
 
         system_report_links = []
-        if row.get("system_ic"):
+        brand_campaign_id = str(reference.brand_campaign_id if reference else "").strip()
+        if "in_clinic" in system_keys:
+            path = _system_report_path("in_clinic", reference) if reference else ""
+            in_clinic_report_url = absolute_url(request, path) if path else ""
             system_report_links.append(
                 {
                     "label": "InClinic Report",
@@ -1815,7 +2777,9 @@ def _campaign_performance_link_rows(request: HttpRequest) -> list[dict[str, Any]
                     "status": "Not mapped" if not in_clinic_report_url else "",
                 }
             )
-        if row.get("system_pe"):
+        if "patient_education" in system_keys:
+            path = _system_report_path("patient_education", reference) if reference else ""
+            pe_report_url = absolute_url(request, path) if path else ""
             system_report_links.append(
                 {
                     "label": "PE Report",
@@ -1823,12 +2787,14 @@ def _campaign_performance_link_rows(request: HttpRequest) -> list[dict[str, Any]
                     "status": "Not mapped" if not pe_report_url else "",
                 }
             )
-        if row.get("system_rfa"):
+        if "rfa" in system_keys:
+            path = _system_report_path("rfa", reference) if reference else f"/sapa-growth/campaign/{campaign_id}/"
+            rfa_report_url = absolute_url(request, path) if path else ""
             system_report_links.append(
                 {
                     "label": "RFA Report",
-                    "url": "",
-                    "status": "Not available yet",
+                    "url": rfa_report_url,
+                    "status": "Not mapped" if not rfa_report_url else "",
                 }
             )
 
@@ -2050,8 +3016,12 @@ def campaign_performance_links_page(request: HttpRequest) -> HttpResponse:
     )
 
 
-def campaign_performance_page(request: HttpRequest, campaign_id: str) -> HttpResponse:
-    normalized_campaign_id = _normalize_campaign_id(campaign_id)
+def campaign_performance_page(
+    request: HttpRequest,
+    campaign_id: str | None = None,
+    brand_campaign_id: str | None = None,
+) -> HttpResponse:
+    normalized_campaign_id = _normalize_campaign_id(campaign_id or brand_campaign_id)
     campaigns = {_normalize_campaign_id(c["brand_campaign_id"]): c for c in _campaign_list()}
     campaign = campaigns.get(normalized_campaign_id, {"brand_campaign_id": normalized_campaign_id, "campaign_name": normalized_campaign_id})
     return render(
@@ -2245,7 +3215,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     and row.get("schedule_end_date") == schedule_end_raw
                 ]
             )
-            current_field_rep_collateral_ids = [current_collateral_id] if current_collateral_id else current_collateral_ids[:1]
+            current_field_rep_collateral_ids = current_collateral_ids
             old_collaterals = _format_collateral_options(schedule_rows, requested_campaign, current_collateral_id)
             start = _format_schedule_date(primary_schedule.get("schedule_start_date"))
             end = _format_schedule_date(primary_schedule.get("schedule_end_date"))
@@ -2260,9 +3230,19 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             company_logo_url = _build_media_logo_url(primary_schedule.get("company_logo"))
 
         assigned_total_doctors = _assigned_doctor_count(requested_campaign, brand_campaign_variants)
-        field_rep_insights = _field_rep_insight_rows(requested_campaign, brand_campaign_variants, current_field_rep_collateral_ids)
+        field_rep_insights = _field_rep_insight_rows(
+            requested_campaign,
+            brand_campaign_variants,
+            current_field_rep_collateral_ids,
+            schedule_start_raw,
+            schedule_end_raw,
+        )
         field_rep_assigned_total = sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights)
-        reporting_total_doctors = assigned_total_doctors or field_rep_assigned_total
+        roster_total_doctors = assigned_total_doctors or field_rep_assigned_total
+        unmapped_activity_doctors = sum(
+            _to_int(row.get("doctors_sent")) for row in field_rep_insights if row.get("is_unmapped_activity")
+        )
+        reporting_total_doctors = max(roster_total_doctors, field_rep_assigned_total + unmapped_activity_doctors)
         all_weekly_rows = _weekly_rows_for_current_collateral(
             requested_campaign,
             brand_campaign_variants,
@@ -2504,13 +3484,24 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                     ],
                 }
 
+            for row in collateral_health_source:
+                reached = _to_float(row.get("reached"))
+                opened = _to_float(row.get("opened"))
+                consumed = _to_float(row.get("consumed"))
+                row["reached_pct"] = _safe_pct(reached, total_doctors)
+                row["opened_pct"] = _safe_pct(opened, reached)
+                row["video_pct"] = _safe_pct(_to_float(row.get("video")), opened)
+                row["pdf_pct"] = _safe_pct(_to_float(row.get("pdf")), opened)
+                row["health_score"] = _engagement_health_score(reached, opened, consumed, total_doctors)
+
             best_collateral = max(
                 collateral_health_source,
-                key=lambda r: _engagement_health_score(
+                key=lambda r: (
                     _to_float(r.get("reached")),
                     _to_float(r.get("opened")),
                     _to_float(r.get("consumed")),
-                    total_doctors,
+                    _to_float(r.get("video")) + _to_float(r.get("pdf")),
+                    _to_float(r.get("health_score")),
                 ),
             ) if collateral_health_source else {}
             bench_rows = _fetch_dicts(
@@ -2540,10 +3531,10 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 "opened": _to_int(_to_float(best_collateral.get("opened"))),
                 "video": _to_int(_to_float(best_collateral.get("video"))),
                 "pdf": _to_int(_to_float(best_collateral.get("pdf"))),
-                "reached_pct": round(_safe_pct(_to_float(best_collateral.get("reached")), total_doctors), 1),
-                "opened_pct": round(_safe_pct(_to_float(best_collateral.get("opened")), _to_float(best_collateral.get("reached"))), 1),
-                "video_pct": round(_safe_pct(_to_float(best_collateral.get("video")), _to_float(best_collateral.get("opened"))), 1),
-                "pdf_pct": round(_safe_pct(_to_float(best_collateral.get("pdf")), _to_float(best_collateral.get("opened"))), 1),
+                "reached_pct": round(_to_float(best_collateral.get("reached_pct")), 1),
+                "opened_pct": round(_to_float(best_collateral.get("opened_pct")), 1),
+                "video_pct": round(_to_float(best_collateral.get("video_pct")), 1),
+                "pdf_pct": round(_to_float(best_collateral.get("pdf_pct")), 1),
             }
             benchmark_metric_rows = []
             if bridge_base_exists:
@@ -2649,7 +3640,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
                 ),
             }
 
-        field_rep_summary = _format_field_rep_summary(field_rep_insights, reporting_total_doctors)
+        field_rep_summary = _format_field_rep_summary(field_rep_insights, roster_total_doctors)
 
     except Exception as exc:
         error_message = str(exc)
@@ -2772,7 +3763,13 @@ def _build_collateral_field_rep_context(selected_campaign: str, collateral_id: s
         context["brand_logo_text"] = _first_display_word(context["brand_name"]) or context["brand_name"].strip()
         context["old_collaterals"] = _format_collateral_options(schedule_rows, requested_campaign, selected_collateral_id)
 
-        field_rep_insights = _field_rep_insight_rows(requested_campaign, brand_campaign_variants, [selected_collateral_id])
+        field_rep_insights = _field_rep_insight_rows(
+            requested_campaign,
+            brand_campaign_variants,
+            [selected_collateral_id],
+            selected_row.get("schedule_start_date") if selected_row else None,
+            selected_row.get("schedule_end_date") if selected_row else None,
+        )
         total_doctors = _assigned_doctor_count(requested_campaign, brand_campaign_variants)
         context["field_rep_insights"] = field_rep_insights
         context["field_rep_summary"] = _format_field_rep_summary(field_rep_insights, total_doctors)
@@ -2804,8 +3801,44 @@ def export_report(request: HttpRequest, brand_campaign_id: str):
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
     context = _build_report_context(normalized_campaign_id, week_filter)
-    context["export_mode"] = True
-    return render(request, "dashboard/overview.html", context)
+    filename = _export_filename("in_clinic_report", context, "pdf")
+    title = f"In-Clinic Sharing Report - {context.get('brand_name') or normalized_campaign_id}"
+    return _pdf_response(filename, title, _campaign_pdf_lines(context))
+
+
+def export_field_rep_insights(request: HttpRequest, brand_campaign_id: str):
+    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
+    if not _has_inclinic_campaign_access(request, normalized_campaign_id):
+        return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
+
+    week = request.GET.get("week")
+    week_filter = _to_int(week) if week else None
+    context = _build_report_context(normalized_campaign_id, week_filter)
+    return _field_rep_insights_excel_response(context)
+
+
+def export_unmapped_doctors(request: HttpRequest, brand_campaign_id: str):
+    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
+    if not _has_inclinic_campaign_access(request, normalized_campaign_id):
+        return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
+
+    week = request.GET.get("week")
+    week_filter = _to_int(week) if week else None
+    context = _build_report_context(normalized_campaign_id, week_filter)
+    return _manual_mapping_excel_response(context)
+
+
+def export_collateral_field_rep_insights(request: HttpRequest, brand_campaign_id: str, collateral_id: str):
+    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
+    if not _has_inclinic_campaign_access(request, normalized_campaign_id):
+        return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
+
+    context = _build_collateral_field_rep_context(normalized_campaign_id, collateral_id)
+    return _field_rep_insights_excel_response(
+        context,
+        filename_prefix="field_rep_insights_collateral",
+        filename_extra=f"collateral_{collateral_id}",
+    )
 
 
 def campaign_field_rep_collateral_insights(request: HttpRequest, brand_campaign_id: str, collateral_id: str):

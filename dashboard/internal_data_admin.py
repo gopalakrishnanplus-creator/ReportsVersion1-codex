@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import re
 from dataclasses import dataclass
@@ -19,6 +20,15 @@ from django.utils.crypto import constant_time_compare
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_http_methods
 from psycopg2 import sql
+
+from etl.reporting_corrections import (
+    RULE_EXCLUDE_INVALID_PHONE,
+    RULE_KEEP_DOCTOR_WITH_REP,
+    create_reporting_correction_rule,
+    deactivate_reporting_correction_rule,
+    ensure_reporting_correction_table,
+    list_reporting_correction_rules,
+)
 
 
 SESSION_KEY = "internal_data_admin_authenticated"
@@ -70,6 +80,18 @@ CLEANUP_BATCH_MODES = {
         "summary": "Listed campaign IDs are protected; other campaign-scoped records are deleted across the selected systems.",
     },
 }
+REPORTING_CORRECTION_RULE_TYPES = [
+    {
+        "key": RULE_KEEP_DOCTOR_WITH_REP,
+        "label": "Keep doctor with one ASM",
+        "summary": "Use for duplicate assignment. Keeps the listed doctor phone with the expected brand-supplied Field Rep ID and excludes other reps from assigned-doctor denominator.",
+    },
+    {
+        "key": RULE_EXCLUDE_INVALID_PHONE,
+        "label": "Exclude invalid doctor phone",
+        "summary": "Use for wrong doctor numbers. Excludes matching roster and engagement rows from reporting counts without deleting source/raw data.",
+    },
+]
 LAYER_LABELS = {
     "raw": "RAW",
     "bronze": "BRONZE",
@@ -193,12 +215,13 @@ SYSTEM_PROFILES = {
         key="shared",
         label="Shared Ops / Control",
         short_label="Shared",
-        description="Operational tables used by multiple pipelines, including ETL run logs, rules, and dashboard audit records.",
-        cleanup_summary="These tables control or describe pipeline behavior. Clean logs and rules deliberately; do not delete audit history casually.",
-        source_guidance="Use control tables for run-log cleanup and ops tables for rules/configuration cleanup.",
+        description="Operational and preservation tables used by multiple pipelines, including ETL run logs, rules, dashboard audit records, and archived pre-V2 reporting rows.",
+        cleanup_summary="These tables control, describe, or preserve pipeline behavior. Clean logs and rules deliberately; do not delete audit or preservation history casually.",
+        source_guidance="Use control tables for run-log cleanup, ops tables for rules/configuration cleanup, and archive tables only for verified historical preservation review.",
         cleanup_steps=[
             "Delete old control.etl_run_log rows only when historical troubleshooting data is no longer needed.",
             "Delete or disable ops rules only after confirming the relevant pipeline no longer depends on them.",
+            "Do not delete archive.reporting_v2_preserved_rows unless the archived rows have been exported or formally accepted as no longer needed.",
             "The internal dashboard audit table is hidden from CRUD to preserve mutation history.",
         ],
     ),
@@ -232,7 +255,7 @@ def _execute(query, params: list[Any] | tuple[Any, ...] | None = None) -> None:
 
 
 def _is_relevant_schema(schema: str) -> bool:
-    if schema in {"raw_server1", "raw_server2", "bronze", "silver", "gold_global", "control", "ops"}:
+    if schema in {"raw_server1", "raw_server2", "bronze", "silver", "gold_global", "control", "ops", "archive"}:
         return True
     return schema.startswith(("raw_", "bronze_", "silver_", "gold_"))
 
@@ -248,7 +271,7 @@ def _system_key_for_schema(schema: str) -> str:
         return "sapa"
     if schema in {"raw_pe_master", "raw_pe_portal", "bronze_pe", "silver_pe", "gold_pe_global"} or schema.startswith("gold_pe_campaign_"):
         return "pe"
-    if schema in {"control", "ops"}:
+    if schema in {"control", "ops", "archive"}:
         return "shared"
     return "shared"
 
@@ -270,6 +293,8 @@ def _layer_for_schema(schema: str) -> str:
         return "CONTROL run metadata"
     if schema == "ops":
         return "OPS rules/config"
+    if schema == "archive":
+        return "ARCHIVE historical preservation"
     return "Reporting table"
 
 
@@ -2236,6 +2261,99 @@ def internal_data_admin_raw_dedupe(request: HttpRequest) -> HttpResponse:
             "phrase": phrase,
             "result": result,
             "batch_size": RAW_DEDUPE_BATCH_SIZE,
+        },
+    )
+
+
+def _bulk_reporting_correction_rows(text: str) -> list[dict[str, str]]:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+    reader = csv.DictReader(io.StringIO(cleaned))
+    if not reader.fieldnames:
+        raise ValueError("CSV header row is required.")
+    rows: list[dict[str, str]] = []
+    for index, row in enumerate(reader, start=2):
+        normalized = {str(key or "").strip(): str(value or "").strip() for key, value in row.items()}
+        if not any(normalized.values()):
+            continue
+        normalized["_line_number"] = str(index)
+        rows.append(normalized)
+    return rows
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
+def internal_data_admin_corrections(request: HttpRequest) -> HttpResponse:
+    auth_redirect = _require_auth(request)
+    if auth_redirect:
+        return auth_redirect
+
+    ensure_reporting_correction_table()
+    actor = request.session.get(SESSION_USER_KEY, "internal_admin")
+
+    if request.method == "POST":
+        action = request.POST.get("correction_action") or "add"
+        if action == "deactivate":
+            correction_id = (request.POST.get("correction_id") or "").strip()
+            if deactivate_reporting_correction_rule(correction_id):
+                messages.success(request, "Reporting correction rule deactivated. Rerun ETL to refresh derived counts.")
+            else:
+                messages.error(request, "Correction rule was not found.")
+            return redirect("internal-data-admin-corrections")
+
+        if action == "bulk_add":
+            try:
+                rows = _bulk_reporting_correction_rows(request.POST.get("bulk_csv") or "")
+                created = 0
+                for row in rows:
+                    create_reporting_correction_rule(
+                        rule_type=row.get("rule_type", ""),
+                        campaign_id=row.get("campaign_id", ""),
+                        doctor_phone=row.get("doctor_phone", ""),
+                        doctor_name=row.get("doctor_name", ""),
+                        field_rep_brand_supplied_id=row.get("field_rep_brand_supplied_id", ""),
+                        expected_field_rep_brand_supplied_id=row.get("expected_field_rep_brand_supplied_id", ""),
+                        affected_field_rep_brand_supplied_ids=row.get("affected_field_rep_brand_supplied_ids", ""),
+                        reason=row.get("reason", "") or f"Reporting correction bulk import line {row.get('_line_number')}",
+                        created_by=actor,
+                    )
+                    created += 1
+                messages.success(request, f"Created {created} reporting correction rule{'' if created == 1 else 's'}. Rerun ETL to refresh derived counts.")
+                return redirect("internal-data-admin-corrections")
+            except Exception as exc:
+                messages.error(request, f"Bulk correction import failed: {exc}")
+
+        if action == "add":
+            try:
+                create_reporting_correction_rule(
+                    rule_type=request.POST.get("rule_type", ""),
+                    campaign_id=request.POST.get("campaign_id", ""),
+                    doctor_phone=request.POST.get("doctor_phone", ""),
+                    doctor_name=request.POST.get("doctor_name", ""),
+                    field_rep_brand_supplied_id=request.POST.get("field_rep_brand_supplied_id", ""),
+                    expected_field_rep_brand_supplied_id=request.POST.get("expected_field_rep_brand_supplied_id", ""),
+                    affected_field_rep_brand_supplied_ids=request.POST.get("affected_field_rep_brand_supplied_ids", ""),
+                    reason=request.POST.get("reason", ""),
+                    created_by=actor,
+                )
+                messages.success(request, "Reporting correction rule created. Rerun ETL to refresh derived counts.")
+                return redirect("internal-data-admin-corrections")
+            except Exception as exc:
+                messages.error(request, f"Correction rule could not be created: {exc}")
+
+    return render(
+        request,
+        "dashboard/internal_data_admin/corrections.html",
+        {
+            "rule_types": REPORTING_CORRECTION_RULE_TYPES,
+            "rules": list_reporting_correction_rules(include_inactive=True),
+            "sample_csv": (
+                "rule_type,campaign_id,doctor_phone,doctor_name,field_rep_brand_supplied_id,"
+                "expected_field_rep_brand_supplied_id,affected_field_rep_brand_supplied_ids,reason\n"
+                f"{RULE_KEEP_DOCTOR_WITH_REP},83ce7fc7c965433ab2b9717394abe3c1,7086179396,SUMEET KR BAKALI,,1451,\"2731\",\"Brand confirmed doctor should stay with ASM 1451\"\n"
+                f"{RULE_EXCLUDE_INVALID_PHONE},83ce7fc7c965433ab2b9717394abe3c1,964512884,Dr.J Prakash,10340,,,\"Brand confirmed invalid doctor phone\"\n"
+            ),
         },
     )
 

@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import date
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve, reverse
 
+from etl.sapa_growth import bronze as sapa_bronze
+from etl.sapa_growth import pipeline as sapa_pipeline
+from etl.sapa_growth import raw as sapa_raw
 from etl.sapa_growth import storage as sapa_storage
+from etl.sapa_growth import gold as sapa_gold
 from etl.sapa_growth.mysql import extract_rows
 from etl.sapa_growth.silver import _best_dim_for_event, _doctor_indexes, _doctor_matches_for_api
 from etl.sapa_growth.specs import RAW_AUDIT_COLUMNS
+from sapa_growth import services as sapa_services
 from sapa_growth.logic import classify_metric_event, explode_followup_schedule, map_course_status, normalize_phone, webinar_effective_date
 from sapa_growth.services import _derived_certified_rows, _enrich_video_rows, dashboard_context, detail_context, export_dashboard_pdf
 from sapa_growth.video_metadata import resolve_video_metadata
@@ -48,6 +54,79 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertIn("ROW_NUMBER() OVER (PARTITION BY source_payload_hash", query)
         self.assertIn('existing."_source_payload_hash" = deduped.source_payload_hash', query)
         self.assertEqual(values, [["1", "Asha", "row-hash"]])
+
+    def test_raw_source_insert_can_fingerprint_v2_source_table(self):
+        cursor_mock = MagicMock()
+        cursor_context = MagicMock()
+        cursor_context.__enter__.return_value = cursor_mock
+        cursor_context.__exit__.return_value = False
+        connection_mock = MagicMock()
+        connection_mock.cursor.return_value = cursor_context
+
+        with patch("etl.sapa_growth.storage.ensure_text_table"), patch(
+            "etl.sapa_growth.storage.ensure_source_payload_hash"
+        ) as ensure_hash, patch("etl.sapa_growth.storage.connection", connection_mock), patch(
+            "etl.sapa_growth.storage.execute_values",
+            return_value=[(1,)],
+        ) as execute_values_mock:
+            sapa_storage.insert_new_source_rows(
+                "raw_sapa_mysql",
+                "campaign_fieldrep_raw",
+                ["id", "full_name"],
+                ["_source_table", "_record_hash", "_source_payload_hash"],
+                [{"id": "1", "full_name": "Asha", "_source_table": "field_rep_v2", "_record_hash": "row-hash"}],
+                fingerprint_columns=["id", "full_name", "_source_table"],
+            )
+
+        ensure_hash.assert_called_once_with("raw_sapa_mysql", "campaign_fieldrep_raw", ["id", "full_name", "_source_table"])
+        _, query, values = execute_values_mock.call_args.args
+        self.assertIn('"incoming"."_source_table"::text', query)
+        self.assertEqual(values, [["1", "Asha", "field_rep_v2", "row-hash"]])
+
+    def test_bronze_uses_only_v2_rows_for_v2_source_specs(self):
+        rows = [
+            {"id": "1", "full_name": "Legacy", "_source_table": "campaign_fieldrep"},
+            {"id": "1", "full_name": "V2 old", "_source_table": "field_rep_v2", "_ingestion_run_id": "run-1", "_ingested_at": "2026-06-02T00:00:00+00:00"},
+            {"id": "1", "full_name": "V2", "_source_table": "field_rep_v2", "_ingestion_run_id": "run-2", "_ingested_at": "2026-06-03T00:00:00+00:00"},
+            {"id": "2", "full_name": "Old inactive V2", "_source_table": "field_rep_v2", "_ingestion_run_id": "run-1", "_ingested_at": "2026-06-02T00:00:00+00:00"},
+        ]
+
+        self.assertEqual(
+            sapa_bronze._active_source_rows(rows, "field_rep_v2", ["id"], {"1"}),
+            [
+                {"id": "1", "full_name": "V2 old", "_source_table": "field_rep_v2", "_ingestion_run_id": "run-1", "_ingested_at": "2026-06-02T00:00:00+00:00"},
+                {"id": "1", "full_name": "V2", "_source_table": "field_rep_v2", "_ingestion_run_id": "run-2", "_ingested_at": "2026-06-03T00:00:00+00:00"},
+            ],
+        )
+        self.assertEqual(sapa_bronze._active_source_rows(rows, "redflags_doctor", ["id"]), rows)
+
+    def test_pipeline_refuses_empty_required_v2_source_counts(self):
+        raw_mysql = {
+            "extracted_counts": {
+                "campaign_doctor": 10,
+                "campaign_doctorcampaignenrollment": 10,
+                "campaign_campaign": 1,
+                "campaign_brand": 1,
+                "campaign_fieldrep": 0,
+                "campaign_campaignfieldrep": 10,
+            }
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "campaign_fieldrep"):
+            sapa_pipeline._validate_required_v2_source_counts(raw_mysql)
+
+    def test_empty_v2_source_pull_does_not_replace_current_snapshot(self):
+        with patch("etl.sapa_growth.raw.ensure_raw_tables"), patch(
+            "etl.sapa_growth.raw.extract_rows",
+            return_value=[],
+        ), patch("etl.sapa_growth.raw.insert_new_source_rows", return_value=0), patch(
+            "etl.sapa_growth.raw.record_v2_current_snapshot"
+        ) as snapshot_mock, patch("etl.sapa_growth.raw.get_watermark", return_value=None), patch(
+            "etl.sapa_growth.raw.upsert_watermark"
+        ), patch("etl.sapa_growth.raw.log_step"):
+            sapa_raw.ingest_mysql_sources("run-1", "2026-06-03T00:00:00+00:00")
+
+        snapshot_mock.assert_not_called()
 
     def test_map_course_status(self):
         self.assertEqual(map_course_status("In Progress"), "Started")
@@ -239,7 +318,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
             "sapa_growth.services._latest_refresh",
             return_value={"as_of_date": "2026-04-27", "published_at": "2026-04-27T10:00:00Z"},
         ):
-            def fake_gold_rows(table: str):
+            def fake_gold_rows(table: str, scope=None):
                 if table == "rpt_screening_detail":
                     return [
                         {"submitted_at": "2026-04-27", "doctor_key": "DOC-1", "campaign_key": "growth-clinic"},
@@ -254,6 +333,148 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual([card["label"] for card in context["summary_cards"]], ["Last 24 Hours", "Last Week", "Last Month", "Cumulative"])
         self.assertEqual([card["count"] for card in context["summary_cards"]], [1, 2, 3, 4])
         self.assertEqual(context["route_base"], "/sapa-growth/campaign/growth-clinic/")
+
+    def test_campaign_rows_are_read_from_registered_campaign_schema(self):
+        with patch(
+            "sapa_growth.services._global_rows",
+            return_value=[
+                {
+                    "campaign_key": "camp-a",
+                    "campaign_id_normalized": "campa",
+                    "campaign_label": "Campaign A",
+                    "gold_schema_name": "gold_sapa_campaign_campa",
+                }
+            ],
+        ), patch("sapa_growth.services.table_exists", return_value=True), patch(
+            "sapa_growth.services.fetch_table",
+            return_value=[{"doctor_key": "doc-1", "campaign_key": "camp-a"}],
+        ) as fetch_table_mock:
+            rows = sapa_services._gold_rows("rpt_doctor_status_current", "camp-a")
+
+        self.assertEqual(rows, [{"doctor_key": "doc-1", "campaign_key": "camp-a"}])
+        fetch_table_mock.assert_called_once_with("gold_sapa_campaign_campa", "rpt_doctor_status_current")
+
+    def test_gold_publisher_splits_campaign_specific_schemas(self):
+        table_names = [
+            "refresh_status",
+            "dashboard_summary_snapshot",
+            "dashboard_summary_state_rep",
+            "rpt_doctor_status_current",
+            "rpt_doctor_status_history",
+            "rpt_screening_detail",
+            "rpt_followup_schedule_detail",
+            "rpt_reminder_sent_detail",
+            "rpt_webinar_registration_detail",
+            "rpt_course_detail",
+            "rpt_video_view_detail",
+            "rpt_submission_redflag_detail",
+            "rpt_course_summary",
+            "rpt_video_rankings",
+            "rpt_red_flag_rankings",
+            "rpt_condition_rankings",
+            "dim_filter_campaign",
+            "dim_filter_state",
+            "dim_filter_field_rep",
+            "dim_filter_doctor",
+            "dim_filter_city",
+        ]
+        rows_by_table = {
+            "dim_filter_campaign": [
+                {"underlying_key": "camp-a", "display_label": "Campaign A"},
+                {"underlying_key": "camp-b", "display_label": "Campaign B"},
+            ],
+            "rpt_doctor_status_current": [
+                {
+                    "doctor_key": "doc-a",
+                    "campaign_key": "camp-a",
+                    "campaign_label": "Campaign A",
+                    "doctor_display_name": "Doctor A",
+                    "city": "Mumbai",
+                    "state": "Maharashtra",
+                    "field_rep_id": "rep-a",
+                    "field_rep_name": "Rep A",
+                    "active_flag": "true",
+                    "inactive_flag": "false",
+                    "onboarding_flag": "true",
+                    "first_seen_at": "2026-04-01",
+                    "latest_seen_at": "2026-04-20",
+                },
+                {
+                    "doctor_key": "doc-b",
+                    "campaign_key": "camp-b",
+                    "campaign_label": "Campaign B",
+                    "doctor_display_name": "Doctor B",
+                    "city": "Pune",
+                    "state": "Maharashtra",
+                    "field_rep_id": "rep-b",
+                    "field_rep_name": "Rep B",
+                    "active_flag": "false",
+                    "inactive_flag": "true",
+                    "onboarding_flag": "true",
+                    "first_seen_at": "2026-04-02",
+                    "latest_seen_at": "2026-04-21",
+                },
+            ],
+            "rpt_doctor_status_history": [
+                {"doctor_key": "doc-a", "campaign_key": "camp-a", "as_of_date": "2026-04-20", "is_active": "true", "is_inactive": "false"},
+                {"doctor_key": "doc-b", "campaign_key": "camp-b", "as_of_date": "2026-04-20", "is_active": "false", "is_inactive": "true"},
+            ],
+            "rpt_screening_detail": [
+                {"submission_key": "sub-a", "doctor_key": "doc-a", "campaign_key": "camp-a", "submitted_at": "2026-04-20"},
+                {"submission_key": "sub-b", "doctor_key": "doc-b", "campaign_key": "camp-b", "submitted_at": "2026-04-20"},
+            ],
+        }
+        default_columns = {
+            "refresh_status": ["publish_id", "as_of_date", "published_at", "source_completeness_status", "stale_source_flags", "notes"],
+            "dashboard_summary_snapshot": ["as_of_date", "published_at"],
+            "dashboard_summary_state_rep": ["campaign_key", "campaign_label", "state", "field_rep_id"],
+            "rpt_followup_schedule_detail": ["campaign_key"],
+            "rpt_reminder_sent_detail": ["campaign_key"],
+            "rpt_webinar_registration_detail": ["campaign_key"],
+            "rpt_course_detail": ["campaign_key", "course_audience", "dashboard_status", "doctor_key"],
+            "rpt_video_view_detail": ["campaign_key", "audience"],
+            "rpt_submission_redflag_detail": ["campaign_key", "red_flag"],
+            "rpt_course_summary": ["as_of_date", "course_id", "course_audience"],
+            "rpt_video_rankings": ["audience", "content_identifier", "rank"],
+            "rpt_red_flag_rankings": ["red_flag", "rank"],
+            "rpt_condition_rankings": ["condition_name", "rank"],
+            "dim_filter_state": ["display_label", "underlying_key"],
+            "dim_filter_field_rep": ["display_label", "underlying_key"],
+            "dim_filter_doctor": ["display_label", "underlying_key"],
+            "dim_filter_city": ["display_label", "underlying_key"],
+        }
+        columns_by_table = {
+            table: list(rows_by_table[table][0].keys()) if rows_by_table.get(table) else default_columns.get(table, ["campaign_key"])
+            for table in table_names
+        }
+        replace_calls = []
+
+        cursor_context = MagicMock()
+        cursor_context.__enter__.return_value.fetchall.return_value = []
+        cursor_context.__exit__.return_value = False
+        connection_mock = MagicMock()
+        connection_mock.cursor.return_value = cursor_context
+
+        with patch("etl.sapa_growth.gold.fetch_table", side_effect=lambda _schema, table: rows_by_table.get(table, [])), patch(
+            "etl.sapa_growth.gold._table_columns", side_effect=lambda _schema, table: columns_by_table[table]
+        ), patch("etl.sapa_growth.gold.replace_table", side_effect=lambda schema, table, columns, rows: replace_calls.append((schema, table, columns, list(rows)))), patch(
+            "etl.sapa_growth.gold.ensure_schema"
+        ), patch("etl.sapa_growth.gold.connection", connection_mock):
+            schemas = sapa_gold._publish_campaign_schemas(
+                table_names=table_names,
+                run_id="run-1",
+                as_of_date=date(2026, 4, 20),
+                published_at="2026-04-20T10:00:00Z",
+                source_status="SUCCESS",
+                stale_source_flags="",
+                notes="",
+            )
+
+        self.assertEqual(schemas, ["gold_sapa_campaign_campa", "gold_sapa_campaign_campb"])
+        registry_call = next(call for call in replace_calls if call[0] == "gold_sapa_global" and call[1] == "campaign_registry")
+        self.assertEqual([row["campaign_key"] for row in registry_call[3]], ["camp-a", "camp-b"])
+        camp_a_doctor_call = next(call for call in replace_calls if call[0] == "gold_sapa_campaign_campa" and call[1] == "rpt_doctor_status_current")
+        self.assertEqual([row["doctor_key"] for row in camp_a_doctor_call[3]], ["doc-a"])
 
 
 class SapaGrowthRoutingTests(SimpleTestCase):
@@ -282,14 +503,23 @@ class SapaGrowthAccessViewTests(SimpleTestCase):
     def test_dashboard_redirects_to_login_when_unauthenticated(self):
         response = self.client.get("/sapa-growth/dashboard/")
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response["Location"], "/sapa-growth/login/")
+        self.assertEqual(response["Location"], "/sapa-growth/")
 
-    def test_login_page_renders(self):
+    def test_legacy_login_route_redirects_to_menu(self):
         with patch(
             "sapa_growth.views.campaign_options",
             return_value=[{"underlying_key": "growth-clinic", "display_label": "SAPA Growth Clinic Program"}],
         ):
             response = self.client.get("/sapa-growth/login/")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/sapa-growth/")
+
+    def test_campaign_login_page_renders(self):
+        with patch(
+            "sapa_growth.views.campaign_options",
+            return_value=[{"underlying_key": "growth-clinic", "display_label": "SAPA Growth Clinic Program"}],
+        ):
+            response = self.client.get("/sapa-growth/campaign/growth-clinic/login/")
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "SAPA Growth Clinic Program")
 
@@ -303,7 +533,20 @@ class SapaGrowthAccessViewTests(SimpleTestCase):
                 {"recipient_email": "team@example.com"},
             )
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response["Location"], "/sapa-growth/access/")
+        self.assertEqual(response["Location"], "/sapa-growth/")
+        send_email_mock.assert_not_called()
+
+    def test_campaign_send_access_email_route_redirects_and_calls_mailer(self):
+        with patch("sapa_growth.views.send_access_email") as send_email_mock, patch(
+            "sapa_growth.views.campaign_options",
+            return_value=[{"underlying_key": "growth-clinic", "display_label": "SAPA Growth Clinic Program"}],
+        ):
+            response = self.client.post(
+                "/sapa-growth/campaign/growth-clinic/send-access-email/",
+                {"recipient_email": "team@example.com"},
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/sapa-growth/campaign/growth-clinic/access/")
         send_email_mock.assert_called_once()
 
 

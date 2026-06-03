@@ -7,7 +7,7 @@ from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 
 import dashboard.views
-from etl.pipelines import bronze_transform, raw_ingestion, silver_transform
+from etl.pipelines import bronze_transform, raw_ingestion, silver_transform, v2_reporting
 from dashboard.internal_data_admin import (
     ColumnInfo,
     RAW_AUDIT_COLUMN_NAMES,
@@ -42,6 +42,13 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/campaign-performance/links/").view_name, "campaign-performance-links")
         self.assertEqual(resolve("/campaign-performance/demo/").view_name, "campaign-performance-page")
         self.assertEqual(resolve("/campaign/demo/performance/").view_name, "campaign-performance-page-legacy")
+        self.assertEqual(resolve("/campaign/demo/export/").view_name, "campaign-export")
+        self.assertEqual(resolve("/campaign/demo/export/field-rep-insights/").view_name, "campaign-field-rep-insights-export")
+        self.assertEqual(resolve("/campaign/demo/export/unmapped-doctors/").view_name, "campaign-unmapped-doctors-export")
+        self.assertEqual(
+            resolve("/campaign/demo/collateral/11/field-rep-insights/export/").view_name,
+            "campaign-field-rep-insights-collateral-export",
+        )
         self.assertEqual(resolve("/_internal/data-admin/").view_name, "internal-data-admin-home")
         self.assertEqual(resolve("/_internal/data-admin/login/").view_name, "internal-data-admin-login")
         self.assertEqual(resolve("/_internal/data-admin/cleanup/").view_name, "internal-data-admin-cleanup")
@@ -54,11 +61,13 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/_internal/data-admin/bronze/campaign_campaign/").view_name, "internal-data-admin-table")
         self.assertEqual(resolve("/_internal/data-admin/bronze/campaign_campaign/bulk-delete/").view_name, "internal-data-admin-bulk-delete")
 
+
     def test_internal_data_admin_schema_filter(self):
         self.assertTrue(_is_relevant_schema("bronze"))
         self.assertTrue(_is_relevant_schema("bronze_pe"))
         self.assertTrue(_is_relevant_schema("gold_campaign_cardio_2026_q1"))
         self.assertTrue(_is_relevant_schema("silver_sapa"))
+        self.assertTrue(_is_relevant_schema("archive"))
         self.assertFalse(_is_relevant_schema("public"))
         self.assertFalse(_is_relevant_schema("information_schema"))
 
@@ -68,6 +77,7 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(_system_key_for_schema("gold_sapa"), "sapa")
         self.assertEqual(_system_key_for_schema("raw_pe_portal"), "pe")
         self.assertEqual(_system_key_for_schema("control"), "shared")
+        self.assertEqual(_system_key_for_schema("archive"), "shared")
 
     def test_internal_data_admin_layer_mapping(self):
         self.assertEqual(_layer_key_for_schema("raw_server2"), "raw")
@@ -259,6 +269,60 @@ class DashboardRoutingTests(SimpleTestCase):
 
 
 class DashboardAccessViewTests(SimpleTestCase):
+    def _authenticated_campaign_session(self, campaign_id: str = "demo") -> None:
+        session = self.client.session
+        session[f"auth_{campaign_id}"] = True
+        session.save()
+        self.client.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
+
+    def _download_context(self) -> dict:
+        return {
+            "selected_campaign": "demo",
+            "selected_week": None,
+            "brand_name": "Demo Brand",
+            "brand_logo_text": "Demo",
+            "company_logo_url": None,
+            "collateral_name": "Current Collateral",
+            "schedule_text": "May 01, 2026 - May 31, 2026",
+            "week_of": "All Weeks",
+            "campaign_health": 45,
+            "weekly_health": 45,
+            "kpi_reached": 30,
+            "kpi_opened": 20,
+            "kpi_video": 12,
+            "kpi_pdf": 8,
+            "kpi_reached_pct": 25,
+            "kpi_opened_pct": 66.7,
+            "kpi_video_pct": 60,
+            "kpi_pdf_pct": 40,
+            "field_rep_summary": {
+                "total_reps": 1,
+                "total_doctors_assigned": 2,
+                "doctors_sent": 2,
+                "doctors_viewed": 1,
+                "doctors_video_played": 1,
+                "doctors_pdf_downloaded": 1,
+                "assignment_issue_count": 0,
+            },
+            "field_rep_insights": [
+                {
+                    "field_rep_id": "FR-101",
+                    "field_rep_name": "Asha Mehta",
+                    "total_doctors_assigned": 1,
+                    "doctors_sent": 2,
+                    "doctors_viewed": 1,
+                    "doctors_video_played": 1,
+                    "doctors_pdf_downloaded": 1,
+                    "assigned_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"}]',
+                    "sent_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"},{"name":"","phone":"8888888888","doctor_key":"doc-2"}]',
+                    "viewed_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"}]',
+                    "video_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"}]',
+                    "pdf_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"}]',
+                }
+            ],
+            "error_message": None,
+        }
+
     def test_engagement_health_uses_actual_campaign_denominator(self):
         score = dashboard.views._engagement_health_score(reached=5, opened=5, consumed=5, total_doctors=1000)
         self.assertAlmostEqual(score, 66.8, places=1)
@@ -284,9 +348,19 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("raw_assigned_reps AS", sql)
         self.assertIn("GROUP BY field_rep_id", sql)
         self.assertIn("auth_user_id_key", sql)
-        self.assertIn("share_rep_id_email_map AS", sql)
+        self.assertIn("silver.doctor_action_first_seen", sql)
+        self.assertIn("activity_period AS", sql)
+        self.assertIn("action_dates AS", sql)
+        self.assertIn("campaign_roster_matches AS", sql)
+        self.assertIn("silver.bridge_brand_campaign_doctor_base", sql)
+        self.assertIn("ark.key_type = 'campaign_fieldrep_id'", sql)
         self.assertIn("activity_key_candidates AS", sql)
+        self.assertIn("activity_candidate_matches AS", sql)
+        self.assertIn("unambiguous_activity_matches AS", sql)
+        self.assertIn("HAVING COUNT(DISTINCT m.field_rep_id) = 1", sql)
         self.assertIn("matched_activity AS", sql)
+        self.assertIn("unmatched_activity AS", sql)
+        self.assertIn("reporting_reps AS", sql)
         self.assertIn("assigned_doctor_rows AS", sql)
         self.assertIn("assigned_doctors_json", sql)
         self.assertIn("activity_doctor_rows AS", sql)
@@ -294,14 +368,114 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("viewed_doctors_json", sql)
         self.assertIn("video_doctors_json", sql)
         self.assertIn("pdf_doctors_json", sql)
-        self.assertIn("linked_share.field_rep_email", sql)
         self.assertIn("'email'::text AS key_type", sql)
         self.assertNotIn("canonical_activity_rep AS", sql)
-        self.assertIn("COALESCE(NULLIF(tx.doctor_phone_normalized, ''), tx.doctor_identity_key) AS doctor_key", sql)
-        self.assertIn("COALESCE(NULLIF(s.doctor_identifier_normalized, ''), s.doctor_identity_key) AS doctor_key", sql)
+        self.assertIn("COALESCE(NULLIF(a.doctor_identity_key, ''), a.brand_campaign_id || ':' || a.collateral_id) AS doctor_key", sql)
         self.assertIn("COUNT(*) FILTER (WHERE sent_flag = 1)", sql)
-        self.assertIn("lower(COALESCE(tx.pdf_completed", sql)
+        self.assertIn("video_gt_50_first_date", sql)
+        self.assertIn("pdf_download_first_date", sql)
+        self.assertIn("is_unmapped_activity", sql)
+        self.assertNotIn("share_rep_id_email_map AS", sql)
+        self.assertNotIn("linked_share.field_rep_email", sql)
+        self.assertIn("silver.fact_collateral_transaction tx", sql)
+        self.assertIn("silver.fact_share_log s", sql)
+        self.assertIn("rep_evidence", sql)
+        self.assertIn("field_rep_master_id_resolved", sql)
+        self.assertIn("lower(btrim(COALESCE(tx._dq_errors, ''))) NOT IN ('missing', 'conflict', 'ambiguous')", sql)
+        self.assertIn("s.field_rep_id::text", sql)
+        self.assertIn("AS master_rep_key", sql)
+        self.assertIn("''::text AS numeric_rep_key", sql)
+        self.assertIn("s.field_rep_id::text", sql)
+        self.assertNotIn("SELECT DISTINCT ON (src.activity_row_id)\n                ad.field_rep_id", sql)
+        self.assertNotIn("lower(COALESCE(tx.pdf_completed", sql)
         self.assertNotIn("tx.pdf_completed_flag", sql)
+        self.assertNotIn("COALESCE(tx.last_video_percentage_num, 0)", sql)
+        self.assertNotIn("COALESCE(tx.video_watch_percentage_num, 0)", sql)
+        self.assertNotIn("tx.last_video_percentage_num::numeric", sql)
+        self.assertNotIn("tx.video_watch_percentage_num::numeric", sql)
+
+    def test_field_rep_summary_keeps_unmapped_activity_out_of_rep_count(self):
+        summary = dashboard.views._format_field_rep_summary(
+            [
+                {"field_rep_id": "5763", "total_doctors_assigned": 2, "doctors_sent": 2},
+                {
+                    "field_rep_id": "UNMAPPED_ACTIVITY",
+                    "is_unmapped_activity": True,
+                    "total_doctors_assigned": 0,
+                    "doctors_sent": 1,
+                    "assignment_note": "No roster match",
+                },
+            ]
+        )
+
+        self.assertEqual(summary["total_reps"], 1)
+        self.assertEqual(summary["total_doctors_assigned"], 2)
+        self.assertEqual(summary["doctors_sent"], 3)
+
+    def test_field_rep_insights_export_downloads_server_workbook(self):
+        self._authenticated_campaign_session()
+
+        with patch(
+            "dashboard.views.build_report_access",
+            return_value=type("Access", (), {"session_key": "auth_demo"})(),
+        ), patch("dashboard.views._build_report_context", return_value=self._download_context()):
+            response = self.client.get("/campaign/demo/export/field-rep-insights/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("application/vnd.ms-excel", response["Content-Type"])
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertIn("field_rep_insights_demo_all_weeks_", response["Content-Disposition"])
+        workbook = response.content.decode("utf-8")
+        self.assertIn("Field Representative Summary", workbook)
+        self.assertIn("Doctor Details", workbook)
+        self.assertIn("FR-101", workbook)
+        self.assertIn("Dr Meera Rao", workbook)
+        self.assertIn("doc-1", workbook)
+
+    def test_unmapped_doctors_export_downloads_manual_mapping_workbook(self):
+        self._authenticated_campaign_session()
+
+        with patch(
+            "dashboard.views.build_report_access",
+            return_value=type("Access", (), {"session_key": "auth_demo"})(),
+        ), patch("dashboard.views._build_report_context", return_value=self._download_context()):
+            response = self.client.get("/campaign/demo/export/unmapped-doctors/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("application/vnd.ms-excel", response["Content-Type"])
+        workbook = response.content.decode("utf-8")
+        self.assertIn("Doctors Requiring Manual Mapping", workbook)
+        self.assertIn("Activity doctor is not in assigned roster for this rep", workbook)
+        self.assertIn("8888888888", workbook)
+
+    def test_campaign_pdf_export_downloads_server_pdf(self):
+        self._authenticated_campaign_session()
+
+        with patch(
+            "dashboard.views.build_report_access",
+            return_value=type("Access", (), {"session_key": "auth_demo"})(),
+        ), patch("dashboard.views._build_report_context", return_value=self._download_context()):
+            response = self.client.get("/campaign/demo/export/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertTrue(response.content.startswith(b"%PDF-1.4"))
+
+    def test_collateral_field_rep_export_downloads_server_workbook(self):
+        self._authenticated_campaign_session()
+        context = {**self._download_context(), "selected_collateral_id": "11"}
+
+        with patch(
+            "dashboard.views.build_report_access",
+            return_value=type("Access", (), {"session_key": "auth_demo"})(),
+        ), patch("dashboard.views._build_collateral_field_rep_context", return_value=context):
+            response = self.client.get("/campaign/demo/collateral/11/field-rep-insights/export/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("application/vnd.ms-excel", response["Content-Type"])
+        self.assertIn("field_rep_insights_collateral_demo_collateral_11_all_weeks_", response["Content-Disposition"])
+        self.assertIn("Dr Meera Rao", response.content.decode("utf-8"))
 
     def test_state_attention_uses_rep_aliases_and_effective_reach(self):
         latest_week = {"week_start_date": "2026-04-10", "week_end_date": "2026-04-16"}
@@ -783,16 +957,7 @@ class DashboardAccessViewTests(SimpleTestCase):
 
     def test_campaign_performance_link_rows_ignore_navigation_metadata_for_selected_systems(self):
         request = RequestFactory().get("/campaign-performance/links/")
-        cursor = MagicMock()
-        cursor.fetchone.side_effect = [("bronze.campaign_campaign",), ("silver.map_brand_campaign_to_campaign",)]
-        cursor_context = MagicMock()
-        cursor_context.__enter__.return_value = cursor
-        cursor_context.__exit__.return_value = False
-
-        fake_connection = MagicMock()
-        fake_connection.cursor.return_value = cursor_context
-
-        with patch.object(dashboard.views, "connection", fake_connection), patch(
+        with patch("dashboard.views._table_exists", side_effect=[False, True, False, False, False, False]), patch(
             "dashboard.views._fetch_dicts",
             return_value=[
                 {
@@ -803,7 +968,7 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "system_pe": False,
                     "system_entry_navigation": True,
                     "brand_manager_login_link": "",
-                    "brand_campaign_id": "",
+                    "source_priority": 10,
                 }
             ],
         ), patch(
@@ -813,6 +978,12 @@ class DashboardAccessViewTests(SimpleTestCase):
                 (),
                 {"brand_campaign_id": "brand-9", "pe_campaign_id": None},
             )(),
+        ), patch(
+            "dashboard.views._configured_system_keys",
+            return_value=["in_clinic"],
+        ), patch(
+            "dashboard.views._system_report_path",
+            return_value="/campaign/brand-9/",
         ):
             rows = dashboard.views._campaign_performance_link_rows(request)
 
@@ -1037,3 +1208,223 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "12")
         self.assertContains(response, "page-loading")
         self.assertNotContains(response, "Sent 12")
+
+
+class V2ReportingPreservationTests(SimpleTestCase):
+    def test_share_rep_resolution_trusts_source_id_when_email_conflicts(self):
+        source = {
+            "inclinic_field_rep_identity_v2": [
+                {
+                    "email_normalized": "rameshkumar.pharma@apexlab.com",
+                    "source_table": "auth_user",
+                    "source_column": "email",
+                    "campaign_fieldrep_id": "140",
+                    "is_current": "1",
+                },
+                {
+                    "email_normalized": "rameshkumar.pharma@apexlab.com",
+                    "source_table": "user_management_user",
+                    "source_column": "email",
+                    "campaign_fieldrep_id": "136",
+                    "is_current": "1",
+                },
+            ],
+            "campaign_field_rep_assignment_v2": [
+                {"legacy_campaign_id": "camp-1", "field_rep_id": "136", "is_current": "1"},
+                {"legacy_campaign_id": "camp-1", "field_rep_id": "138", "is_current": "1"},
+                {"legacy_campaign_id": "camp-1", "field_rep_id": "140", "is_current": "1"},
+            ],
+            "inclinic_campaign_field_rep_assignment_v2": [],
+        }
+        identities_by_email, assigned_reps_by_campaign = v2_reporting._share_email_resolution_context(source)
+        share = {
+            "campaign_fieldrep_id": "138",
+            "old_field_rep_id": "138",
+            "field_rep_email_normalized": "rameshkumar.pharma@apexlab.com",
+            "field_rep_email_matches_campaign_fieldrep": "0",
+        }
+
+        self.assertEqual(v2_reporting._resolve_share_rep_id(share, "camp-1", identities_by_email, assigned_reps_by_campaign), "138")
+
+    def test_share_rep_resolution_trusts_source_id_when_email_matches(self):
+        identities_by_email, assigned_reps_by_campaign = v2_reporting._share_email_resolution_context(
+            {"inclinic_field_rep_identity_v2": [], "campaign_field_rep_assignment_v2": [], "inclinic_campaign_field_rep_assignment_v2": []}
+        )
+        share = {
+            "campaign_fieldrep_id": "138",
+            "old_field_rep_id": "138",
+            "field_rep_email_normalized": "rakesh@example.com",
+            "field_rep_email_matches_campaign_fieldrep": "1",
+        }
+
+        self.assertEqual(
+            v2_reporting._resolve_share_rep_id(share, "camp-1", identities_by_email, assigned_reps_by_campaign),
+            "138",
+        )
+
+    def test_share_rep_resolution_keeps_source_id_when_email_conflict_is_unresolved(self):
+        identities_by_email, assigned_reps_by_campaign = v2_reporting._share_email_resolution_context(
+            {
+                "inclinic_field_rep_identity_v2": [],
+                "campaign_field_rep_assignment_v2": [{"legacy_campaign_id": "camp-1", "field_rep_id": "138", "is_current": "1"}],
+                "inclinic_campaign_field_rep_assignment_v2": [],
+            }
+        )
+        share = {
+            "campaign_fieldrep_id": "138",
+            "old_field_rep_id": "138",
+            "field_rep_email_normalized": "unknown@example.com",
+            "field_rep_email_matches_campaign_fieldrep": "0",
+        }
+
+        self.assertEqual(v2_reporting._resolve_share_rep_id(share, "camp-1", identities_by_email, assigned_reps_by_campaign), "138")
+
+    def test_preservation_ignores_run_metadata_only_changes(self):
+        columns = ["id", "transaction_identity_key", "doctor_name", "_silver_updated_at", "_as_of_run_id"]
+        existing = [
+            {
+                "id": "old-1",
+                "transaction_identity_key": "tx-key-1",
+                "doctor_name": "Dr A",
+                "_silver_updated_at": "2026-01-01T00:00:00+00:00",
+                "_as_of_run_id": "old-run",
+            }
+        ]
+        current = [
+            {
+                "id": "old-1",
+                "transaction_identity_key": "tx-key-1",
+                "doctor_name": "Dr A",
+                "_silver_updated_at": "2026-06-03T00:00:00+00:00",
+                "_as_of_run_id": "new-run",
+            }
+        ]
+
+        with (
+            patch.object(v2_reporting, "table_exists", return_value=True),
+            patch.object(v2_reporting, "fetch_table", return_value=existing),
+            patch.object(v2_reporting, "_ensure_preservation_archive_table") as ensure_archive,
+            patch.object(v2_reporting, "connection") as connection_mock,
+        ):
+            result = v2_reporting._archive_replaced_reporting_rows(
+                "silver",
+                "fact_collateral_transaction",
+                columns,
+                current,
+                run_id="new-run",
+                now="2026-06-03T00:00:00+00:00",
+            )
+
+        self.assertEqual(result, {"missing": 0, "changed": 0, "archived": 0})
+        ensure_archive.assert_not_called()
+        connection_mock.cursor.assert_not_called()
+
+    def test_preservation_archives_rows_missing_from_current_v2_source(self):
+        columns = ["id", "transaction_identity_key", "doctor_name", "_silver_updated_at"]
+        existing = [
+            {
+                "id": "old-1",
+                "transaction_identity_key": "tx-key-1",
+                "doctor_name": "Dr A",
+                "_silver_updated_at": "2026-01-01T00:00:00+00:00",
+            }
+        ]
+        cursor_context = MagicMock()
+        cursor = MagicMock()
+        cursor_context.__enter__.return_value = cursor
+
+        with (
+            patch.object(v2_reporting, "table_exists", return_value=True),
+            patch.object(v2_reporting, "fetch_table", return_value=existing),
+            patch.object(v2_reporting, "_ensure_preservation_archive_table") as ensure_archive,
+            patch.object(v2_reporting, "connection") as connection_mock,
+        ):
+            connection_mock.cursor.return_value = cursor_context
+            result = v2_reporting._archive_replaced_reporting_rows(
+                "silver",
+                "fact_collateral_transaction",
+                columns,
+                [],
+                run_id="new-run",
+                now="2026-06-03T00:00:00+00:00",
+            )
+
+        self.assertEqual(result, {"missing": 1, "changed": 0, "archived": 1})
+        ensure_archive.assert_called_once()
+        cursor.executemany.assert_called_once()
+        archived_values = cursor.executemany.call_args.args[1][0]
+        self.assertEqual(archived_values[0], "silver")
+        self.assertEqual(archived_values[1], "fact_collateral_transaction")
+        self.assertEqual(archived_values[5], "missing_from_current_v2_source")
+
+    def test_reporting_correction_rules_are_campaign_and_rep_scoped(self):
+        keep_rule = v2_reporting.ReportingCorrectionRule(
+            correction_id="rule-1",
+            rule_type=v2_reporting.RULE_KEEP_DOCTOR_WITH_REP,
+            system_name="inclinic",
+            campaign_id="camp-1",
+            doctor_phone="7086179396",
+            doctor_phone_normalized="7086179396",
+            doctor_name="SUMEET KR BAKALI",
+            field_rep_brand_supplied_id="",
+            expected_field_rep_brand_supplied_id="1451",
+            affected_field_rep_brand_supplied_ids="2731",
+            reason="brand correction",
+            created_by="test",
+        )
+        invalid_phone_rule = v2_reporting.ReportingCorrectionRule(
+            correction_id="rule-2",
+            rule_type=v2_reporting.RULE_EXCLUDE_INVALID_PHONE,
+            system_name="inclinic",
+            campaign_id="camp-1",
+            doctor_phone="964512884",
+            doctor_phone_normalized="964512884",
+            doctor_name="Dr.J Prakash",
+            field_rep_brand_supplied_id="10340",
+            expected_field_rep_brand_supplied_id="",
+            affected_field_rep_brand_supplied_ids="",
+            reason="invalid phone",
+            created_by="test",
+        )
+        brand_by_rep_id = {"174": "2731", "175": "1451", "100": "10340"}
+
+        wrong_duplicate_row = {
+            "legacy_campaign_id": "camp-1",
+            "campaign_fieldrep_id": "174",
+            "brand_supplied_field_rep_id": "2731",
+            "doctor_phone_normalized": "7086179396",
+            "doctor_name_raw": "SUMEET KR BAKALI",
+        }
+        expected_duplicate_row = {**wrong_duplicate_row, "campaign_fieldrep_id": "175", "brand_supplied_field_rep_id": "1451"}
+
+        self.assertTrue(v2_reporting._should_exclude_roster_row(wrong_duplicate_row, [keep_rule], brand_by_rep_id))
+        self.assertFalse(v2_reporting._should_exclude_roster_row(expected_duplicate_row, [keep_rule], brand_by_rep_id))
+        self.assertFalse(
+            v2_reporting._should_exclude_roster_row(
+                {**wrong_duplicate_row, "legacy_campaign_id": "other-camp"},
+                [keep_rule],
+                brand_by_rep_id,
+            )
+        )
+        self.assertTrue(
+            v2_reporting._should_exclude_activity_row(
+                campaign_id="camp-1",
+                rep_id="100",
+                brand_id="10340",
+                doctor_name="Dr.J Prakash",
+                phone_values=["964512884"],
+                rules=[invalid_phone_rule],
+                brand_by_rep_id=brand_by_rep_id,
+            )
+        )
+        self.assertFalse(
+            v2_reporting._should_exclude_activity_row(
+                campaign_id="camp-1",
+                rep_id="100",
+                brand_id="10340",
+                doctor_name="Dr.J Prakash",
+                phone_values=["9999999999"],
+                rules=[invalid_phone_rule],
+                brand_by_rep_id=brand_by_rep_id,
+            )
+        )

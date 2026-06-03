@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
+from urllib.parse import quote
 
 from django.db import connection
 
@@ -66,6 +67,9 @@ class CampaignReference:
     pe_schema: str | None = None
     pe_dim_campaign: dict[str, Any] | None = None
     campaign_config: CampaignConfig | None = None
+    rfa_campaign_key: str | None = None
+    rfa_campaign_name: str = ""
+    rfa_schema: str | None = None
 
 
 @dataclass(frozen=True)
@@ -221,6 +225,7 @@ def _campaign_identity(reference: CampaignReference) -> dict[str, Any]:
         (config.campaign_name if config else "")
         or reference.brand_campaign_name
         or reference.pe_campaign_name
+        or reference.rfa_campaign_name
         or reference.requested_id
     )
     return {
@@ -232,6 +237,7 @@ def _campaign_identity(reference: CampaignReference) -> dict[str, Any]:
             "brand_campaign_id": reference.brand_campaign_id,
             "resolved_campaign_id": reference.resolved_campaign_id or (config.campaign_id if config else None),
             "pe_campaign_id": reference.pe_campaign_id,
+            "rfa_campaign_key": reference.rfa_campaign_key,
         },
     }
 
@@ -243,6 +249,10 @@ def _system_report_path(system_key: str, reference: CampaignReference) -> str | 
     if system_key == "patient_education":
         pe_campaign_id = str(reference.pe_campaign_id or "").strip()
         return f"/pe-reports/campaign/{pe_campaign_id}/" if pe_campaign_id else None
+    if system_key == "rfa":
+        config = reference.campaign_config
+        rfa_campaign_key = str(reference.rfa_campaign_key or reference.resolved_campaign_id or (config.campaign_id if config else "")).strip()
+        return f"/sapa-growth/campaign/{quote(rfa_campaign_key)}/" if rfa_campaign_key else None
     return None
 
 
@@ -380,10 +390,11 @@ def _resolve_in_clinic_campaign(lookup_key: str) -> dict[str, Any]:
           OR cm.id::text = btrim(r.brand_campaign_id)
           OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
         WHERE {brand_norm} = %s
+           OR {_normalized_sql("m.campaign_id_resolved")} = %s
         GROUP BY r.brand_campaign_id, r.gold_schema_name, m.campaign_id_resolved
         LIMIT 1
     """
-    return _fetch_one(sql, [lookup_key])
+    return _fetch_one(sql, [lookup_key, lookup_key])
 
 
 def _resolve_pe_campaign(candidate_keys: list[str]) -> dict[str, Any]:
@@ -445,30 +456,144 @@ def _resolve_pe_dim_campaign(candidate_keys: list[str]) -> dict[str, Any]:
     return _fetch_one(sql, [*distinct_keys, *distinct_keys, primary, primary])
 
 
+def _resolve_rfa_campaign(candidate_keys: list[str]) -> dict[str, Any]:
+    if not candidate_keys:
+        return {}
+    distinct_keys = [key for key in dict.fromkeys(candidate_keys) if key]
+    placeholders = ", ".join(["%s"] * len(distinct_keys))
+    primary = distinct_keys[0]
+    if _table_exists("gold_sapa_global", "campaign_registry"):
+        sql = f"""
+            SELECT
+                campaign_key,
+                campaign_id_normalized,
+                campaign_label,
+                gold_schema_name
+            FROM gold_sapa_global.campaign_registry
+            WHERE {_normalized_sql("campaign_key")} IN ({placeholders})
+               OR {_normalized_sql("campaign_id_normalized")} IN ({placeholders})
+            ORDER BY
+                CASE
+                    WHEN {_normalized_sql("campaign_key")} = %s THEN 0
+                    WHEN {_normalized_sql("campaign_id_normalized")} = %s THEN 1
+                    ELSE 2
+                END,
+                campaign_label
+            LIMIT 1
+        """
+        row = _fetch_one(sql, [*distinct_keys, *distinct_keys, primary, primary])
+        if row:
+            return row
+
+    if _table_exists("raw_sapa_mysql", "campaign_campaign_raw"):
+        sql = f"""
+            SELECT
+                id::text AS campaign_key,
+                {_normalized_sql("id::text")} AS campaign_id_normalized,
+                COALESCE(NULLIF(btrim(name), ''), id::text) AS campaign_label,
+                NULL::text AS gold_schema_name
+            FROM raw_sapa_mysql.campaign_campaign_raw
+            WHERE {_normalized_sql("id::text")} IN ({placeholders})
+              AND lower(COALESCE(system_rfa, '')) IN ('1', 'true', 't', 'yes')
+            ORDER BY CASE WHEN {_normalized_sql("id::text")} = %s THEN 0 ELSE 1 END, name
+            LIMIT 1
+        """
+        row = _fetch_one(sql, [*distinct_keys, primary])
+        if row:
+            return row
+
+    if set(distinct_keys) & RFA_ALIAS_KEYS:
+        return {
+            "campaign_key": "growth-clinic",
+            "campaign_id_normalized": "growthclinic",
+            "campaign_label": "SAPA Growth Clinic Program",
+            "gold_schema_name": RFA_GOLD_SCHEMA,
+        }
+    return {}
+
+
 def _resolve_campaign_config(candidate_keys: list[str]) -> CampaignConfig | None:
-    if not candidate_keys or not _table_exists("bronze", "campaign_campaign"):
+    if not candidate_keys:
         return None
     distinct_keys = [key for key in dict.fromkeys(candidate_keys) if key]
     placeholders = ", ".join(["%s"] * len(distinct_keys))
     primary = distinct_keys[0]
-    sql = f"""
-        SELECT
-            id::text AS campaign_id,
-            name,
-            system_rfa,
-            system_pe,
-            system_ic,
-            banner_target_url,
-            doctor_recruitment_link,
-            add_to_campaign_message,
-            brand_manager_login_link,
-            brand_manager_email
-        FROM bronze.campaign_campaign
-        WHERE {_normalized_sql("id::text")} IN ({placeholders})
-        ORDER BY CASE WHEN {_normalized_sql("id::text")} = %s THEN 0 ELSE 1 END, name
-        LIMIT 1
-    """
-    row = _fetch_one(sql, [*distinct_keys, primary])
+    sources: list[tuple[str, str, dict[str, str]]] = []
+    if _table_exists("raw_sapa_mysql", "campaign_campaign_raw"):
+        sources.append(
+            (
+                "raw_sapa_mysql",
+                "campaign_campaign_raw",
+                {
+                    "system_rfa": "system_rfa",
+                    "system_ic": "system_ic",
+                    "system_pe": "system_pe",
+                    "banner_target_url": "''::text",
+                    "doctor_recruitment_link": "''::text",
+                    "add_to_campaign_message": "''::text",
+                    "brand_manager_login_link": "brand_manager_login_link",
+                    "brand_manager_email": "''::text",
+                },
+            )
+        )
+    if _table_exists("bronze", "campaign_campaign"):
+        sources.append(
+            (
+                "bronze",
+                "campaign_campaign",
+                {
+                    "system_rfa": "system_rfa",
+                    "system_ic": "system_ic",
+                    "system_pe": "system_pe",
+                    "banner_target_url": "banner_target_url",
+                    "doctor_recruitment_link": "doctor_recruitment_link",
+                    "add_to_campaign_message": "add_to_campaign_message",
+                    "brand_manager_login_link": "brand_manager_login_link",
+                    "brand_manager_email": "brand_manager_email",
+                },
+            )
+        )
+    if _table_exists("raw_pe_master", "campaign_campaign_raw"):
+        sources.append(
+            (
+                "raw_pe_master",
+                "campaign_campaign_raw",
+                {
+                    "system_rfa": "''::text",
+                    "system_ic": "''::text",
+                    "system_pe": "system_pe",
+                    "banner_target_url": "banner_target_url",
+                    "doctor_recruitment_link": "''::text",
+                    "add_to_campaign_message": "add_to_campaign_message",
+                    "brand_manager_login_link": "''::text",
+                    "brand_manager_email": "''::text",
+                },
+            )
+        )
+    row: dict[str, Any] = {}
+    for schema, table, expressions in sources:
+        safe_schema = _safe_identifier(schema)
+        safe_table = _safe_identifier(table)
+        sql = f"""
+            SELECT
+                id::text AS campaign_id,
+                name,
+                {expressions["system_rfa"]} AS system_rfa,
+                {expressions["system_pe"]} AS system_pe,
+                {expressions["system_ic"]} AS system_ic,
+                {expressions["banner_target_url"]} AS banner_target_url,
+                {expressions["doctor_recruitment_link"]} AS doctor_recruitment_link,
+                {expressions["add_to_campaign_message"]} AS add_to_campaign_message,
+                {expressions["brand_manager_login_link"]} AS brand_manager_login_link,
+                {expressions["brand_manager_email"]} AS brand_manager_email
+            FROM {safe_schema}.{safe_table}
+            WHERE {_normalized_sql("id::text")} IN ({placeholders})
+            ORDER BY CASE WHEN {_normalized_sql("id::text")} = %s THEN 0 ELSE 1 END, name
+            LIMIT 1
+        """
+        row = _fetch_one(sql, [*distinct_keys, primary])
+        if row:
+            break
     if not row:
         return None
     banner_target_url = str(row.get("banner_target_url") or "").strip()
@@ -521,8 +646,19 @@ def _resolve_campaign_reference(campaign_id: str) -> CampaignReference:
         )
     candidate_keys = [key for key in dict.fromkeys(candidate_keys) if key]
     pe_dim_campaign = _resolve_pe_dim_campaign(candidate_keys)
+    rfa_registry = _resolve_rfa_campaign(candidate_keys)
+    if rfa_registry:
+        candidate_keys.extend(
+            [
+                _normalize_lookup(rfa_registry.get("campaign_key")),
+                _normalize_lookup(rfa_registry.get("campaign_id_normalized")),
+            ]
+        )
+    candidate_keys = [key for key in dict.fromkeys(candidate_keys) if key]
+    if not campaign_config:
+        campaign_config = _resolve_campaign_config(candidate_keys)
 
-    if not in_clinic and not pe_registry and not campaign_config and lookup_key not in RFA_ALIAS_KEYS:
+    if not in_clinic and not pe_registry and not rfa_registry and not campaign_config and lookup_key not in RFA_ALIAS_KEYS:
         raise CampaignPerformanceNotFound(f"Campaign '{requested}' could not be resolved.")
 
     brand_name = str(in_clinic.get("brand_name") or "") or str((pe_registry or {}).get("brand_name") or "")
@@ -540,29 +676,31 @@ def _resolve_campaign_reference(campaign_id: str) -> CampaignReference:
         pe_schema=str((pe_registry or {}).get("gold_schema_name") or "") or None,
         pe_dim_campaign=pe_dim_campaign or None,
         campaign_config=campaign_config,
+        rfa_campaign_key=str((rfa_registry or {}).get("campaign_key") or "") or (campaign_config.campaign_id if campaign_config and campaign_config.system_rfa else None),
+        rfa_campaign_name=str((rfa_registry or {}).get("campaign_label") or ""),
+        rfa_schema=str((rfa_registry or {}).get("gold_schema_name") or "") or None,
     )
 
 
 def _configured_system_keys(reference: CampaignReference) -> list[str]:
     config = reference.campaign_config
+    keys: set[str] = set()
     if config is not None:
-        keys = []
         if config.system_rfa:
-            keys.append("rfa")
+            keys.add("rfa")
         if config.system_ic:
-            keys.append("in_clinic")
+            keys.add("in_clinic")
         if config.system_pe:
-            keys.append("patient_education")
-        return keys
-
-    inferred = []
+            keys.add("patient_education")
     if reference.lookup_key in RFA_ALIAS_KEYS:
-        inferred.append("rfa")
-    if reference.in_clinic_schema:
-        inferred.append("in_clinic")
-    if reference.pe_schema:
-        inferred.append("patient_education")
-    return inferred
+        keys.add("rfa")
+    if reference.rfa_campaign_key or reference.rfa_schema:
+        keys.add("rfa")
+    if reference.brand_campaign_id or reference.in_clinic_schema:
+        keys.add("in_clinic")
+    if reference.pe_campaign_id or reference.pe_schema:
+        keys.add("patient_education")
+    return [key for key in SYSTEM_ORDER if key in keys]
 
 
 def _base_meta(reference: CampaignReference) -> list[dict[str, str]]:
@@ -881,15 +1019,44 @@ def _in_clinic_summary_counts(reference: CampaignReference) -> dict[str, int]:
     )
     completion_counts = _fetch_one(
         """
+        WITH typed_tx AS (
+            SELECT
+                doctor_identity_key,
+                pdf_completed,
+                video_completed,
+                video_100_at_ts,
+                CASE
+                    WHEN btrim(pdf_last_page_num::text) ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    THEN pdf_last_page_num::numeric
+                    ELSE NULL
+                END AS pdf_last_page_num_value,
+                CASE
+                    WHEN btrim(pdf_total_pages_num::text) ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    THEN pdf_total_pages_num::numeric
+                    ELSE NULL
+                END AS pdf_total_pages_num_value,
+                CASE
+                    WHEN btrim(last_video_percentage_num::text) ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    THEN last_video_percentage_num::numeric
+                    ELSE NULL
+                END AS last_video_percentage_num_value,
+                CASE
+                    WHEN btrim(video_watch_percentage_num::text) ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                    THEN video_watch_percentage_num::numeric
+                    ELSE NULL
+                END AS video_watch_percentage_num_value
+            FROM silver.fact_collateral_transaction
+            WHERE brand_campaign_id = %s
+        )
         SELECT
             COUNT(DISTINCT tx.doctor_identity_key) FILTER (
                 WHERE (
                     COALESCE(NULLIF(btrim(tx.pdf_completed), ''), '0') = '1'
                     OR (
-                        tx.pdf_last_page_num IS NOT NULL
-                        AND tx.pdf_total_pages_num IS NOT NULL
-                        AND tx.pdf_total_pages_num::numeric > 0
-                        AND tx.pdf_last_page_num::numeric >= tx.pdf_total_pages_num::numeric
+                        tx.pdf_last_page_num_value IS NOT NULL
+                        AND tx.pdf_total_pages_num_value IS NOT NULL
+                        AND tx.pdf_total_pages_num_value > 0
+                        AND tx.pdf_last_page_num_value >= tx.pdf_total_pages_num_value
                     )
                 )
             ) AS pdf_reads,
@@ -897,12 +1064,11 @@ def _in_clinic_summary_counts(reference: CampaignReference) -> dict[str, int]:
                 WHERE (
                     COALESCE(NULLIF(btrim(tx.video_completed), ''), '0') = '1'
                     OR COALESCE(NULLIF(btrim(tx.video_100_at_ts), ''), '') <> ''
-                    OR COALESCE(tx.last_video_percentage_num::numeric, 0) >= 100
-                    OR COALESCE(tx.video_watch_percentage_num::numeric, 0) >= 100
+                    OR COALESCE(tx.last_video_percentage_num_value, 0) >= 100
+                    OR COALESCE(tx.video_watch_percentage_num_value, 0) >= 100
                 )
             ) AS video_completions
-        FROM silver.fact_collateral_transaction tx
-        WHERE tx.brand_campaign_id = %s
+        FROM typed_tx tx
     """,
         [reference.brand_campaign_id],
     )
@@ -1443,6 +1609,7 @@ def _rfa_candidate_campaign_ids(reference: CampaignReference) -> list[str]:
                 reference.requested_id,
                 reference.resolved_campaign_id,
                 reference.brand_campaign_id,
+                reference.rfa_campaign_key,
                 config.campaign_id if config else "",
             ]
         )
@@ -1452,8 +1619,14 @@ def _rfa_candidate_campaign_ids(reference: CampaignReference) -> list[str]:
 
 def _rfa_attribution_context(reference: CampaignReference) -> RfaAttributionContext:
     candidate_ids = _rfa_candidate_campaign_ids(reference)
-    if candidate_ids and _table_exists("bronze", "campaign_campaignfieldrep") and _table_exists("bronze", "campaign_fieldrep"):
+    assignment_schema = "raw_sapa_mysql" if _table_exists("raw_sapa_mysql", "campaign_campaignfieldrep_raw") else "bronze"
+    rep_schema = "raw_sapa_mysql" if _table_exists("raw_sapa_mysql", "campaign_fieldrep_raw") else "bronze"
+    assignment_table = "campaign_campaignfieldrep_raw" if assignment_schema == "raw_sapa_mysql" else "campaign_campaignfieldrep"
+    rep_table = "campaign_fieldrep_raw" if rep_schema == "raw_sapa_mysql" else "campaign_fieldrep"
+    if candidate_ids and _table_exists(assignment_schema, assignment_table) and _table_exists(rep_schema, rep_table):
         placeholders = ", ".join(["%s"] * len(candidate_ids))
+        safe_assignment_ref = f"{_safe_identifier(assignment_schema)}.{_safe_identifier(assignment_table)}"
+        safe_rep_ref = f"{_safe_identifier(rep_schema)}.{_safe_identifier(rep_table)}"
         rows = _fetch_rows(
             f"""
             SELECT DISTINCT
@@ -1465,8 +1638,8 @@ def _rfa_attribution_context(reference: CampaignReference) -> RfaAttributionCont
                     NULLIF(btrim(ccf.field_rep_id::text), '')
                 ) AS field_rep_name,
                 initcap(NULLIF(btrim(cfr.state), '')) AS state_normalized
-            FROM bronze.campaign_campaignfieldrep ccf
-            LEFT JOIN bronze.campaign_fieldrep cfr
+            FROM {safe_assignment_ref} ccf
+            LEFT JOIN {safe_rep_ref} cfr
               ON cfr.id::text = ccf.field_rep_id::text
             WHERE {_normalized_sql('ccf.campaign_id::text')} IN ({placeholders})
         """,
@@ -1919,8 +2092,10 @@ def build_campaign_performance_page_payload(campaign_id: str) -> dict[str, Any]:
         "patient_education": _build_patient_education_section,
     }
     system_sections = [_safe_page_system_section(key, reference, builders[key]) for key in SYSTEM_ORDER if key in configured_keys]
+    for section in system_sections:
+        section["system_report_path"] = _system_report_path(str(section.get("key") or ""), reference)
     adoption_section = _build_adoption_section(system_sections)
-    configured_systems = [{"key": section["key"], "label": section["label"]} for section in system_sections]
+    configured_systems = [{"key": section["key"], "label": section["label"], "system_report_path": section.get("system_report_path")} for section in system_sections]
     return {
         "campaign": _campaign_identity(reference),
         "system_count": len(configured_systems),

@@ -13,7 +13,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas as pdf_canvas
 
 from etl.sapa_growth.control import log_export
-from etl.sapa_growth.specs import GOLD_SCHEMA
+from etl.sapa_growth.specs import GOLD_GLOBAL_SCHEMA, GOLD_SCHEMA
 from etl.sapa_growth.storage import fetch_table, table_exists
 from sapa_growth.logic import clean_text, parse_date
 from sapa_growth.reporting import build_red_flag_rankings, build_video_rankings, compute_dashboard_metrics, course_status_counts, filter_rows
@@ -212,10 +212,42 @@ DETAIL_SPECS = {
 }
 
 
-def _gold_rows(table: str) -> list[dict[str, Any]]:
-    if not table_exists(GOLD_SCHEMA, table):
+def _scope_campaign_key(scope: Any = None) -> str:
+    if isinstance(scope, dict):
+        return clean_text(scope.get("campaign_key"))
+    return clean_text(scope)
+
+
+def _global_rows(table: str) -> list[dict[str, Any]]:
+    if not table_exists(GOLD_GLOBAL_SCHEMA, table):
         return []
-    return fetch_table(GOLD_SCHEMA, table)
+    return fetch_table(GOLD_GLOBAL_SCHEMA, table)
+
+
+def _campaign_registry_row(campaign_key: Any) -> dict[str, Any] | None:
+    key = clean_text(campaign_key)
+    if not key:
+        return None
+    normalized = "".join(ch.lower() for ch in key if ch.isalnum())
+    for row in _global_rows("campaign_registry"):
+        if clean_text(row.get("campaign_key")) == key:
+            return row
+        if clean_text(row.get("campaign_id_normalized")) == normalized:
+            return row
+    return None
+
+
+def _gold_rows(table: str, scope: Any = None) -> list[dict[str, Any]]:
+    campaign_key = _scope_campaign_key(scope)
+    if campaign_key:
+        registry = _campaign_registry_row(campaign_key)
+        schema = clean_text((registry or {}).get("gold_schema_name"))
+        if not schema or not table_exists(schema, table):
+            return []
+        return fetch_table(schema, table)
+    if table_exists(GOLD_SCHEMA, table):
+        return fetch_table(GOLD_SCHEMA, table)
+    return []
 
 
 def _supported_video_link(value: Any) -> str:
@@ -277,8 +309,8 @@ def _metric_href(metric: str, filters: dict[str, str | None]) -> str:
     return f"{base}details/{metric}/" + (f"?{query_string}" if query_string else "")
 
 
-def _latest_refresh() -> dict[str, Any] | None:
-    rows = _gold_rows("refresh_status")
+def _latest_refresh(scope: Any = None) -> dict[str, Any] | None:
+    rows = _gold_rows("refresh_status", scope) or _global_rows("refresh_status")
     if not rows:
         return None
     rows.sort(key=lambda row: row.get("published_at") or "", reverse=True)
@@ -571,13 +603,14 @@ def _course_cards(course_rows: list[dict[str, Any]], filters: dict[str, str | No
     return cards
 
 
-def filter_options() -> dict[str, list[dict[str, Any]]]:
+def filter_options(scope: Any = None) -> dict[str, list[dict[str, Any]]]:
+    campaign_key = _scope_campaign_key(scope)
     return {
-        "campaigns": _gold_rows("dim_filter_campaign") or [_default_campaign()],
-        "states": _gold_rows("dim_filter_state"),
-        "field_reps": _gold_rows("dim_filter_field_rep"),
-        "doctors": _gold_rows("dim_filter_doctor"),
-        "cities": _gold_rows("dim_filter_city"),
+        "campaigns": campaign_options(),
+        "states": _gold_rows("dim_filter_state", campaign_key),
+        "field_reps": _gold_rows("dim_filter_field_rep", campaign_key),
+        "doctors": _gold_rows("dim_filter_doctor", campaign_key),
+        "cities": _gold_rows("dim_filter_city", campaign_key),
     }
 
 
@@ -596,6 +629,17 @@ def _sorted_campaign_options(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def campaign_options() -> list[dict[str, Any]]:
+    registry_campaigns = _sorted_campaign_options(
+        [
+            {
+                "underlying_key": row.get("campaign_key"),
+                "display_label": row.get("campaign_label"),
+            }
+            for row in _global_rows("campaign_registry")
+        ]
+    )
+    if registry_campaigns:
+        return registry_campaigns
     campaigns = _sorted_campaign_options(_gold_rows("dim_filter_campaign"))
     if campaigns:
         return campaigns
@@ -605,14 +649,33 @@ def campaign_options() -> list[dict[str, Any]]:
     campaigns = _sorted_campaign_options(_gold_rows("rpt_doctor_status_current"))
     if campaigns:
         return campaigns
+    if table_exists("raw_sapa_mysql", "campaign_campaign_raw"):
+        master_campaigns = _sorted_campaign_options(
+            [
+                {
+                    "underlying_key": row.get("id"),
+                    "display_label": row.get("name"),
+                }
+                for row in fetch_table("raw_sapa_mysql", "campaign_campaign_raw")
+                if clean_text(row.get("system_rfa")).lower() in {"1", "true", "t", "yes"}
+                and clean_text(row.get("status")).lower() == "published"
+                and clean_text(row.get("id"))
+                and clean_text(row.get("name"))
+                and "test" not in clean_text(row.get("name")).lower()
+                and "dummy" not in clean_text(row.get("name")).lower()
+            ]
+        )
+        if master_campaigns:
+            return master_campaigns
     return [_default_campaign()]
 
 
 def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
-    refresh = _latest_refresh()
-    options = filter_options()
+    campaign_key = clean_text(filters.get("campaign_key"))
+    refresh = _latest_refresh(campaign_key)
+    options = filter_options(campaign_key)
     selected_campaign = next(
-        (option for option in options["campaigns"] if clean_text(option.get("underlying_key")) == clean_text(filters.get("campaign_key"))),
+        (option for option in options["campaigns"] if clean_text(option.get("underlying_key")) == campaign_key),
         None,
     )
     if refresh is None:
@@ -626,29 +689,31 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
         }
 
     summary = None
-    snapshot_rows = _gold_rows("dashboard_summary_snapshot")
+    snapshot_rows = _gold_rows("dashboard_summary_snapshot", campaign_key)
     if not any(filters.values()) and snapshot_rows:
         summary = _summary_from_row(snapshot_rows[0])
+    elif campaign_key and not any(value for key, value in filters.items() if key != "campaign_key") and snapshot_rows:
+        summary = _summary_from_row(snapshot_rows[0])
     elif not filters.get("doctor_key"):
-        helper_rows = _gold_rows("dashboard_summary_state_rep")
+        helper_rows = _gold_rows("dashboard_summary_state_rep", campaign_key)
         for row in helper_rows:
             if (
-                clean_text(row.get("campaign_key")) == clean_text(filters.get("campaign_key"))
+                clean_text(row.get("campaign_key")) == campaign_key
                 and clean_text(row.get("state")) == clean_text(filters.get("state"))
                 and clean_text(row.get("field_rep_id")) == clean_text(filters.get("field_rep_id"))
             ):
                 summary = _summary_from_row(row)
                 break
 
-    doctor_rows = _gold_rows("rpt_doctor_status_current")
-    doctor_history_rows = _gold_rows("rpt_doctor_status_history")
-    screening_rows = _gold_rows("rpt_screening_detail")
-    raw_redflag_rows = _gold_rows("rpt_submission_redflag_detail")
-    followup_rows = _gold_rows("rpt_followup_schedule_detail")
-    reminder_rows = _gold_rows("rpt_reminder_sent_detail")
-    webinar_rows = _gold_rows("rpt_webinar_registration_detail")
-    course_rows = _gold_rows("rpt_course_detail")
-    video_rows = _gold_rows("rpt_video_view_detail")
+    doctor_rows = _gold_rows("rpt_doctor_status_current", campaign_key)
+    doctor_history_rows = _gold_rows("rpt_doctor_status_history", campaign_key)
+    screening_rows = _gold_rows("rpt_screening_detail", campaign_key)
+    raw_redflag_rows = _gold_rows("rpt_submission_redflag_detail", campaign_key)
+    followup_rows = _gold_rows("rpt_followup_schedule_detail", campaign_key)
+    reminder_rows = _gold_rows("rpt_reminder_sent_detail", campaign_key)
+    webinar_rows = _gold_rows("rpt_webinar_registration_detail", campaign_key)
+    course_rows = _gold_rows("rpt_course_detail", campaign_key)
+    video_rows = _gold_rows("rpt_video_view_detail", campaign_key)
     certified_rows = _derived_certified_rows(filters, doctor_rows, course_rows)
 
     if summary is None:
@@ -703,12 +768,17 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
 
 
 def certified_context(global_filters: dict[str, str | None], local_filters: dict[str, str | None]) -> dict[str, Any]:
-    rows = _derived_certified_rows(local_filters, _gold_rows("rpt_doctor_status_current"), _gold_rows("rpt_course_detail"))
+    campaign_key = clean_text(local_filters.get("campaign_key") or global_filters.get("campaign_key"))
+    rows = _derived_certified_rows(
+        local_filters,
+        _gold_rows("rpt_doctor_status_current", campaign_key),
+        _gold_rows("rpt_course_detail", campaign_key),
+    )
     return {
         "supported": True,
         "rows": rows,
         "filters": local_filters,
-        "filter_options": filter_options(),
+        "filter_options": filter_options(campaign_key),
         "route_base": _campaign_route_base(global_filters),
         "export_query": current_filters_query(
             {
@@ -775,13 +845,13 @@ def _status_history_window_counts(
     predicate: Any,
     as_of: date,
 ) -> dict[str, int]:
-    rows = filter_rows(_gold_rows("rpt_doctor_status_history"), filters)
+    rows = filter_rows(_gold_rows("rpt_doctor_status_history", filters), filters)
     return _count_window(rows, date_field="as_of_date", as_of=as_of, unique_field="doctor_key", predicate=predicate)
 
 
 def _certified_window_counts(filters: dict[str, str | None], as_of: date) -> dict[str, int]:
-    history_rows = filter_rows(_gold_rows("rpt_doctor_status_history"), filters)
-    course_rows = filter_rows(_gold_rows("rpt_course_detail"), filters)
+    history_rows = filter_rows(_gold_rows("rpt_doctor_status_history", filters), filters)
+    course_rows = filter_rows(_gold_rows("rpt_course_detail", filters), filters)
     enrolled = set(_doctor_course_enrollments(course_rows).keys())
     return _count_window(
         history_rows,
@@ -817,10 +887,10 @@ def _base_rows_for_metric(metric: str, filters: dict[str, str | None]) -> tuple[
     spec = DETAIL_SPECS.get(metric)
     if spec is None:
         raise Http404("Unknown metric")
-    rows = filter_rows(_gold_rows(spec["table"]), filters)
+    rows = filter_rows(_gold_rows(spec["table"], filters), filters)
     if spec.get("predicate"):
         rows = [row for row in rows if spec["predicate"](row)]
-    refresh = _latest_refresh() or {}
+    refresh = _latest_refresh(filters) or {}
     return spec, rows, refresh
 
 
@@ -834,7 +904,11 @@ def _rows_for_metric(metric: str, filters: dict[str, str | None]) -> tuple[dict[
             if clean_text(row.get("audience")) == ("patient" if metric == "patient_videos" else "doctor")
         ]
     elif metric == "certified_clinics":
-        rows = _derived_certified_rows(filters, _gold_rows("rpt_doctor_status_current"), _gold_rows("rpt_course_detail"))
+        rows = _derived_certified_rows(
+            filters,
+            _gold_rows("rpt_doctor_status_current", filters),
+            _gold_rows("rpt_course_detail", filters),
+        )
     elif spec.get("weekly"):
         weekly_start = as_of - timedelta(days=6)
         date_field = spec.get("date_field")
@@ -927,7 +1001,7 @@ def export_dashboard_pdf(filters: dict[str, str | None], request: HttpRequest) -
     if not image_width or not image_height:
         return HttpResponseBadRequest("Invalid dashboard snapshot")
 
-    refresh = _latest_refresh() or {}
+    refresh = _latest_refresh(filters) or {}
     as_of_date = clean_text(refresh.get("as_of_date")) or date.today().isoformat()
     filename = f"sapa-growth-dashboard-{as_of_date}.pdf"
 

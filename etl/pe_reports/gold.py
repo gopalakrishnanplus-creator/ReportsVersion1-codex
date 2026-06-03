@@ -169,6 +169,10 @@ def _stringify_row(row: dict[str, Any]) -> dict[str, str]:
 
 def _replace_stage_table(schema: str, table: str, rows: list[dict[str, Any]], default_columns: list[str]) -> None:
     ensure_schema(schema)
+    if not rows:
+        with connection.cursor() as cursor:
+            cursor.execute(f"DROP TABLE IF EXISTS {qident(schema)}.{qident(f'{table}__stage')}")
+        return
     replace_table(schema, f"{table}__stage", list(rows[0].keys()) if rows else default_columns, [_stringify_row(row) for row in rows])
 
 
@@ -178,6 +182,7 @@ def _publish_schema_tables(schema: str, table_names: list[str]) -> None:
         for table in table_names:
             stage_table = f"{table}__stage"
             if not table_exists(schema, stage_table):
+                cursor.execute(f"DROP TABLE IF EXISTS {qident(schema)}.{qident(table)}")
                 continue
             backup_table = f"{table}__prev"
             cursor.execute(f"DROP TABLE IF EXISTS {qident(schema)}.{qident(backup_table)}")

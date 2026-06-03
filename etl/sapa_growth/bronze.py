@@ -5,6 +5,7 @@ from typing import Any
 
 from etl.sapa_growth.specs import API_TABLE_SPECS, BRONZE_SCHEMA, MYSQL_TABLE_SPECS, RAW_AUDIT_COLUMNS, RAW_API_SCHEMA, RAW_MYSQL_SCHEMA
 from etl.sapa_growth.storage import fetch_table, replace_table
+from etl.v2_snapshot import current_v2_snapshot_keys, snapshot_row_key
 from sapa_growth.logic import clean_text, hash_fields, parse_date, parse_datetime
 
 
@@ -54,10 +55,30 @@ def _dedup_rows(rows: list[dict[str, Any]], key_columns: list[str], watermark_fi
     return list(deduped.values())
 
 
+def _active_source_rows(
+    rows: list[dict[str, Any]],
+    source_table: str,
+    key_columns: list[str],
+    current_keys: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    if source_table.lower().endswith("_v2"):
+        v2_rows = [row for row in rows if clean_text(row.get("_source_table")) == source_table]
+        if current_keys is None:
+            return v2_rows
+        return [row for row in v2_rows if snapshot_row_key(row, key_columns) in current_keys]
+    return rows
+
+
 def build_bronze() -> dict[str, int]:
     counts: dict[str, int] = {}
     for name, spec in MYSQL_TABLE_SPECS.items():
         raw_rows = fetch_table(RAW_MYSQL_SCHEMA, spec.raw_table)
+        current_keys = (
+            current_v2_snapshot_keys(RAW_MYSQL_SCHEMA, spec.raw_table, spec.source_table)
+            if spec.source_table.lower().endswith("_v2")
+            else None
+        )
+        raw_rows = _active_source_rows(raw_rows, spec.source_table, spec.key_columns, current_keys)
         output_rows = _dedup_rows(raw_rows, spec.key_columns, spec.watermark_field, spec.columns, name)
         extra_columns = []
         if name in {"redflags_patientsubmission", "gnd_gndpatientsubmission"}:

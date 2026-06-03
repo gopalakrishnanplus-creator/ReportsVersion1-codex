@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Field Representative Insights</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260529v4">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260603v1">
 </head>
 <body>
   <div id="page-loading" class="page-loading hidden" aria-live="polite" aria-label="Loading page">
@@ -23,7 +23,13 @@
       </div>
       <div class="detail-actions">
         <a class="ghost-btn" href="{% url 'campaign-overview-specific' selected_campaign %}">Back to Dashboard</a>
-        <button type="button" id="field-rep-excel-btn" class="ghost-btn">Download Excel</button>
+        <a
+          id="field-rep-excel-btn"
+          class="ghost-btn"
+          href="{% url 'campaign-field-rep-insights-collateral-export' selected_campaign selected_collateral_id %}"
+          download
+          data-server-download="true"
+        >Download Excel</a>
       </div>
     </section>
 
@@ -53,6 +59,7 @@
             <tr>
               <th>Field Rep ID</th>
               <th>Field Representative</th>
+              <th>State</th>
               <th>Doctors Assigned</th>
               <th>Collateral Sent</th>
               <th>Viewed</th>
@@ -65,6 +72,7 @@
               <tr>
                 <td data-label="Field Rep ID">{{ rep.field_rep_id }}</td>
                 <td data-label="Field Representative">{{ rep.field_rep_name }}</td>
+                <td data-label="State">{{ rep.state_normalized|default:"UNKNOWN" }}</td>
                 <td data-label="Doctors Assigned">
                   <button
                     type="button"
@@ -127,7 +135,7 @@
                 </td>
               </tr>
             {% empty %}
-              <tr><td colspan="7">No field representative assignment data available for this collateral.</td></tr>
+              <tr><td colspan="8">No field representative assignment data available for this collateral.</td></tr>
             {% endfor %}
           </tbody>
         </table>
@@ -161,6 +169,6 @@
     </section>
   </main>
 
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260529v4"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260603v2"></script>
 </body>
 </html>

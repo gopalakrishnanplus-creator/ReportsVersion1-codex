@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from django.db import connection, transaction
 
-from etl.sapa_growth.specs import GOLD_SCHEMA, GOLD_STAGE_SCHEMA, SILVER_SCHEMA
+from etl.sapa_growth.specs import GOLD_GLOBAL_SCHEMA, GOLD_SCHEMA, GOLD_STAGE_SCHEMA, SILVER_SCHEMA
 from etl.sapa_growth.storage import ensure_schema, fetch_table, qident, replace_table
 from sapa_growth.logic import clean_text, location_label, parse_date
 from sapa_growth.reporting import build_red_flag_rankings, build_video_rankings, compute_dashboard_metrics, course_status_counts, filter_rows
@@ -18,6 +18,359 @@ def _now_iso() -> str:
 
 def _stringify_row(row: dict[str, Any]) -> dict[str, str]:
     return {key: "" if value is None else str(value) for key, value in row.items()}
+
+
+def _campaign_token(value: Any) -> str:
+    token = "".join(ch.lower() for ch in clean_text(value) if ch.isalnum())
+    return token or "unknown"
+
+
+def campaign_schema_name(campaign_key: Any) -> str:
+    return f"gold_sapa_campaign_{_campaign_token(campaign_key)}"
+
+
+def _table_columns(schema: str, table: str) -> list[str]:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            [schema, table],
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+
+def _copy_campaign_rows(rows: list[dict[str, Any]], source_campaign_key: str, route_campaign_key: str) -> list[dict[str, str]]:
+    output: list[dict[str, str]] = []
+    for row in rows:
+        if clean_text(row.get("campaign_key")) != source_campaign_key:
+            continue
+        item = dict(row)
+        if not clean_text(item.get("campaign_key")):
+            item["campaign_key"] = route_campaign_key
+        output.append(_stringify_row(item))
+    return output
+
+
+def _metric_doctor_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output = []
+    for row in rows:
+        item = dict(row)
+        item["is_user_created_doctor"] = clean_text(row.get("is_user_created_doctor")) or clean_text(row.get("onboarding_flag")) or "false"
+        output.append(item)
+    return output
+
+
+def _metric_status_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output = []
+    for row in rows:
+        item = dict(row)
+        item["is_active"] = clean_text(row.get("is_active")) or clean_text(row.get("active_flag")) or "false"
+        item["is_inactive"] = clean_text(row.get("is_inactive")) or clean_text(row.get("inactive_flag")) or "false"
+        output.append(item)
+    return output
+
+
+def _doctor_course_enrollments(course_rows: list[dict[str, Any]]) -> set[str]:
+    enrolled: set[str] = set()
+    for row in course_rows:
+        if clean_text(row.get("course_audience")) != "doctor":
+            continue
+        doctor_key = clean_text(row.get("doctor_key"))
+        if doctor_key:
+            enrolled.add(doctor_key)
+    return enrolled
+
+
+def _derived_certified_summary(
+    *,
+    as_of_date: date,
+    doctor_rows: list[dict[str, Any]],
+    doctor_history_rows: list[dict[str, Any]],
+    course_rows: list[dict[str, Any]],
+) -> dict[str, int | str]:
+    enrolled = _doctor_course_enrollments(course_rows)
+    previous_date = (as_of_date - timedelta(days=1)).isoformat()
+    current = {
+        clean_text(row.get("doctor_key"))
+        for row in doctor_rows
+        if row.get("active_flag") == "true" and clean_text(row.get("doctor_key")) in enrolled
+    }
+    previous = {
+        clean_text(row.get("doctor_key"))
+        for row in doctor_history_rows
+        if row.get("as_of_date") == previous_date and row.get("is_active") == "true" and clean_text(row.get("doctor_key")) in enrolled
+    }
+    cumulative = {
+        clean_text(row.get("doctor_key"))
+        for row in doctor_history_rows
+        if row.get("is_active") == "true" and clean_text(row.get("doctor_key")) in enrolled
+    }
+    return {
+        "certified_clinics_current": len(current - {""}),
+        "certified_clinics_previous": len(previous - {""}),
+        "certified_clinics_cumulative": len(cumulative - {""}),
+        "certified_clinics_supported": "true",
+    }
+
+
+def _summary_snapshot_row(
+    *,
+    as_of_date: date,
+    published_at: str,
+    doctor_rows: list[dict[str, Any]],
+    doctor_history_rows: list[dict[str, Any]],
+    screening_rows: list[dict[str, Any]],
+    followup_rows: list[dict[str, Any]],
+    reminder_rows: list[dict[str, Any]],
+    webinar_rows: list[dict[str, Any]],
+    course_rows: list[dict[str, Any]],
+) -> dict[str, str]:
+    summary = compute_dashboard_metrics(
+        as_of_date=as_of_date,
+        doctor_rows=_metric_doctor_rows(doctor_rows),
+        doctor_status_current_rows=_metric_status_rows(doctor_rows),
+        doctor_status_history_rows=doctor_history_rows,
+        certification_rows=[],
+        webinar_rows=webinar_rows,
+        screening_rows=screening_rows,
+        followup_rows=followup_rows,
+        reminder_rows=reminder_rows,
+        course_rows=course_rows,
+    )
+    summary.update(
+        _derived_certified_summary(
+            as_of_date=as_of_date,
+            doctor_rows=doctor_rows,
+            doctor_history_rows=doctor_history_rows,
+            course_rows=course_rows,
+        )
+    )
+    summary["published_at"] = published_at
+    summary["unsupported_condition_rankings"] = "true"
+    return _stringify_row(summary)
+
+
+def _course_summary_rows(as_of_date: date, course_rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for audience, counts in course_status_counts(course_rows).items():
+        total = counts["Total"] or 0
+        course_id = next((row.get("course_id") for row in course_rows if row.get("course_audience") == audience), "")
+        rows.append(
+            _stringify_row(
+                {
+                    "as_of_date": as_of_date.isoformat(),
+                    "course_id": course_id,
+                    "course_audience": audience,
+                    "started_count": counts["Started"],
+                    "completed_count": counts["Completed"],
+                    "pending_count": counts["Pending"],
+                    "total_enrolled": total,
+                    "completed_rate": round((counts["Completed"] / total) * 100, 2) if total else 0,
+                    "engaged_rate": round(((counts["Started"] + counts["Completed"]) / total) * 100, 2) if total else 0,
+                }
+            )
+        )
+    return rows
+
+
+def _campaign_filter_rows(route_campaign_key: str, campaign_label: str, doctor_rows: list[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
+    states = sorted({clean_text(row.get("state")) or "" for row in doctor_rows})
+    reps = sorted(
+        {
+            (
+                clean_text(row.get("field_rep_id")) or "Unassigned",
+                clean_text(row.get("field_rep_name")) or clean_text(row.get("field_rep_id")) or "Unassigned",
+            )
+            for row in doctor_rows
+        },
+        key=lambda item: (item[1].lower(), item[0].lower()),
+    )
+    doctors = sorted(doctor_rows, key=lambda row: (row.get("doctor_display_name") or "", row.get("doctor_key") or ""))
+    cities = sorted({clean_text(row.get("city")) or "" for row in doctor_rows})
+    return {
+        "dim_filter_campaign": [
+            _stringify_row(
+                {
+                    "display_label": campaign_label or route_campaign_key,
+                    "underlying_key": route_campaign_key,
+                    "sort_order": 1,
+                    "active_flag": "true",
+                    "unknown_flag": "true" if route_campaign_key == "unknown" else "false",
+                }
+            )
+        ],
+        "dim_filter_state": [
+            _stringify_row({"display_label": value or "Unknown", "underlying_key": value, "sort_order": index, "active_flag": "true", "unknown_flag": "true" if not value else "false"})
+            for index, value in enumerate(states, start=1)
+        ],
+        "dim_filter_field_rep": [
+            _stringify_row({"display_label": (label if label == value else f"{label} ({value})") or "Unassigned", "underlying_key": value, "sort_order": index, "active_flag": "true", "unknown_flag": "true" if not value else "false"})
+            for index, (value, label) in enumerate(reps, start=1)
+        ],
+        "dim_filter_doctor": [
+            _stringify_row({"display_label": row.get("doctor_display_name"), "underlying_key": row.get("doctor_key"), "sort_order": index, "active_flag": "true", "unknown_flag": "false"})
+            for index, row in enumerate(doctors, start=1)
+        ],
+        "dim_filter_city": [
+            _stringify_row({"display_label": value or "Unknown", "underlying_key": value, "sort_order": index, "active_flag": "true", "unknown_flag": "true" if not value else "false"})
+            for index, value in enumerate(cities, start=1)
+        ],
+    }
+
+
+def _publish_campaign_schemas(
+    *,
+    table_names: list[str],
+    run_id: str,
+    as_of_date: date,
+    published_at: str,
+    source_status: str,
+    stale_source_flags: str,
+    notes: str,
+) -> list[str]:
+    all_rows = {table: fetch_table(GOLD_SCHEMA, table) for table in table_names}
+    all_columns = {table: _table_columns(GOLD_SCHEMA, table) for table in table_names}
+    campaigns: dict[str, dict[str, str]] = {}
+    for row in all_rows.get("dim_filter_campaign", []):
+        source_key = clean_text(row.get("underlying_key") or row.get("campaign_key"))
+        route_key = source_key or "unknown"
+        campaigns[route_key] = {
+            "source_key": source_key,
+            "label": clean_text(row.get("display_label") or row.get("campaign_label")) or route_key,
+        }
+    for table_rows in all_rows.values():
+        for row in table_rows:
+            if "campaign_key" not in row:
+                continue
+            source_key = clean_text(row.get("campaign_key"))
+            route_key = source_key or "unknown"
+            campaigns.setdefault(
+                route_key,
+                {
+                    "source_key": source_key,
+                    "label": clean_text(row.get("campaign_label")) or route_key,
+                },
+            )
+
+    target_schemas = {campaign_schema_name(route_key) for route_key in campaigns}
+    ensure_schema(GOLD_GLOBAL_SCHEMA)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT schema_name
+            FROM information_schema.schemata
+            WHERE schema_name LIKE 'gold_sapa_campaign_%'
+            """
+        )
+        for (schema_name,) in cursor.fetchall():
+            if schema_name not in target_schemas:
+                cursor.execute(f"DROP SCHEMA IF EXISTS {qident(schema_name)} CASCADE")
+
+    registry_rows: list[dict[str, str]] = []
+    refresh_rows = [
+        _stringify_row(
+            {
+                "publish_id": run_id,
+                "as_of_date": as_of_date.isoformat(),
+                "published_at": published_at,
+                "source_completeness_status": source_status,
+                "stale_source_flags": stale_source_flags,
+                "notes": notes,
+            }
+        )
+    ]
+    campaign_schemas: list[str] = []
+
+    for route_key, campaign in sorted(campaigns.items(), key=lambda item: (item[1]["label"].lower(), item[0].lower())):
+        source_key = campaign["source_key"]
+        label = campaign["label"] or route_key
+        schema = campaign_schema_name(route_key)
+        campaign_schemas.append(schema)
+
+        campaign_tables: dict[str, list[dict[str, str]]] = {}
+        for table in table_names:
+            rows = all_rows.get(table, [])
+            columns = all_columns.get(table, [])
+            if "campaign_key" in columns:
+                campaign_tables[table] = _copy_campaign_rows(rows, source_key, route_key)
+            else:
+                campaign_tables[table] = []
+
+        doctor_rows = campaign_tables.get("rpt_doctor_status_current", [])
+        doctor_history_rows = campaign_tables.get("rpt_doctor_status_history", [])
+        screening_rows = campaign_tables.get("rpt_screening_detail", [])
+        followup_rows = campaign_tables.get("rpt_followup_schedule_detail", [])
+        reminder_rows = campaign_tables.get("rpt_reminder_sent_detail", [])
+        webinar_rows = campaign_tables.get("rpt_webinar_registration_detail", [])
+        course_rows = campaign_tables.get("rpt_course_detail", [])
+        video_rows = campaign_tables.get("rpt_video_view_detail", [])
+        redflag_rows = campaign_tables.get("rpt_submission_redflag_detail", [])
+
+        campaign_tables["refresh_status"] = refresh_rows
+        campaign_tables["dashboard_summary_snapshot"] = [
+            _summary_snapshot_row(
+                as_of_date=as_of_date,
+                published_at=published_at,
+                doctor_rows=doctor_rows,
+                doctor_history_rows=doctor_history_rows,
+                screening_rows=screening_rows,
+                followup_rows=followup_rows,
+                reminder_rows=reminder_rows,
+                webinar_rows=webinar_rows,
+                course_rows=course_rows,
+            )
+        ]
+        campaign_tables["dashboard_summary_state_rep"] = _copy_campaign_rows(all_rows.get("dashboard_summary_state_rep", []), source_key, route_key)
+        campaign_tables["rpt_course_summary"] = _course_summary_rows(as_of_date, course_rows)
+        campaign_tables["rpt_video_rankings"] = [_stringify_row(row) for row in build_video_rankings(video_rows)]
+        campaign_tables["rpt_red_flag_rankings"] = [_stringify_row(row) for row in build_red_flag_rankings(redflag_rows)]
+        campaign_tables["rpt_condition_rankings"] = []
+        campaign_tables.update(_campaign_filter_rows(route_key, label, doctor_rows))
+
+        for table in table_names:
+            rows = campaign_tables.get(table, [])
+            columns = all_columns.get(table, [])
+            if rows:
+                columns = list(rows[0].keys())
+                replace_table(schema, table, columns, rows)
+            else:
+                with connection.cursor() as cursor:
+                    cursor.execute(f"DROP TABLE IF EXISTS {qident(schema)}.{qident(table)}")
+
+        first_seen = min((clean_text(row.get("first_seen_at")) for row in doctor_rows if clean_text(row.get("first_seen_at"))), default=published_at)
+        last_seen = max((clean_text(row.get("latest_seen_at")) for row in doctor_rows if clean_text(row.get("latest_seen_at"))), default=published_at)
+        registry_rows.append(
+            _stringify_row(
+                {
+                    "campaign_key": route_key,
+                    "campaign_id_normalized": _campaign_token(route_key),
+                    "campaign_label": label,
+                    "gold_schema_name": schema,
+                    "first_seen_ts": first_seen,
+                    "last_seen_ts": last_seen,
+                    "_created_at": published_at,
+                    "_updated_at": published_at,
+                }
+            )
+        )
+
+    replace_table(
+        GOLD_GLOBAL_SCHEMA,
+        "campaign_registry",
+        ["campaign_key", "campaign_id_normalized", "campaign_label", "gold_schema_name", "first_seen_ts", "last_seen_ts", "_created_at", "_updated_at"],
+        registry_rows,
+    )
+    replace_table(
+        GOLD_GLOBAL_SCHEMA,
+        "refresh_status",
+        ["publish_id", "as_of_date", "published_at", "source_completeness_status", "stale_source_flags", "notes"],
+        refresh_rows,
+    )
+    return campaign_schemas
 
 
 def _doctor_campaign_map(doctor_rows: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
@@ -510,4 +863,13 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
         "dim_filter_city",
     ]
     _publish_stage_tables(table_names)
-    return {"as_of_date": as_of_date.isoformat(), "published_at": published_at, "tables": table_names}
+    campaign_schemas = _publish_campaign_schemas(
+        table_names=table_names,
+        run_id=run_id,
+        as_of_date=as_of_date,
+        published_at=published_at,
+        source_status=source_status,
+        stale_source_flags=stale_source_flags,
+        notes=notes,
+    )
+    return {"as_of_date": as_of_date.isoformat(), "published_at": published_at, "tables": table_names, "campaign_schemas": campaign_schemas}

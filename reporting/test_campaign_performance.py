@@ -10,6 +10,7 @@ from reporting.campaign_performance import (
     CampaignReference,
     RfaAttributionContext,
     _build_in_clinic_summary_section,
+    _in_clinic_summary_counts,
     _build_rfa_summary_section,
     _configured_system_keys,
     _query_schema_rows,
@@ -22,17 +23,20 @@ def _reference(config: CampaignConfig) -> CampaignReference:
     return CampaignReference(
         requested_id="camp-1",
         lookup_key="camp1",
-        brand_campaign_id="brand-1",
-        brand_campaign_name="Campaign One",
+        brand_campaign_id="brand-1" if config.system_ic else None,
+        brand_campaign_name="Campaign One" if config.system_ic else "",
         brand_name="Brand One",
-        in_clinic_schema="gold_campaign_one",
+        in_clinic_schema="gold_campaign_one" if config.system_ic else None,
         resolved_campaign_id="camp-1",
-        pe_campaign_id="camp-1",
-        pe_campaign_normalized="camp1",
-        pe_campaign_name="Campaign One",
-        pe_schema="gold_pe_campaign_one",
+        pe_campaign_id="camp-1" if config.system_pe else None,
+        pe_campaign_normalized="camp1" if config.system_pe else None,
+        pe_campaign_name="Campaign One" if config.system_pe else "",
+        pe_schema="gold_pe_campaign_one" if config.system_pe else None,
         pe_dim_campaign=None,
         campaign_config=config,
+        rfa_campaign_key="camp-1" if config.system_rfa else None,
+        rfa_campaign_name="Campaign One" if config.system_rfa else "",
+        rfa_schema="gold_sapa_campaign_camp1" if config.system_rfa else None,
     )
 
 
@@ -51,6 +55,35 @@ class CampaignPerformanceSelectionTests(SimpleTestCase):
         )
 
         self.assertEqual(_configured_system_keys(reference), ["in_clinic"])
+
+    def test_configured_system_keys_include_all_report_registry_matches(self):
+        reference = CampaignReference(
+            requested_id="camp-1",
+            lookup_key="camp1",
+            brand_campaign_id="brand-1",
+            brand_campaign_name="Campaign One",
+            brand_name="Brand One",
+            in_clinic_schema="gold_campaign_one",
+            resolved_campaign_id="camp-1",
+            pe_campaign_id="camp-1",
+            pe_campaign_normalized="camp1",
+            pe_campaign_name="Campaign One",
+            pe_schema="gold_pe_campaign_one",
+            pe_dim_campaign=None,
+            campaign_config=CampaignConfig(
+                campaign_id="camp-1",
+                campaign_name="Campaign One",
+                system_rfa=False,
+                system_ic=True,
+                system_pe=False,
+                has_entry_navigation=False,
+            ),
+            rfa_campaign_key="camp-1",
+            rfa_campaign_name="Campaign One",
+            rfa_schema="gold_sapa_campaign_camp1",
+        )
+
+        self.assertEqual(_configured_system_keys(reference), ["rfa", "in_clinic", "patient_education"])
 
     @patch(
         "reporting.campaign_performance._build_in_clinic_summary_section",
@@ -114,6 +147,41 @@ class CampaignPerformanceSelectionTests(SimpleTestCase):
 
         self.assertEqual(section["system_report_path"], "/campaign/brand-1/")
         self.assertEqual(adoption_row["label"], "In Clinic")
+
+    @patch(
+        "reporting.campaign_performance._fetch_one",
+        side_effect=[
+            {
+                "shares": 0,
+                "link_opens": 0,
+                "video_views": 0,
+                "pdf_downloads": 0,
+                "clinics_added": 0,
+                "active_records": 0,
+                "clinics_with_activity": 0,
+            },
+            {"pdf_reads": 0, "video_completions": 0},
+        ],
+    )
+    def test_in_clinic_summary_counts_guard_text_numeric_casts(self, fetch_one_mock):
+        _in_clinic_summary_counts(
+            _reference(
+                CampaignConfig(
+                    campaign_id="camp-1",
+                    campaign_name="Campaign One",
+                    system_rfa=False,
+                    system_ic=True,
+                    system_pe=False,
+                    has_entry_navigation=False,
+                )
+            )
+        )
+
+        completion_sql = fetch_one_mock.call_args_list[1].args[0]
+        self.assertIn("WITH typed_tx AS", completion_sql)
+        self.assertIn("pdf_last_page_num::numeric", completion_sql)
+        self.assertIn("last_video_percentage_num::numeric", completion_sql)
+        self.assertNotIn("COALESCE(tx.last_video_percentage_num::numeric, 0)", completion_sql)
 
     @patch(
         "reporting.campaign_performance._build_in_clinic_section",

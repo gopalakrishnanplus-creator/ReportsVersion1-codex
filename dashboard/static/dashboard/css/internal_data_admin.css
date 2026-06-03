@@ -368,6 +368,21 @@ code {
   gap: 12px;
 }
 
+.ida-field-wide {
+  grid-column: 1 / -1;
+}
+
+.ida-sample-block {
+  margin: 10px 0 14px;
+  padding: 12px;
+  border: 1px solid var(--ida-line);
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #24344d;
+  overflow: auto;
+  white-space: pre;
+}
+
 .ida-field small {
   color: var(--ida-muted);
   font-weight: 600;

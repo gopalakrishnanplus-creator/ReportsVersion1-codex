@@ -55,7 +55,7 @@ class SourceTableSpec:
 
 PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
     "sharing_doctorsharesummary": SourceTableSpec(
-        source_table="sharing_doctorsharesummary",
+        source_table="pe_doctor_share_summary_v2",
         raw_table="sharing_doctorsharesummary_raw",
         bronze_table="sharing_doctorsharesummary",
         columns=[
@@ -72,7 +72,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="updated_at",
     ),
     "sharing_shareactivity": SourceTableSpec(
-        source_table="sharing_shareactivity",
+        source_table="pe_share_event_v2",
         raw_table="sharing_shareactivity_raw",
         bronze_table="sharing_shareactivity",
         columns=[
@@ -96,7 +96,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="shared_at",
     ),
     "sharing_shareplaybackevent": SourceTableSpec(
-        source_table="sharing_shareplaybackevent",
+        source_table="pe_playback_event_v2",
         raw_table="sharing_shareplaybackevent_raw",
         bronze_table="sharing_shareplaybackevent",
         columns=[
@@ -116,7 +116,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="occurred_at",
     ),
     "sharing_sharebannerclickevent": SourceTableSpec(
-        source_table="sharing_sharebannerclickevent",
+        source_table="pe_banner_click_event_v2",
         raw_table="sharing_sharebannerclickevent_raw",
         bronze_table="sharing_sharebannerclickevent",
         columns=[
@@ -133,7 +133,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="clicked_at",
     ),
     "publisher_campaign": SourceTableSpec(
-        source_table="publisher_campaign",
+        source_table="pe_campaign_v2",
         raw_table="publisher_campaign_raw",
         bronze_table="publisher_campaign",
         columns=[
@@ -288,7 +288,7 @@ MASTER_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="created_at",
     ),
     "campaign_doctor": SourceTableSpec(
-        source_table="campaign_doctor",
+        source_table="doctor_v2",
         raw_table="campaign_doctor_raw",
         bronze_table="campaign_doctor",
         columns=["id", "doctor_id", "full_name", "email", "phone", "city", "state", "created_at"],
@@ -296,7 +296,7 @@ MASTER_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="created_at",
     ),
     "campaign_doctorcampaignenrollment": SourceTableSpec(
-        source_table="campaign_doctorcampaignenrollment",
+        source_table="doctor_campaign_enrollment_v2",
         raw_table="campaign_doctorcampaignenrollment_raw",
         bronze_table="campaign_doctorcampaignenrollment",
         columns=[
@@ -313,7 +313,7 @@ MASTER_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="registered_at",
     ),
     "campaign_campaign": SourceTableSpec(
-        source_table="campaign_campaign",
+        source_table="campaign_v2",
         raw_table="campaign_campaign_raw",
         bronze_table="campaign_campaign",
         columns=[
@@ -335,14 +335,14 @@ MASTER_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="created_at",
     ),
     "campaign_brand": SourceTableSpec(
-        source_table="campaign_brand",
+        source_table="brand_v2",
         raw_table="campaign_brand_raw",
         bronze_table="campaign_brand",
         columns=["id", "name"],
         key_columns=["id"],
     ),
     "campaign_fieldrep": SourceTableSpec(
-        source_table="campaign_fieldrep",
+        source_table="field_rep_v2",
         raw_table="campaign_fieldrep_raw",
         bronze_table="campaign_fieldrep",
         columns=[
@@ -359,7 +359,7 @@ MASTER_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="updated_at",
     ),
     "campaign_campaignfieldrep": SourceTableSpec(
-        source_table="campaign_campaignfieldrep",
+        source_table="campaign_field_rep_assignment_v2",
         raw_table="campaign_campaignfieldrep_raw",
         bronze_table="campaign_campaignfieldrep",
         columns=["id", "campaign_id", "field_rep_id"],

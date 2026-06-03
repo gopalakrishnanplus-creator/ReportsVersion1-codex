@@ -1,3 +1,4 @@
+import os
 import re
 from etl.connectors.postgres import execute, fetchall
 
@@ -49,6 +50,29 @@ def build_gold(run_id: str) -> None:
         WHERE _dq_status = 'PASS' AND COALESCE(brand_campaign_id,'') <> ''
         """
     )
+    target_schemas = {normalize_schema_name(row["brand_campaign_id"]) for row in campaigns}
+    if os.environ.get("INCLINIC_REPORTING_PRUNE_GOLD_SCHEMAS", "").strip().lower() in {"1", "true", "yes"}:
+        existing_schemas = fetchall(
+            """
+            SELECT schema_name
+            FROM information_schema.schemata
+            WHERE schema_name LIKE 'gold_campaign_%'
+            """
+        )
+        for schema_row in existing_schemas:
+            schema_name = schema_row["schema_name"]
+            if schema_name not in target_schemas:
+                execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE;')
+        if target_schemas:
+            execute(
+                """
+                DELETE FROM gold_global.campaign_registry
+                WHERE gold_schema_name <> ALL(%s)
+                """,
+                [list(target_schemas)],
+            )
+        else:
+            execute("DELETE FROM gold_global.campaign_registry;")
 
     for row in campaigns:
         brand_campaign_id = row["brand_campaign_id"]
@@ -167,8 +191,18 @@ def build_gold(run_id: str) -> None:
             ),
             schedule_source AS (
                 SELECT
-                    MIN(schedule_start_date) AS schedule_start_date,
-                    MAX(schedule_end_date) AS schedule_end_date
+                    MIN(
+                        CASE
+                            WHEN schedule_start_date IS NULL OR btrim(schedule_start_date::text) = '' OR lower(btrim(schedule_start_date::text)) = 'null' THEN NULL
+                            ELSE schedule_start_date::date
+                        END
+                    ) AS schedule_start_date,
+                    MAX(
+                        CASE
+                            WHEN schedule_end_date IS NULL OR btrim(schedule_end_date::text) = '' OR lower(btrim(schedule_end_date::text)) = 'null' THEN NULL
+                            ELSE schedule_end_date::date
+                        END
+                    ) AS schedule_end_date
                 FROM silver.bridge_campaign_collateral_schedule
                 WHERE campaign_id_resolved::text = NULLIF(btrim(%s), '')
             ),
@@ -251,8 +285,6 @@ def build_gold(run_id: str) -> None:
             """,
             [brand_campaign_id, row["campaign_id_resolved"], brand_campaign_id],
         )
-
-        execute(f"CREATE TABLE IF NOT EXISTS {schema}.weekly_action_items AS SELECT * FROM {schema}.kpi_weekly_summary WHERE false;")
 
         execute(
             f"""

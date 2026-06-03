@@ -8,6 +8,7 @@ RAW_API_SCHEMA = "raw_sapa_api"
 BRONZE_SCHEMA = "bronze_sapa"
 SILVER_SCHEMA = "silver_sapa"
 GOLD_SCHEMA = "gold_sapa"
+GOLD_GLOBAL_SCHEMA = "gold_sapa_global"
 GOLD_STAGE_SCHEMA = "gold_sapa_stage"
 
 RAW_AUDIT_COLUMNS = [
@@ -36,7 +37,7 @@ class SourceTableSpec:
 
 MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
     "campaign_doctor": SourceTableSpec(
-        source_table="campaign_doctor",
+        source_table="doctor_v2",
         raw_table="campaign_doctor_raw",
         columns=[
             "id",
@@ -57,7 +58,7 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="created_at",
     ),
     "campaign_doctorcampaignenrollment": SourceTableSpec(
-        source_table="campaign_doctorcampaignenrollment",
+        source_table="doctor_campaign_enrollment_v2",
         raw_table="campaign_doctorcampaignenrollment_raw",
         columns=[
             "campaign_id",
@@ -73,7 +74,7 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="registered_at",
     ),
     "campaign_campaign": SourceTableSpec(
-        source_table="campaign_campaign",
+        source_table="campaign_v2",
         raw_table="campaign_campaign_raw",
         columns=[
             "id",
@@ -94,13 +95,13 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="updated_at",
     ),
     "campaign_brand": SourceTableSpec(
-        source_table="campaign_brand",
+        source_table="brand_v2",
         raw_table="campaign_brand_raw",
         columns=["id", "name"],
         key_columns=["id"],
     ),
     "campaign_fieldrep": SourceTableSpec(
-        source_table="campaign_fieldrep",
+        source_table="field_rep_v2",
         raw_table="campaign_fieldrep_raw",
         columns=[
             "id",
@@ -118,7 +119,7 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="updated_at",
     ),
     "campaign_campaignfieldrep": SourceTableSpec(
-        source_table="campaign_campaignfieldrep",
+        source_table="campaign_field_rep_assignment_v2",
         raw_table="campaign_campaignfieldrep_raw",
         columns=["id", "field_rep_id", "created_at", "campaign_id"],
         key_columns=["id"],

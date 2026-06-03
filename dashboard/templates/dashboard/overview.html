@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>In-Clinic Sharing Dashboard</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260529v4">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260603v1">
 </head>
 <body>
   <div id="page-loading" class="page-loading hidden" aria-live="polite" aria-label="Loading page">
@@ -34,7 +34,11 @@
         <p class="schedule">{{ schedule_text }}</p>
         <p class="footnote">Week 1 starts on the collateral schedule start date; each week is 7 days.</p>
       </div>
-      <button type="button" id="download-pdf-btn" class="download-btn">Download PDF</button>
+      <button
+        type="button"
+        id="download-pdf-btn"
+        class="download-btn"
+      >Download PDF</button>
     </section>
 
     <section class="card controls-card">
@@ -161,13 +165,26 @@
         <div class="panel-title-row">
           <div>
             <h3 id="field-rep-modal-title">Field Representative Insights</h3>
-            <p class="subtext">Doctors Assigned is campaign-roster based. Engagement columns come from share and collateral transaction logs.</p>
+            <p class="subtext">Doctors Assigned is campaign-roster based. Engagement columns use the same doctor action metrics as the top cards.</p>
             {% if field_rep_summary.assignment_issue_count %}
-              <p class="data-warning">{{ field_rep_summary.assignment_issue_count }} rep{{ field_rep_summary.assignment_issue_count|pluralize }} have engagement that does not fully match the campaign doctor roster.</p>
+              <p class="data-warning">{{ field_rep_summary.assignment_issue_count }} field-rep mapping issue{{ field_rep_summary.assignment_issue_count|pluralize }} found.</p>
             {% endif %}
           </div>
           <div class="field-rep-panel-actions">
-            <button type="button" id="field-rep-excel-btn" class="ghost-btn">Download Excel</button>
+            <a
+              id="field-rep-excel-btn"
+              class="ghost-btn"
+              href="{% url 'campaign-field-rep-insights-export' selected_campaign %}{% if selected_week %}?week={{ selected_week }}{% endif %}"
+              download
+              data-server-download="true"
+            >Download Excel</a>
+            <a
+              id="unmapped-doctors-excel-btn"
+              class="ghost-btn"
+              href="{% url 'campaign-unmapped-doctors-export' selected_campaign %}{% if selected_week %}?week={{ selected_week }}{% endif %}"
+              download
+              data-server-download="true"
+            >Download Unmapped Doctors</a>
             <button type="button" id="old-collaterals-btn" class="ghost-btn">Old Collaterals</button>
             <button type="button" id="field-rep-close" class="ghost-btn">Hide Insights</button>
           </div>
@@ -178,6 +195,7 @@
               <tr>
                 <th>Field Rep ID</th>
                 <th>Field Representative</th>
+                <th>State</th>
                 <th>Doctors Assigned</th>
                 <th>Collateral Sent</th>
                 <th>Viewed</th>
@@ -190,6 +208,7 @@
                 <tr>
                   <td>{{ rep.field_rep_id }}</td>
                   <td>{{ rep.field_rep_name }}</td>
+                  <td>{{ rep.state_normalized|default:"UNKNOWN" }}</td>
                   <td>
                     <button
                       type="button"
@@ -252,7 +271,7 @@
                   </td>
                 </tr>
               {% empty %}
-                <tr><td colspan="7">No field representative assignment data available.</td></tr>
+                <tr><td colspan="8">No field representative assignment data available.</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -365,8 +384,8 @@
   {{ reached_pct_series|json_script:"trend-reached" }}
   {{ pdf_pct_series|json_script:"trend-pdf" }}
   {{ video_pct_series|json_script:"trend-video" }}
-  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260529v4"></script>
+  <script src="{% static 'sapa_growth/vendor/html2canvas.min.js' %}?v=20260603v2"></script>
+  <script src="{% static 'sapa_growth/vendor/jspdf.umd.min.js' %}?v=20260603v2"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260603v2"></script>
 </body>
 </html>
