@@ -17,7 +17,6 @@ REQUIRED_V2_PORTAL_TABLES = (
     "catalog_video",
     "catalog_videocluster",
     "catalog_videoclustervideo",
-    "pe_rep_assignment_credit",
 )
 
 REQUIRED_V2_MASTER_TABLES = (

@@ -52,6 +52,7 @@ class SourceTableSpec:
     watermark_field: str | None = None
     lookback_days: int = 30
     source_filters: dict[str, str] | None = None
+    fallback_source_table: str | None = None
 
 
 PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
@@ -158,6 +159,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["campaign_id"],
         watermark_field="updated_at",
+        fallback_source_table="publisher_campaign",
     ),
     "catalog_therapyarea": SourceTableSpec(
         source_table="pe_content_item_v2",
@@ -166,6 +168,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         columns=["id", "code", "display_name", "description", "sort_order", "is_active", "content_type"],
         key_columns=["id"],
         source_filters={"content_type": "therapy_area"},
+        fallback_source_table="catalog_therapyarea",
     ),
     "catalog_triggercluster": SourceTableSpec(
         source_table="pe_content_item_v2",
@@ -174,6 +177,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         columns=["id", "code", "display_name", "description", "language_code", "is_active", "sort_order", "content_type"],
         key_columns=["id"],
         source_filters={"content_type": "trigger_cluster"},
+        fallback_source_table="catalog_triggercluster",
     ),
     "catalog_trigger": SourceTableSpec(
         source_table="pe_content_item_v2",
@@ -195,6 +199,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         source_filters={"content_type": "trigger"},
+        fallback_source_table="catalog_trigger",
     ),
     "catalog_video": SourceTableSpec(
         source_table="pe_content_item_v2",
@@ -218,6 +223,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         key_columns=["id"],
         watermark_field="updated_at",
         source_filters={"content_type": "video"},
+        fallback_source_table="catalog_video",
     ),
     "catalog_videolanguage": SourceTableSpec(
         source_table="pe_content_item_v2",
@@ -226,6 +232,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         columns=["id", "video_id", "language_code", "title", "youtube_url", "content_type"],
         key_columns=["id"],
         source_filters={"content_type": "video_language"},
+        fallback_source_table="catalog_videolanguage",
     ),
     "catalog_videocluster": SourceTableSpec(
         source_table="pe_content_item_v2",
@@ -248,6 +255,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         key_columns=["id"],
         watermark_field="updated_at",
         source_filters={"content_type": "video_cluster"},
+        fallback_source_table="catalog_videocluster",
     ),
     "catalog_videoclusterlanguage": SourceTableSpec(
         source_table="pe_content_item_v2",
@@ -256,6 +264,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         columns=["id", "video_cluster_id", "language_code", "name", "content_type"],
         key_columns=["id"],
         source_filters={"content_type": "cluster_language"},
+        fallback_source_table="catalog_videoclusterlanguage",
     ),
     "catalog_videoclustervideo": SourceTableSpec(
         source_table="pe_content_item_v2",
@@ -264,6 +273,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         columns=["id", "video_cluster_id", "video_id", "sort_order", "content_type"],
         key_columns=["id"],
         source_filters={"content_type": "video_cluster_video"},
+        fallback_source_table="catalog_videoclustervideo",
     ),
     "catalog_videotriggermap": SourceTableSpec(
         source_table="pe_content_item_v2",
@@ -272,6 +282,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         columns=["id", "video_id", "trigger_id", "is_primary", "sort_order", "content_type"],
         key_columns=["id"],
         source_filters={"content_type": "video_trigger_map"},
+        fallback_source_table="catalog_videotriggermap",
     ),
     "pe_rep_assignment_credit": SourceTableSpec(
         source_table="pe_rep_assignment_credit_v2",
