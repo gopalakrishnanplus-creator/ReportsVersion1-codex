@@ -87,17 +87,32 @@
         <p class="caption">Performance for {{ week_of }}</p>
       </article>
 
-      <article id="state_panel" class="card side-panel" data-state-url="{{ state_attention_url|escape }}">
+      <article id="state_panel" class="card side-panel">
         <div class="panel-title-row">
           <h3>States Requiring Attention</h3>
-          <a
-            id="state-view-all"
-            href="{% url 'campaign-state-list' selected_campaign %}{% if selected_week %}?week={{ selected_week }}{% endif %}"
-            class="link-button hidden"
-          >View All</a>
+          {% if state_attention|length > 3 %}
+          <a href="{% url 'campaign-state-list' selected_campaign %}{% if selected_week %}?week={{ selected_week }}{% endif %}" class="link-button">View All</a>
+          {% endif %}
         </div>
         <div id="state-list" class="state-list">
-          <p class="subtext">Loading state data...</p>
+        {% with card_states=state_attention_card|default:state_attention %}
+        {% for s in card_states %}
+          <div class="state-row">
+            <div>
+              <strong>{{ s.state }}</strong>
+              <p>Health: {{ s.health_score }}%</p>
+              <p>Open: {{ s.open_pct }}%</p>
+            </div>
+            <div class="state-right">
+              <span class="badge {{ s.label|lower }}">{{ s.label }}</span>
+              <p>Reached: {{ s.reached_pct }}%</p>
+              <p>Consumed: {{ s.consumed_pct }}%</p>
+            </div>
+          </div>
+        {% empty %}
+          <p class="subtext">No state data available.</p>
+        {% endfor %}
+        {% endwith %}
         </div>
       </article>
 
@@ -386,6 +401,6 @@
   {{ video_pct_series|json_script:"trend-video" }}
   <script src="{% static 'sapa_growth/vendor/html2canvas.min.js' %}?v=20260603v2"></script>
   <script src="{% static 'sapa_growth/vendor/jspdf.umd.min.js' %}?v=20260603v2"></script>
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260604v2"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260604v1"></script>
 </body>
 </html>

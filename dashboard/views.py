@@ -23,20 +23,14 @@ from reporting.campaign_performance import CampaignPerformanceNotFound, _configu
 UNMAPPED_ACTIVITY_FIELD_REP_ID = "__unmapped_activity__"
 
 
-def _fetch_dicts(sql: str, params=None, query_timeout_ms: int | None = None):
+def _fetch_dicts(sql: str, params=None):
     with connection.cursor() as cursor:
-        if query_timeout_ms:
-            cursor.execute("SET statement_timeout = %s", [int(query_timeout_ms)])
-        try:
-            if params is None:
-                cursor.execute(sql)
-            else:
-                cursor.execute(sql, params)
-            cols = [c[0] for c in cursor.description]
-            return [dict(zip(cols, row)) for row in cursor.fetchall()]
-        finally:
-            if query_timeout_ms:
-                cursor.execute("SET statement_timeout = 0")
+        if params is None:
+            cursor.execute(sql)
+        else:
+            cursor.execute(sql, params)
+        cols = [c[0] for c in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -2413,7 +2407,6 @@ def _state_attention_source_rows(
             latest_week.get("week_start_date"),
             latest_week.get("week_end_date"),
         ],
-        query_timeout_ms=12000,
     )
 
 
@@ -2547,14 +2540,6 @@ def _field_rep_detail_url(campaign_id: str, week_filter: int | None = None, coll
         params["week"] = str(week_filter)
     if collateral_id:
         params["collateral_id"] = str(collateral_id)
-    return f"{url}?{urlencode(params)}" if params else url
-
-
-def _state_attention_url(campaign_id: str, week_filter: int | None = None) -> str:
-    url = reverse("campaign-state-attention-summary", kwargs={"brand_campaign_id": campaign_id})
-    params = {}
-    if week_filter:
-        params["week"] = str(week_filter)
     return f"{url}?{urlencode(params)}" if params else url
 
 
@@ -3523,7 +3508,6 @@ def _build_report_context(
     selected_campaign: str,
     week_filter: int | None = None,
     include_field_rep_doctor_details: bool = True,
-    include_state_attention: bool = True,
 ) -> dict[str, Any]:
     selected_schema = None
     all_weekly_rows: list[dict[str, Any]] = []
@@ -3817,20 +3801,18 @@ def _build_report_context(
                 else 0.0
             )
 
-            state_rows = []
-            if include_state_attention:
-                bridge_base_exists = _table_exists("silver", "bridge_brand_campaign_doctor_base")
-                try:
-                    state_rows = _state_attention_source_rows(
-                        requested_campaign,
-                        brand_campaign_variants,
-                        selected_schema,
-                        latest_week,
-                        bridge_base_exists,
-                        current_collateral_ids,
-                    )
-                except (ProgrammingError, OperationalError):
-                    state_rows = []
+            bridge_base_exists = _table_exists("silver", "bridge_brand_campaign_doctor_base")
+            try:
+                state_rows = _state_attention_source_rows(
+                    requested_campaign,
+                    brand_campaign_variants,
+                    selected_schema,
+                    latest_week,
+                    bridge_base_exists,
+                    current_collateral_ids,
+                )
+            except (ProgrammingError, OperationalError):
+                state_rows = []
 
             state_buckets: dict[str, dict[str, float]] = {}
             for row in state_rows:
@@ -4108,7 +4090,6 @@ def _build_report_context(
         "collateral_name": collateral_name,
         "state_attention": state_attention,
         "state_attention_card": state_attention_card,
-        "state_attention_url": _state_attention_url(selected_campaign, week_filter),
         "action_panel": action_panel,
         "field_rep_insights": field_rep_insights,
         "field_rep_summary": field_rep_summary,
@@ -4216,12 +4197,7 @@ def campaign_overview(request: HttpRequest, brand_campaign_id: str | None = None
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
 
-    context = _build_report_context(
-        normalized_campaign_id,
-        week_filter,
-        include_field_rep_doctor_details=False,
-        include_state_attention=False,
-    )
+    context = _build_report_context(normalized_campaign_id, week_filter, include_field_rep_doctor_details=False)
     return render(request, "dashboard/overview.html", context)
 
 
@@ -4246,35 +4222,9 @@ def field_rep_doctor_details(request: HttpRequest, brand_campaign_id: str):
             normalized_campaign_id,
             week_filter,
             include_field_rep_doctor_details=True,
-            include_state_attention=False,
         )
     payload, status = _field_rep_doctor_detail_payload(context, rep_id, metric_key)
     return JsonResponse(payload, status=status)
-
-
-def campaign_state_attention_summary(request: HttpRequest, brand_campaign_id: str):
-    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
-    if not _has_inclinic_campaign_access(request, normalized_campaign_id):
-        return JsonResponse({"error": "Authentication required."}, status=403)
-
-    week = request.GET.get("week")
-    week_filter = _to_int(week) if week else None
-    context = _build_report_context(
-        normalized_campaign_id,
-        week_filter,
-        include_field_rep_doctor_details=False,
-        include_state_attention=True,
-    )
-    return JsonResponse(
-        {
-            "state_attention": context.get("state_attention") or [],
-            "state_attention_card": context.get("state_attention_card") or [],
-            "state_count": len(context.get("state_attention") or []),
-            "state_list_url": reverse("campaign-state-list", kwargs={"brand_campaign_id": normalized_campaign_id})
-            + (f"?{urlencode({'week': str(week_filter)})}" if week_filter else ""),
-            "error_message": context.get("error_message") or "",
-        }
-    )
 
 
 def export_report(request: HttpRequest, brand_campaign_id: str):
@@ -4284,12 +4234,7 @@ def export_report(request: HttpRequest, brand_campaign_id: str):
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(
-        normalized_campaign_id,
-        week_filter,
-        include_field_rep_doctor_details=False,
-        include_state_attention=False,
-    )
+    context = _build_report_context(normalized_campaign_id, week_filter, include_field_rep_doctor_details=False)
     filename = _export_filename("in_clinic_report", context, "pdf")
     title = f"In-Clinic Sharing Report - {context.get('brand_name') or normalized_campaign_id}"
     return _pdf_response(filename, title, _campaign_pdf_lines(context))
@@ -4302,12 +4247,7 @@ def export_field_rep_insights(request: HttpRequest, brand_campaign_id: str):
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(
-        normalized_campaign_id,
-        week_filter,
-        include_field_rep_doctor_details=True,
-        include_state_attention=False,
-    )
+    context = _build_report_context(normalized_campaign_id, week_filter)
     return _field_rep_insights_excel_response(context)
 
 
@@ -4318,12 +4258,7 @@ def export_unmapped_doctors(request: HttpRequest, brand_campaign_id: str):
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(
-        normalized_campaign_id,
-        week_filter,
-        include_field_rep_doctor_details=True,
-        include_state_attention=False,
-    )
+    context = _build_report_context(normalized_campaign_id, week_filter)
     return _manual_mapping_excel_response(context)
 
 
@@ -4358,10 +4293,5 @@ def campaign_state_list(request: HttpRequest, brand_campaign_id: str):
         return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(
-        normalized_campaign_id,
-        week_filter,
-        include_field_rep_doctor_details=False,
-        include_state_attention=True,
-    )
+    context = _build_report_context(normalized_campaign_id, week_filter, include_field_rep_doctor_details=False)
     return render(request, "dashboard/state_list.html", context)
