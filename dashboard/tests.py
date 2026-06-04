@@ -42,7 +42,6 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/campaign-performance/links/").view_name, "campaign-performance-links")
         self.assertEqual(resolve("/campaign-performance/demo/").view_name, "campaign-performance-page")
         self.assertEqual(resolve("/campaign/demo/performance/").view_name, "campaign-performance-page-legacy")
-        self.assertEqual(resolve("/campaign/demo/states/summary/").view_name, "campaign-state-attention-summary")
         self.assertEqual(resolve("/campaign/demo/export/").view_name, "campaign-export")
         self.assertEqual(resolve("/campaign/demo/export/field-rep-insights/").view_name, "campaign-field-rep-insights-export")
         self.assertEqual(resolve("/campaign/demo/export/unmapped-doctors/").view_name, "campaign-unmapped-doctors-export")
@@ -452,37 +451,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(payload["doctor_count"], 2)
         self.assertEqual(payload["doctors"][0]["name"], "Dr Meera Rao")
         self.assertEqual(payload["doctors"][0]["phone"], "9999999999")
-        context_mock.assert_called_once_with("demo", None, include_field_rep_doctor_details=True, include_state_attention=False)
-
-    def test_state_attention_summary_returns_card_rows(self):
-        self._authenticated_campaign_session()
-        context = {
-            "state_attention": [
-                {"state": "Maharashtra", "open_pct": 30, "reached_pct": 40, "consumed_pct": 20, "health_score": 35, "label": "Medium"},
-                {"state": "Delhi", "open_pct": 10, "reached_pct": 20, "consumed_pct": 5, "health_score": 12, "label": "Low"},
-                {"state": "Gujarat", "open_pct": 20, "reached_pct": 25, "consumed_pct": 10, "health_score": 22, "label": "Low"},
-                {"state": "Karnataka", "open_pct": 40, "reached_pct": 50, "consumed_pct": 30, "health_score": 45, "label": "Medium"},
-            ],
-            "state_attention_card": [
-                {"state": "Delhi", "open_pct": 10, "reached_pct": 20, "consumed_pct": 5, "health_score": 12, "label": "Low"},
-                {"state": "Gujarat", "open_pct": 20, "reached_pct": 25, "consumed_pct": 10, "health_score": 22, "label": "Low"},
-                {"state": "Maharashtra", "open_pct": 30, "reached_pct": 40, "consumed_pct": 20, "health_score": 35, "label": "Medium"},
-            ],
-            "error_message": "",
-        }
-
-        with patch(
-            "dashboard.views.build_report_access",
-            return_value=type("Access", (), {"session_key": "auth_demo"})(),
-        ), patch("dashboard.views._build_report_context", return_value=context) as context_mock:
-            response = self.client.get("/campaign/demo/states/summary/")
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload["state_count"], 4)
-        self.assertEqual(payload["state_attention_card"][0]["state"], "Delhi")
-        self.assertEqual(payload["state_list_url"], "/campaign/demo/states/")
-        context_mock.assert_called_once_with("demo", None, include_field_rep_doctor_details=False, include_state_attention=True)
+        context_mock.assert_called_once_with("demo", None, include_field_rep_doctor_details=True)
 
     def test_unmapped_doctors_export_downloads_manual_mapping_workbook(self):
         self._authenticated_campaign_session()
