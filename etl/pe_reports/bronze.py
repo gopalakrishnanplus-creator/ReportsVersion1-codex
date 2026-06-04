@@ -51,9 +51,10 @@ def _dedup_rows(rows: list[dict[str, Any]], spec: SourceTableSpec) -> list[dict[
 def _active_source_rows(rows: list[dict[str, Any]], spec: SourceTableSpec, current_keys: set[str] | None = None) -> list[dict[str, Any]]:
     if spec.source_table.lower().endswith("_v2"):
         v2_rows = [row for row in rows if clean_text(row.get("_source_table")) == spec.source_table]
-        if current_keys is None:
-            return v2_rows
-        return [row for row in v2_rows if snapshot_row_key(row, spec.key_columns) in current_keys]
+        active_v2_rows = v2_rows if current_keys is None else [row for row in v2_rows if snapshot_row_key(row, spec.key_columns) in current_keys]
+        if active_v2_rows or not spec.fallback_source_table:
+            return active_v2_rows
+        return [row for row in rows if clean_text(row.get("_source_table")) == spec.fallback_source_table]
     return rows
 
 

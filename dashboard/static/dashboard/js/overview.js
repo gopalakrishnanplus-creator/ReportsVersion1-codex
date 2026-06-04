@@ -503,30 +503,68 @@
     `).join('');
   }
 
+  async function fetchDoctorPayload(button) {
+    const detailUrl = button?.dataset?.detailUrl || '';
+    const repId = button?.dataset?.repId || '';
+    const metricKey = button?.dataset?.metricKey || 'assigned';
+    if (!detailUrl || !repId) {
+      return parseDoctorPayload(button);
+    }
+    const url = new URL(detailUrl, window.location.origin);
+    url.searchParams.set('rep_id', repId);
+    url.searchParams.set('metric', metricKey);
+    const response = await fetch(url.toString(), { credentials: 'same-origin' });
+    if (!response.ok) {
+      throw new Error(`Doctor details failed with status ${response.status}`);
+    }
+    const payload = await response.json();
+    return Array.isArray(payload?.doctors) ? payload.doctors : [];
+  }
+
   document.querySelectorAll('.doctor-count-btn').forEach((button) => {
-    button.addEventListener('click', (event) => {
+    button.addEventListener('click', async (event) => {
       event.stopPropagation();
-      let doctors = [];
-      try {
-        doctors = JSON.parse(button.dataset.doctors || '[]');
-      } catch (error) {
-        doctors = [];
-      }
       const repName = button.dataset.repName || button.dataset.repId || 'Field Representative';
       const metricLabel = button.dataset.metricLabel || 'Assigned Doctors';
       if (doctorRosterTitle) {
         doctorRosterTitle.textContent = `${metricLabel} - ${repName}`;
       }
       if (doctorRosterSubtitle) {
-        doctorRosterSubtitle.textContent = `${doctors.length} unique doctor${doctors.length === 1 ? '' : 's'} for ${metricLabel}.`;
+        doctorRosterSubtitle.textContent = 'Loading doctor details...';
       }
       if (doctorRosterNameHeader) {
         doctorRosterNameHeader.classList.remove('hidden');
       }
       if (doctorRosterBody) {
-        doctorRosterBody.innerHTML = doctorRowsHtml(doctors);
+        doctorRosterBody.innerHTML = '<tr class="empty-roster-row"><td colspan="3">Loading doctor details...</td></tr>';
       }
       setDoctorRosterPanel(true);
+      button.setAttribute('aria-busy', 'true');
+      button.classList.add('is-loading');
+      try {
+        const doctors = await fetchDoctorPayload(button);
+        if (doctorRosterSubtitle) {
+          doctorRosterSubtitle.textContent = `${doctors.length} unique doctor${doctors.length === 1 ? '' : 's'} for ${metricLabel}.`;
+        }
+        if (doctorRosterBody) {
+          doctorRosterBody.innerHTML = doctorRowsHtml(doctors);
+        }
+      } catch (error) {
+        const fallbackDoctors = parseDoctorPayload(button);
+        if (doctorRosterSubtitle) {
+          doctorRosterSubtitle.textContent = fallbackDoctors.length
+            ? `${fallbackDoctors.length} unique doctor${fallbackDoctors.length === 1 ? '' : 's'} for ${metricLabel}.`
+            : 'Doctor details could not be loaded.';
+        }
+        if (doctorRosterBody) {
+          doctorRosterBody.innerHTML = fallbackDoctors.length
+            ? doctorRowsHtml(fallbackDoctors)
+            : '<tr class="empty-roster-row"><td colspan="3">Doctor details could not be loaded. Please try the Excel download.</td></tr>';
+        }
+      } finally {
+        button.removeAttribute('aria-busy');
+        button.classList.remove('is-loading');
+      }
     });
   });
 

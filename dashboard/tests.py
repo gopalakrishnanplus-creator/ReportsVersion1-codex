@@ -45,6 +45,7 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/campaign/demo/export/").view_name, "campaign-export")
         self.assertEqual(resolve("/campaign/demo/export/field-rep-insights/").view_name, "campaign-field-rep-insights-export")
         self.assertEqual(resolve("/campaign/demo/export/unmapped-doctors/").view_name, "campaign-unmapped-doctors-export")
+        self.assertEqual(resolve("/campaign/demo/field-rep-insights/details/").view_name, "campaign-field-rep-insights-detail")
         self.assertEqual(
             resolve("/campaign/demo/collateral/11/field-rep-insights/export/").view_name,
             "campaign-field-rep-insights-collateral-export",
@@ -434,6 +435,23 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("FR-101", workbook)
         self.assertIn("Dr Meera Rao", workbook)
         self.assertIn("doc-1", workbook)
+
+    def test_field_rep_doctor_details_returns_metric_doctors(self):
+        self._authenticated_campaign_session()
+
+        with patch(
+            "dashboard.views.build_report_access",
+            return_value=type("Access", (), {"session_key": "auth_demo"})(),
+        ), patch("dashboard.views._build_report_context", return_value=self._download_context()) as context_mock:
+            response = self.client.get("/campaign/demo/field-rep-insights/details/?rep_id=FR-101&metric=sent")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["metric_label"], "Collateral Sent")
+        self.assertEqual(payload["doctor_count"], 2)
+        self.assertEqual(payload["doctors"][0]["name"], "Dr Meera Rao")
+        self.assertEqual(payload["doctors"][0]["phone"], "9999999999")
+        context_mock.assert_called_once_with("demo", None, include_field_rep_doctor_details=True)
 
     def test_unmapped_doctors_export_downloads_manual_mapping_workbook(self):
         self._authenticated_campaign_session()

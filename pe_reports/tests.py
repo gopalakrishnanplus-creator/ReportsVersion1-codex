@@ -96,6 +96,25 @@ class PeReportsLogicTests(SimpleTestCase):
             [{"id": "3", "public_id": "v2", "_source_table": "pe_share_event_v2", "_ingestion_run_id": "run-2", "_ingested_at": "2026-06-03T00:00:00+00:00"}],
         )
 
+    def test_bronze_falls_back_when_v2_source_has_no_active_rows(self):
+        spec = SourceTableSpec(
+            source_table="pe_campaign_v2",
+            fallback_source_table="publisher_campaign",
+            raw_table="publisher_campaign_raw",
+            bronze_table="publisher_campaign",
+            columns=["campaign_id"],
+            key_columns=["campaign_id"],
+        )
+        rows = [
+            {"campaign_id": "legacy-campaign", "_source_table": "publisher_campaign"},
+            {"campaign_id": "old-v2", "_source_table": "pe_campaign_v2"},
+        ]
+
+        self.assertEqual(
+            pe_bronze._active_source_rows(rows, spec, set()),
+            [{"campaign_id": "legacy-campaign", "_source_table": "publisher_campaign"}],
+        )
+
     def test_pipeline_refuses_empty_required_v2_source_counts(self):
         raw_portal = {
             "extracted_counts": {
@@ -117,6 +136,31 @@ class PeReportsLogicTests(SimpleTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "sharing_shareactivity"):
             pe_pipeline._validate_required_v2_source_counts(raw_portal, raw_master)
+
+    def test_pipeline_allows_empty_optional_assignment_credit_source(self):
+        raw_portal = {
+            "extracted_counts": {
+                "sharing_doctorsharesummary": 10,
+                "sharing_shareactivity": 5,
+                "publisher_campaign": 1,
+                "catalog_video": 5,
+                "catalog_videocluster": 2,
+                "catalog_videoclustervideo": 10,
+                "pe_rep_assignment_credit": 0,
+            }
+        }
+        raw_master = {
+            "extracted_counts": {
+                "campaign_doctor": 10,
+                "campaign_doctorcampaignenrollment": 10,
+                "campaign_campaign": 1,
+                "campaign_brand": 1,
+                "campaign_fieldrep": 5,
+                "campaign_campaignfieldrep": 5,
+            }
+        }
+
+        pe_pipeline._validate_required_v2_source_counts(raw_portal, raw_master)
 
     def test_empty_v2_source_pull_does_not_replace_current_snapshot(self):
         spec = SourceTableSpec(
@@ -184,6 +228,46 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(len(prepared_rows), 1)
         self.assertEqual(prepared_rows[0]["code"], "VID-1")
         snapshot_mock.assert_called_once()
+
+    def test_raw_v2_spec_uses_fallback_source_when_primary_is_empty(self):
+        spec = SourceTableSpec(
+            source_table="pe_content_item_v2",
+            fallback_source_table="catalog_video",
+            raw_table="catalog_video_raw",
+            bronze_table="catalog_video",
+            columns=["id", "code", "content_type"],
+            key_columns=["id"],
+            source_filters={"content_type": "video"},
+        )
+
+        def fake_extract(table, columns, watermark_field, watermark_start):
+            if table == "pe_content_item_v2":
+                return []
+            if table == "catalog_video":
+                return [{"id": "1", "code": "legacy-video"}]
+            return []
+
+        with patch("etl.pe_reports.raw.insert_new_source_rows", return_value=1) as insert_mock, patch(
+            "etl.pe_reports.raw.record_v2_current_snapshot"
+        ) as snapshot_mock, patch("etl.pe_reports.raw.get_watermark", return_value=None), patch(
+            "etl.pe_reports.raw.upsert_watermark"
+        ), patch("etl.pe_reports.raw.log_step"):
+            result = pe_raw._ingest_specs(
+                run_id="run-1",
+                extracted_at="2026-06-03T00:00:00+00:00",
+                schema="raw_pe_portal",
+                specs={"catalog_video": spec},
+                source_name="portal",
+                source_system_label="pe_portal",
+                extractor=fake_extract,
+                error_type=Exception,
+            )
+
+        self.assertEqual(result["extracted_counts"]["catalog_video"], 1)
+        prepared_rows = insert_mock.call_args.args[4]
+        self.assertEqual(prepared_rows[0]["code"], "legacy-video")
+        self.assertEqual(prepared_rows[0]["_source_table"], "catalog_video")
+        snapshot_mock.assert_not_called()
 
     def test_campaign_doctor_mapping_prefers_logical_id_then_email_then_phone(self):
         mapped = match_campaign_doctors(

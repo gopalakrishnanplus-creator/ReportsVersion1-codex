@@ -70,25 +70,35 @@ def _ingest_specs(
         lookback_days = spec.lookback_days or int(settings.PE_REPORTS["LOOKBACK_DAYS"])
         watermark_start = None if is_v2_source else _watermark_start(source_name, name, spec.watermark_field, lookback_days)
         try:
-            rows = extractor(spec.source_table, spec.columns, spec.watermark_field, watermark_start)
-            if spec.source_filters:
+            effective_source_table = spec.source_table
+            try:
+                rows = extractor(spec.source_table, spec.columns, spec.watermark_field, watermark_start)
+            except error_type:
+                if not spec.fallback_source_table:
+                    raise
+                effective_source_table = spec.fallback_source_table
+                rows = extractor(effective_source_table, spec.columns, spec.watermark_field, None)
+            if spec.source_filters and effective_source_table == spec.source_table:
                 rows = [
                     row
                     for row in rows
                     if all(clean_text(row.get(column)) == expected for column, expected in spec.source_filters.items())
                 ]
+            if not rows and spec.fallback_source_table:
+                effective_source_table = spec.fallback_source_table
+                rows = extractor(effective_source_table, spec.columns, spec.watermark_field, None)
             prepared_rows: list[dict[str, Any]] = []
             max_watermark_value: str | None = None
             for row in rows:
                 payload = {column: row.get(column) for column in spec.columns}
-                payload.update(_audit_payload(run_id, source_system_label, spec.source_table, extracted_at, [row.get(column) for column in spec.columns]))
+                payload.update(_audit_payload(run_id, source_system_label, effective_source_table, extracted_at, [row.get(column) for column in spec.columns]))
                 prepared_rows.append(payload)
                 if spec.watermark_field:
                     candidate = clean_text(row.get(spec.watermark_field))
                     if candidate and (max_watermark_value is None or candidate > max_watermark_value):
                         max_watermark_value = candidate
 
-            fingerprint_columns = spec.columns + ["_source_table"] if spec.source_table.lower().endswith("_v2") else spec.columns
+            fingerprint_columns = spec.columns + ["_source_table"] if is_v2_source or spec.fallback_source_table else spec.columns
             inserted_count = insert_new_source_rows(
                 schema,
                 spec.raw_table,
@@ -97,7 +107,7 @@ def _ingest_specs(
                 prepared_rows,
                 fingerprint_columns=fingerprint_columns,
             )
-            if is_v2_source and prepared_rows:
+            if is_v2_source and effective_source_table == spec.source_table and prepared_rows:
                 record_v2_current_snapshot(
                     raw_schema=schema,
                     raw_table=spec.raw_table,
