@@ -147,6 +147,44 @@ class PeReportsLogicTests(SimpleTestCase):
 
         snapshot_mock.assert_not_called()
 
+    def test_raw_v2_content_spec_filters_before_insert_and_snapshot(self):
+        spec = SourceTableSpec(
+            source_table="pe_content_item_v2",
+            raw_table="catalog_video_raw",
+            bronze_table="catalog_video",
+            columns=["id", "code", "content_type"],
+            key_columns=["id"],
+            source_filters={"content_type": "video"},
+        )
+
+        rows = [
+            {"id": "1", "code": "VID-1", "content_type": "video"},
+            {"id": "2", "code": "TRG-1", "content_type": "trigger"},
+        ]
+        with patch("etl.pe_reports.raw.extract_portal_rows", return_value=rows), patch(
+            "etl.pe_reports.raw.insert_new_source_rows",
+            return_value=1,
+        ) as insert_mock, patch("etl.pe_reports.raw.record_v2_current_snapshot") as snapshot_mock, patch(
+            "etl.pe_reports.raw.get_watermark",
+            return_value=None,
+        ), patch("etl.pe_reports.raw.upsert_watermark"), patch("etl.pe_reports.raw.log_step"):
+            result = pe_raw._ingest_specs(
+                run_id="run-1",
+                extracted_at="2026-06-03T00:00:00+00:00",
+                schema="raw_pe_portal",
+                specs={"catalog_video": spec},
+                source_name="portal",
+                source_system_label="pe_portal",
+                extractor=pe_raw.extract_portal_rows,
+                error_type=Exception,
+            )
+
+        self.assertEqual(result["extracted_counts"]["catalog_video"], 1)
+        prepared_rows = insert_mock.call_args.args[4]
+        self.assertEqual(len(prepared_rows), 1)
+        self.assertEqual(prepared_rows[0]["code"], "VID-1")
+        snapshot_mock.assert_called_once()
+
     def test_campaign_doctor_mapping_prefers_logical_id_then_email_then_phone(self):
         mapped = match_campaign_doctors(
             [

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -175,6 +176,112 @@ def _best_dim_for_event(dim_rows: list[dict[str, Any]], event_date: Any = None) 
     return min(dim_rows, key=sort_key)
 
 
+def _activity_payload(row: dict[str, Any]) -> dict[str, Any]:
+    raw_payload = clean_text(row.get("event_payload_json"))
+    if not raw_payload:
+        return {}
+    try:
+        parsed = json.loads(raw_payload)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _activity_value(row: dict[str, Any], payload: dict[str, Any], *fields: str) -> Any:
+    for field in fields:
+        if field in payload and clean_text(payload.get(field)) is not None:
+            return payload.get(field)
+        if clean_text(row.get(field)) is not None:
+            return row.get(field)
+    return None
+
+
+def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    legacy_rows: dict[str, list[dict[str, Any]]] = {
+        "redflags_patientsubmission": [],
+        "gnd_gndpatientsubmission": [],
+        "redflags_submissionredflag": [],
+        "gnd_gndsubmissionredflag": [],
+        "redflags_followupreminder": [],
+        "redflags_metricevent": [],
+    }
+    for row in events:
+        source_table = clean_text(row.get("source_table"))
+        if source_table not in legacy_rows:
+            continue
+        payload = _activity_payload(row)
+        if source_table == "redflags_patientsubmission":
+            legacy_rows[source_table].append(
+                {
+                    "record_id": _activity_value(row, payload, "record_id", "source_event_id", "source_pk_value"),
+                    "language_code": _activity_value(row, payload, "language_code"),
+                    "submitted_at": _activity_value(row, payload, "submitted_at", "event_at", "source_created_at"),
+                    "patient_id": _activity_value(row, payload, "patient_id", "patient_id_raw"),
+                    "doctor_id": _activity_value(row, payload, "doctor_id"),
+                    "form_id": _activity_value(row, payload, "form_id", "form_id_raw"),
+                    "overall_flag_code": _activity_value(row, payload, "overall_flag_code"),
+                }
+            )
+        elif source_table == "gnd_gndpatientsubmission":
+            legacy_rows[source_table].append(
+                {
+                    "id": _activity_value(row, payload, "id", "source_event_id", "source_pk_value"),
+                    "patient_id": _activity_value(row, payload, "patient_id", "patient_id_raw"),
+                    "language_code": _activity_value(row, payload, "language_code"),
+                    "submitted_at": _activity_value(row, payload, "submitted_at", "event_at", "source_created_at"),
+                    "doctor_id": _activity_value(row, payload, "doctor_id"),
+                    "form_id": _activity_value(row, payload, "form_id", "form_id_raw"),
+                    "overall_flag_code": _activity_value(row, payload, "overall_flag_code"),
+                }
+            )
+        elif source_table in {"redflags_submissionredflag", "gnd_gndsubmissionredflag"}:
+            legacy_rows[source_table].append(
+                {
+                    "id": _activity_value(row, payload, "id", "source_event_id", "source_pk_value"),
+                    "red_flag_id": _activity_value(row, payload, "red_flag_id", "red_flag_id_raw"),
+                    "submission_id": _activity_value(row, payload, "submission_id"),
+                }
+            )
+        elif source_table == "redflags_followupreminder":
+            legacy_rows[source_table].append(
+                {
+                    "id": _activity_value(row, payload, "id", "source_event_id", "source_pk_value"),
+                    "created_at": _activity_value(row, payload, "created_at", "source_created_at"),
+                    "updated_at": _activity_value(row, payload, "updated_at", "source_updated_at"),
+                    "patient_id": _activity_value(row, payload, "patient_id", "patient_id_raw"),
+                    "patient_name": _activity_value(row, payload, "patient_name"),
+                    "patient_whatsapp": _activity_value(row, payload, "patient_whatsapp"),
+                    "followup_date1": _activity_value(row, payload, "followup_date1"),
+                    "followup_date2": _activity_value(row, payload, "followup_date2"),
+                    "followup_date3": _activity_value(row, payload, "followup_date3"),
+                    "frequency_unit": _activity_value(row, payload, "frequency_unit"),
+                    "frequency": _activity_value(row, payload, "frequency"),
+                    "first_followup_date": _activity_value(row, payload, "first_followup_date"),
+                    "num_followups": _activity_value(row, payload, "num_followups"),
+                    "doctor_id": _activity_value(row, payload, "doctor_id"),
+                }
+            )
+        elif source_table == "redflags_metricevent":
+            legacy_rows[source_table].append(
+                {
+                    "id": _activity_value(row, payload, "id", "source_event_id", "source_pk_value"),
+                    "event_type": _activity_value(row, payload, "event_type"),
+                    "action_key": _activity_value(row, payload, "action_key"),
+                    "share_code": _activity_value(row, payload, "share_code"),
+                    "form_id": _activity_value(row, payload, "form_id", "form_id_raw"),
+                    "language_code": _activity_value(row, payload, "language_code"),
+                    "video_url": _activity_value(row, payload, "video_url"),
+                    "meta": _activity_value(row, payload, "meta"),
+                    "ts": _activity_value(row, payload, "ts", "event_at", "source_created_at"),
+                    "doctor_id": _activity_value(row, payload, "doctor_id"),
+                    "patient_id": _activity_value(row, payload, "patient_id", "patient_id_raw"),
+                    "red_flag_id": _activity_value(row, payload, "red_flag_id", "red_flag_id_raw"),
+                    "overall_flag_code": _activity_value(row, payload, "overall_flag_code"),
+                }
+            )
+    return legacy_rows
+
+
 def build_silver(run_id: str) -> dict[str, Any]:
     now_iso = _now_iso()
 
@@ -184,6 +291,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
     brand_rows = fetch_table(BRONZE_SCHEMA, "campaign_brand")
     source_field_rep_rows = fetch_table(BRONZE_SCHEMA, "campaign_fieldrep")
     campaign_field_rep_rows = fetch_table(BRONZE_SCHEMA, "campaign_campaignfieldrep")
+    rfa_activity_events = fetch_table(BRONZE_SCHEMA, "rfa_activity_event")
     redflag_doctors = fetch_table(BRONZE_SCHEMA, "redflags_doctor")
     redflag_submissions = fetch_table(BRONZE_SCHEMA, "redflags_patientsubmission")
     gnd_submissions = fetch_table(BRONZE_SCHEMA, "gnd_gndpatientsubmission")
@@ -199,6 +307,15 @@ def build_silver(run_id: str) -> dict[str, Any]:
     webinar_rows = fetch_table(BRONZE_SCHEMA, "wp_webinar_registrations")
     course_summary_rows = fetch_table(BRONZE_SCHEMA, "wp_course_summary")
     course_breakdown_rows = fetch_table(BRONZE_SCHEMA, "wp_course_breakdown")
+
+    if rfa_activity_events:
+        activity_legacy_rows = _activity_events_as_legacy_rows(rfa_activity_events)
+        redflag_submissions = activity_legacy_rows["redflags_patientsubmission"]
+        gnd_submissions = activity_legacy_rows["gnd_gndpatientsubmission"]
+        redflag_occurrences = activity_legacy_rows["redflags_submissionredflag"]
+        gnd_occurrences = activity_legacy_rows["gnd_gndsubmissionredflag"]
+        followup_rows = activity_legacy_rows["redflags_followupreminder"]
+        metric_rows = activity_legacy_rows["redflags_metricevent"]
 
     redflag_doctor_by_id = {clean_text(row.get("doctor_id")): row for row in redflag_doctors if clean_text(row.get("doctor_id"))}
     clinic_outcome_by_doctor = {clean_text(row.get("doctor_id")): row for row in clinic_outcomes if clean_text(row.get("doctor_id"))}

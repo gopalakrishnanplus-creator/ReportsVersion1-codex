@@ -17,6 +17,7 @@ REQUIRED_V2_MYSQL_TABLES = (
     "campaign_brand",
     "campaign_fieldrep",
     "campaign_campaignfieldrep",
+    "rfa_activity_event",
 )
 
 

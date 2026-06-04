@@ -71,6 +71,12 @@ def _ingest_specs(
         watermark_start = None if is_v2_source else _watermark_start(source_name, name, spec.watermark_field, lookback_days)
         try:
             rows = extractor(spec.source_table, spec.columns, spec.watermark_field, watermark_start)
+            if spec.source_filters:
+                rows = [
+                    row
+                    for row in rows
+                    if all(clean_text(row.get(column)) == expected for column, expected in spec.source_filters.items())
+                ]
             prepared_rows: list[dict[str, Any]] = []
             max_watermark_value: str | None = None
             for row in rows:
