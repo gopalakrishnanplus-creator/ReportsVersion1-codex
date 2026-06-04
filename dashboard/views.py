@@ -6,11 +6,12 @@ import re
 import textwrap
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.db import connection
 from django.db.utils import OperationalError, ProgrammingError
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 
@@ -1002,6 +1003,7 @@ def _field_rep_insight_rows(
     current_collateral_ids: list[str],
     period_start: Any = None,
     period_end: Any = None,
+    include_doctor_details: bool = True,
 ) -> list[dict[str, Any]]:
     brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
     candidate_cte = _candidate_campaign_ids_cte(brand_placeholders)
@@ -1010,6 +1012,91 @@ def _field_rep_insight_rows(
     if current_collateral_ids:
         collateral_placeholders = _placeholders(current_collateral_ids)
         collateral_filter_action = f"AND a.collateral_id::text IN ({collateral_placeholders})"
+
+    if include_doctor_details:
+        assigned_doctors_json_sql = """
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_identity_key
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_identity_key
+                    ),
+                    '[]'::jsonb
+                ) AS assigned_doctors_json
+        """
+        activity_doctors_json_sql = """
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_key,
+                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
+                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
+                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
+                            'evidence_source', COALESCE(evidence_source, '')
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
+                    ) FILTER (WHERE sent_flag = 1),
+                    '[]'::jsonb
+                ) AS sent_doctors_json,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_key,
+                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
+                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
+                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
+                            'evidence_source', COALESCE(evidence_source, '')
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
+                    ) FILTER (WHERE viewed_flag = 1),
+                    '[]'::jsonb
+                ) AS viewed_doctors_json,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_key,
+                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
+                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
+                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
+                            'evidence_source', COALESCE(evidence_source, '')
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
+                    ) FILTER (WHERE video_flag = 1),
+                    '[]'::jsonb
+                ) AS video_doctors_json,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_key,
+                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
+                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
+                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
+                            'evidence_source', COALESCE(evidence_source, '')
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
+                    ) FILTER (WHERE pdf_flag = 1),
+                    '[]'::jsonb
+                ) AS pdf_doctors_json
+        """
+    else:
+        assigned_doctors_json_sql = "'[]'::jsonb AS assigned_doctors_json"
+        activity_doctors_json_sql = """
+                '[]'::jsonb AS sent_doctors_json,
+                '[]'::jsonb AS viewed_doctors_json,
+                '[]'::jsonb AS video_doctors_json,
+                '[]'::jsonb AS pdf_doctors_json
+        """
 
     alias_joins, alias_selects, alias_key_columns = _field_rep_alias_sql_parts()
     alias_key_rank = {
@@ -1308,17 +1395,7 @@ def _field_rep_insight_rows(
             SELECT
                 field_rep_id,
                 COUNT(DISTINCT doctor_identity_key) AS total_doctors_assigned,
-                COALESCE(
-                    jsonb_agg(
-                        jsonb_build_object(
-                            'name', doctor_name,
-                            'phone', COALESCE(doctor_phone, ''),
-                            'doctor_key', doctor_identity_key
-                        )
-                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_identity_key
-                    ),
-                    '[]'::jsonb
-                ) AS assigned_doctors_json
+                {assigned_doctors_json_sql}
             FROM assigned_doctor_rows
             GROUP BY field_rep_id
         ),
@@ -1942,66 +2019,7 @@ def _field_rep_insight_rows(
                 COUNT(*) FILTER (WHERE viewed_flag = 1) AS doctors_viewed,
                 COUNT(*) FILTER (WHERE video_flag = 1) AS doctors_video_played,
                 COUNT(*) FILTER (WHERE pdf_flag = 1) AS doctors_pdf_downloaded,
-                COALESCE(
-                    jsonb_agg(
-                        jsonb_build_object(
-                            'name', doctor_name,
-                            'phone', COALESCE(doctor_phone, ''),
-                            'doctor_key', doctor_key,
-                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
-                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
-                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
-                            'evidence_source', COALESCE(evidence_source, '')
-                        )
-                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
-                    ) FILTER (WHERE sent_flag = 1),
-                    '[]'::jsonb
-                ) AS sent_doctors_json,
-                COALESCE(
-                    jsonb_agg(
-                        jsonb_build_object(
-                            'name', doctor_name,
-                            'phone', COALESCE(doctor_phone, ''),
-                            'doctor_key', doctor_key,
-                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
-                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
-                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
-                            'evidence_source', COALESCE(evidence_source, '')
-                        )
-                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
-                    ) FILTER (WHERE viewed_flag = 1),
-                    '[]'::jsonb
-                ) AS viewed_doctors_json,
-                COALESCE(
-                    jsonb_agg(
-                        jsonb_build_object(
-                            'name', doctor_name,
-                            'phone', COALESCE(doctor_phone, ''),
-                            'doctor_key', doctor_key,
-                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
-                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
-                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
-                            'evidence_source', COALESCE(evidence_source, '')
-                        )
-                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
-                    ) FILTER (WHERE video_flag = 1),
-                    '[]'::jsonb
-                ) AS video_doctors_json,
-                COALESCE(
-                    jsonb_agg(
-                        jsonb_build_object(
-                            'name', doctor_name,
-                            'phone', COALESCE(doctor_phone, ''),
-                            'doctor_key', doctor_key,
-                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
-                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
-                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
-                            'evidence_source', COALESCE(evidence_source, '')
-                        )
-                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
-                    ) FILTER (WHERE pdf_flag = 1),
-                    '[]'::jsonb
-                ) AS pdf_doctors_json
+                {activity_doctors_json_sql}
             FROM activity_doctor_rows
             GROUP BY field_rep_id
         )
@@ -2504,6 +2522,61 @@ FIELD_REP_DOCTOR_METRICS = [
     ("Video Played", "video_doctors_json"),
     ("PDF / Collateral Saved", "pdf_doctors_json"),
 ]
+
+
+FIELD_REP_DOCTOR_METRIC_KEYS = {
+    "assigned": ("Doctors Assigned", "assigned_doctors_json"),
+    "sent": ("Collateral Sent", "sent_doctors_json"),
+    "viewed": ("Viewed", "viewed_doctors_json"),
+    "video": ("Video Played", "video_doctors_json"),
+    "pdf": ("PDF / Collateral Saved", "pdf_doctors_json"),
+}
+
+
+def _field_rep_detail_url(campaign_id: str, week_filter: int | None = None, collateral_id: str | None = None) -> str:
+    url = reverse("campaign-field-rep-insights-detail", kwargs={"brand_campaign_id": campaign_id})
+    params = {}
+    if week_filter:
+        params["week"] = str(week_filter)
+    if collateral_id:
+        params["collateral_id"] = str(collateral_id)
+    return f"{url}?{urlencode(params)}" if params else url
+
+
+def _field_rep_doctor_detail_payload(
+    context: dict[str, Any],
+    rep_id: str,
+    metric_key: str,
+) -> tuple[dict[str, Any], int]:
+    metric_label, json_key = FIELD_REP_DOCTOR_METRIC_KEYS.get(metric_key, FIELD_REP_DOCTOR_METRIC_KEYS["assigned"])
+    normalized_rep_id = str(rep_id or "").strip()
+    for row in context.get("field_rep_insights") or []:
+        if str(row.get("field_rep_id") or "").strip() != normalized_rep_id:
+            continue
+        doctors = _json_list(row.get(json_key))
+        return (
+            {
+                "field_rep_id": row.get("field_rep_id", ""),
+                "field_rep_name": row.get("field_rep_name", ""),
+                "state": row.get("state_normalized", "UNKNOWN") or "UNKNOWN",
+                "metric_key": metric_key,
+                "metric_label": metric_label,
+                "doctor_count": len(doctors),
+                "doctors": doctors,
+            },
+            200,
+        )
+    return (
+        {
+            "field_rep_id": normalized_rep_id,
+            "metric_key": metric_key,
+            "metric_label": metric_label,
+            "doctor_count": 0,
+            "doctors": [],
+            "error": "Field representative was not found for this campaign.",
+        },
+        404,
+    )
 
 
 def _field_rep_summary_export_rows(field_rep_insights: list[dict[str, Any]]) -> list[list[Any]]:
@@ -3431,7 +3504,11 @@ def send_access_email_view(request: HttpRequest, brand_campaign_id: str) -> Http
     return redirect("campaign-access", brand_campaign_id=normalized_campaign_id)
 
 
-def _build_report_context(selected_campaign: str, week_filter: int | None = None) -> dict[str, Any]:
+def _build_report_context(
+    selected_campaign: str,
+    week_filter: int | None = None,
+    include_field_rep_doctor_details: bool = True,
+) -> dict[str, Any]:
     selected_schema = None
     all_weekly_rows: list[dict[str, Any]] = []
     weekly_rows: list[dict[str, Any]] = []
@@ -3556,6 +3633,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
             current_field_rep_collateral_ids,
             schedule_start_raw,
             schedule_end_raw,
+            include_doctor_details=include_field_rep_doctor_details,
         )
         field_rep_assigned_total = sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights)
         roster_total_doctors = assigned_total_doctors or field_rep_assigned_total
@@ -4017,6 +4095,7 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
         "field_rep_summary": field_rep_summary,
         "old_collaterals": old_collaterals,
         "current_field_rep_collateral_id": current_field_rep_collateral_ids[0] if current_field_rep_collateral_ids else "",
+        "field_rep_detail_url": _field_rep_detail_url(selected_campaign, week_filter),
         "collateral_cards": collateral_cards,
         "show_collateral_comparison_extras": show_collateral_comparison_extras,
         "trend_labels": trend_labels,
@@ -4030,7 +4109,11 @@ def _build_report_context(selected_campaign: str, week_filter: int | None = None
     }
 
 
-def _build_collateral_field_rep_context(selected_campaign: str, collateral_id: str) -> dict[str, Any]:
+def _build_collateral_field_rep_context(
+    selected_campaign: str,
+    collateral_id: str,
+    include_field_rep_doctor_details: bool = True,
+) -> dict[str, Any]:
     requested_campaign = _normalize_campaign_id(selected_campaign)
     selected_collateral_id = str(collateral_id or "").strip()
     context: dict[str, Any] = {
@@ -4044,6 +4127,7 @@ def _build_collateral_field_rep_context(selected_campaign: str, collateral_id: s
         "field_rep_insights": [],
         "field_rep_summary": _format_field_rep_summary([]),
         "old_collaterals": [],
+        "field_rep_detail_url": _field_rep_detail_url(requested_campaign, collateral_id=selected_collateral_id),
         "error_message": None,
     }
     try:
@@ -4092,6 +4176,7 @@ def _build_collateral_field_rep_context(selected_campaign: str, collateral_id: s
             [selected_collateral_id],
             selected_row.get("schedule_start_date") if selected_row else None,
             selected_row.get("schedule_end_date") if selected_row else None,
+            include_doctor_details=include_field_rep_doctor_details,
         )
         total_doctors = _assigned_doctor_count(requested_campaign, brand_campaign_variants)
         context["field_rep_insights"] = field_rep_insights
@@ -4112,8 +4197,34 @@ def campaign_overview(request: HttpRequest, brand_campaign_id: str | None = None
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
 
-    context = _build_report_context(normalized_campaign_id, week_filter)
+    context = _build_report_context(normalized_campaign_id, week_filter, include_field_rep_doctor_details=False)
     return render(request, "dashboard/overview.html", context)
+
+
+def field_rep_doctor_details(request: HttpRequest, brand_campaign_id: str):
+    normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
+    if not _has_inclinic_campaign_access(request, normalized_campaign_id):
+        return JsonResponse({"error": "Authentication required."}, status=403)
+
+    week = request.GET.get("week")
+    week_filter = _to_int(week) if week else None
+    rep_id = request.GET.get("rep_id", "")
+    metric_key = request.GET.get("metric", "assigned")
+    collateral_id = str(request.GET.get("collateral_id") or "").strip()
+    if collateral_id:
+        context = _build_collateral_field_rep_context(
+            normalized_campaign_id,
+            collateral_id,
+            include_field_rep_doctor_details=True,
+        )
+    else:
+        context = _build_report_context(
+            normalized_campaign_id,
+            week_filter,
+            include_field_rep_doctor_details=True,
+        )
+    payload, status = _field_rep_doctor_detail_payload(context, rep_id, metric_key)
+    return JsonResponse(payload, status=status)
 
 
 def export_report(request: HttpRequest, brand_campaign_id: str):
@@ -4123,7 +4234,7 @@ def export_report(request: HttpRequest, brand_campaign_id: str):
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(normalized_campaign_id, week_filter)
+    context = _build_report_context(normalized_campaign_id, week_filter, include_field_rep_doctor_details=False)
     filename = _export_filename("in_clinic_report", context, "pdf")
     title = f"In-Clinic Sharing Report - {context.get('brand_name') or normalized_campaign_id}"
     return _pdf_response(filename, title, _campaign_pdf_lines(context))
@@ -4168,7 +4279,11 @@ def campaign_field_rep_collateral_insights(request: HttpRequest, brand_campaign_
     normalized_campaign_id = _normalize_campaign_id(brand_campaign_id)
     if not _has_inclinic_campaign_access(request, normalized_campaign_id):
         return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
-    context = _build_collateral_field_rep_context(normalized_campaign_id, collateral_id)
+    context = _build_collateral_field_rep_context(
+        normalized_campaign_id,
+        collateral_id,
+        include_field_rep_doctor_details=False,
+    )
     return render(request, "dashboard/field_rep_collateral_insights.html", context)
 
 
@@ -4178,5 +4293,5 @@ def campaign_state_list(request: HttpRequest, brand_campaign_id: str):
         return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(normalized_campaign_id, week_filter)
+    context = _build_report_context(normalized_campaign_id, week_filter, include_field_rep_doctor_details=False)
     return render(request, "dashboard/state_list.html", context)

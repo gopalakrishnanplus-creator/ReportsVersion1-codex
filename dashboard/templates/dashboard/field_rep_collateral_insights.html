@@ -79,6 +79,8 @@
                     class="doctor-count-btn"
                     data-rep-id="{{ rep.field_rep_id|escape }}"
                     data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-detail-url="{{ field_rep_detail_url|escape }}"
+                    data-metric-key="assigned"
                     data-metric-label="Doctors Assigned"
                     data-doctors='{{ rep.assigned_doctors_json|default:"[]"|escape }}'
                   >
@@ -91,6 +93,8 @@
                     class="doctor-count-btn"
                     data-rep-id="{{ rep.field_rep_id|escape }}"
                     data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-detail-url="{{ field_rep_detail_url|escape }}"
+                    data-metric-key="sent"
                     data-metric-label="Collateral Sent"
                     data-doctors='{{ rep.sent_doctors_json|default:"[]"|escape }}'
                   >
@@ -103,6 +107,8 @@
                     class="doctor-count-btn"
                     data-rep-id="{{ rep.field_rep_id|escape }}"
                     data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-detail-url="{{ field_rep_detail_url|escape }}"
+                    data-metric-key="viewed"
                     data-metric-label="Viewed"
                     data-doctors='{{ rep.viewed_doctors_json|default:"[]"|escape }}'
                   >
@@ -115,6 +121,8 @@
                     class="doctor-count-btn"
                     data-rep-id="{{ rep.field_rep_id|escape }}"
                     data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-detail-url="{{ field_rep_detail_url|escape }}"
+                    data-metric-key="video"
                     data-metric-label="Video Played"
                     data-doctors='{{ rep.video_doctors_json|default:"[]"|escape }}'
                   >
@@ -127,6 +135,8 @@
                     class="doctor-count-btn"
                     data-rep-id="{{ rep.field_rep_id|escape }}"
                     data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-detail-url="{{ field_rep_detail_url|escape }}"
+                    data-metric-key="pdf"
                     data-metric-label="PDF / Collateral Saved"
                     data-doctors='{{ rep.pdf_doctors_json|default:"[]"|escape }}'
                   >
@@ -169,6 +179,6 @@
     </section>
   </main>
 
-  <script src="{% static 'dashboard/js/overview.js' %}?v=20260603v2"></script>
+  <script src="{% static 'dashboard/js/overview.js' %}?v=20260604v1"></script>
 </body>
 </html>
