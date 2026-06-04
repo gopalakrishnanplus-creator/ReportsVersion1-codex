@@ -730,6 +730,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
     share_rows = fetch_table(BRONZE_SCHEMA, "sharing_shareactivity")
     playback_rows = fetch_table(BRONZE_SCHEMA, "sharing_shareplaybackevent")
     banner_click_rows = fetch_table(BRONZE_SCHEMA, "sharing_sharebannerclickevent")
+    rep_assignment_credit_rows = fetch_table(BRONZE_SCHEMA, "pe_rep_assignment_credit")
 
     brands_by_id = {clean_text(row.get("id")): row for row in brand_rows if clean_text(row.get("id"))}
     therapy_by_id = {clean_text(row.get("id")): row for row in therapy_rows if clean_text(row.get("id"))}
@@ -761,6 +762,11 @@ def build_silver(run_id: str) -> dict[str, Any]:
         external_id = clean_text(row.get("brand_supplied_field_rep_id"))
         if external_id:
             field_rep_by_external[normalize_identifier(external_id) or external_id] = row
+    source_field_rep_by_uuid = {
+        clean_text(row.get("field_rep_uuid")): row
+        for row in field_rep_rows
+        if clean_text(row.get("field_rep_uuid"))
+    }
     campaign_link_by_id = {
         clean_text(row.get("id")): clean_text(row.get("field_rep_id"))
         for row in campaign_field_rep_rows
@@ -1056,6 +1062,53 @@ def build_silver(run_id: str) -> dict[str, Any]:
     campaigns_by_doctor: dict[str, list[str]] = defaultdict(list)
 
     campaign_doctor_by_id = {clean_text(row.get("id")): row for row in campaign_doctor_rows if clean_text(row.get("id"))}
+    campaign_id_by_uuid = {
+        clean_text(row.get("campaign_uuid")): normalize_campaign_id(row.get("id"))
+        for row in campaign_rows
+        if clean_text(row.get("campaign_uuid")) and normalize_campaign_id(row.get("id"))
+    }
+    campaign_doctor_id_by_uuid = {
+        clean_text(row.get("doctor_uuid")): clean_text(row.get("id"))
+        for row in campaign_doctor_rows
+        if clean_text(row.get("doctor_uuid")) and clean_text(row.get("id"))
+    }
+
+    def resolve_credit_field_rep(row: dict[str, Any]) -> dict[str, str | None]:
+        field_rep_uuid = clean_text(row.get("field_rep_uuid"))
+        source_rep = source_field_rep_by_uuid.get(field_rep_uuid or "")
+        if source_rep:
+            return {
+                "field_rep_id": clean_text(source_rep.get("id")),
+                "field_rep_external_id": clean_text(source_rep.get("brand_supplied_field_rep_id")),
+                "match_method": "field_rep_uuid",
+            }
+        return resolve_field_rep_identity(field_rep_uuid, field_rep_by_id, field_rep_by_external, campaign_link_by_id)
+
+    rep_credit_by_campaign_doctor: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rep_assignment_credit_rows:
+        campaign_id_normalized = (
+            campaign_id_by_uuid.get(clean_text(row.get("campaign_uuid")) or "")
+            or normalize_campaign_id(row.get("campaign_uuid"))
+        )
+        campaign_doctor_id = (
+            campaign_doctor_id_by_uuid.get(clean_text(row.get("doctor_uuid")) or "")
+            or clean_text(row.get("doctor_uuid"))
+        )
+        if not campaign_id_normalized or not campaign_doctor_id:
+            issues["rep_credit_unresolved_identity"] += 1
+            continue
+        rep_resolution = resolve_credit_field_rep(row)
+        if not rep_resolution.get("field_rep_id"):
+            issues["rep_credit_field_rep_resolution_failures"] += 1
+            continue
+        key = (campaign_id_normalized, campaign_doctor_id)
+        if key in rep_credit_by_campaign_doctor:
+            continue
+        rep_credit_by_campaign_doctor[key] = {
+            "row": row,
+            "rep_resolution": rep_resolution,
+        }
+
     for row in enrollment_rows:
         campaign_id_normalized = normalize_campaign_id(row.get("campaign_id"))
         campaign_doctor_id = clean_text(row.get("doctor_id"))
@@ -1065,7 +1118,12 @@ def build_silver(run_id: str) -> dict[str, Any]:
         mapped_doctor_key = clean_text(mapped.get("doctor_key"))
         campaign_doctor = campaign_doctor_by_id.get(campaign_doctor_id, {})
         doctor_dim = doctor_by_key.get(mapped_doctor_key or "")
-        rep_resolution = resolve_field_rep_identity(row.get("registered_by_id"), field_rep_by_id, field_rep_by_external, campaign_link_by_id)
+        credit = rep_credit_by_campaign_doctor.get((campaign_id_normalized, campaign_doctor_id))
+        rep_resolution = (
+            credit["rep_resolution"]
+            if credit
+            else resolve_field_rep_identity(row.get("registered_by_id"), field_rep_by_id, field_rep_by_external, campaign_link_by_id)
+        )
         campaign = campaign_by_id.get(campaign_id_normalized, {})
         resolved_doctor_id = clean_text((doctor_dim or {}).get("doctor_id"))
         state = first_non_empty(clean_text((doctor_dim or {}).get("state")), clean_text(campaign_doctor.get("state")))
@@ -1078,7 +1136,10 @@ def build_silver(run_id: str) -> dict[str, Any]:
                 "campaign_id_normalized": campaign_id_normalized,
                 "campaign_doctor_id": campaign_doctor_id,
                 "doctor_key": mapped_doctor_key,
-                "registered_at_ts": _best_registered_at(row),
+                "registered_at_ts": first_non_empty(
+                    iso_datetime((credit or {}).get("row", {}).get("credit_effective_from") if credit else None),
+                    _best_registered_at(row),
+                ),
                 "registered_by_field_rep_id": rep_resolution["field_rep_id"],
                 "registered_by_field_rep_external_id": rep_resolution["field_rep_external_id"],
                 "whitelabel_enabled": clean_text(row.get("whitelabel_enabled")) or "false",
@@ -1119,7 +1180,76 @@ def build_silver(run_id: str) -> dict[str, Any]:
                 "state": state,
                 "field_rep_id_resolved": clean_text((doctor_dim or {}).get("field_rep_id_resolved")),
                 "field_rep_external_id": clean_text((doctor_dim or {}).get("field_rep_external_id")),
-                "enrolled_at_ts": _best_registered_at(row),
+                "enrolled_at_ts": first_non_empty(
+                    iso_datetime((credit or {}).get("row", {}).get("credit_effective_from") if credit else None),
+                    _best_registered_at(row),
+                ),
+                "is_enrolled_flag": "true",
+            }
+        )
+        campaigns_by_doctor[mapped_doctor_key].append(campaign_id_normalized)
+
+    for (campaign_id_normalized, campaign_doctor_id), credit in rep_credit_by_campaign_doctor.items():
+        mapped = map_by_campaign_doctor_id.get(campaign_doctor_id, {})
+        mapped_doctor_key = clean_text(mapped.get("doctor_key"))
+        if not mapped_doctor_key or not clean_text((doctor_by_key.get(mapped_doctor_key or "") or {}).get("doctor_id")):
+            issues["rep_credit_unmapped_doctor"] += 1
+            continue
+        key = (campaign_id_normalized, mapped_doctor_key)
+        if key in base_seen:
+            continue
+        campaign = campaign_by_id.get(campaign_id_normalized, {})
+        if not campaign:
+            issues["rep_credit_unresolved_campaign"] += 1
+            continue
+        campaign_doctor = campaign_doctor_by_id.get(campaign_doctor_id, {})
+        doctor_dim = doctor_by_key.get(mapped_doctor_key or "")
+        rep_resolution = credit["rep_resolution"]
+        resolved_doctor_id = clean_text((doctor_dim or {}).get("doctor_id"))
+        state = first_non_empty(clean_text((doctor_dim or {}).get("state")), clean_text(campaign_doctor.get("state")))
+        city = first_non_empty(clean_text((doctor_dim or {}).get("city")), clean_text(campaign_doctor.get("city")))
+        full_name = first_non_empty(clean_text((doctor_dim or {}).get("full_name")), clean_text(campaign_doctor.get("full_name")))
+        enrolled_at = iso_datetime(credit["row"].get("credit_effective_from"))
+
+        fact_campaign_enrollment_rows.append(
+            {
+                "campaign_id_original": clean_text(campaign.get("campaign_id_original")) or campaign_id_normalized,
+                "campaign_id_normalized": campaign_id_normalized,
+                "campaign_doctor_id": campaign_doctor_id,
+                "doctor_key": mapped_doctor_key,
+                "registered_at_ts": enrolled_at,
+                "registered_by_field_rep_id": rep_resolution["field_rep_id"],
+                "registered_by_field_rep_external_id": rep_resolution["field_rep_external_id"],
+                "whitelabel_enabled": "false",
+                "whitelabel_subdomain": None,
+                "doctor_id": resolved_doctor_id,
+                "full_name": full_name,
+                "clinic_name": clean_text((doctor_dim or {}).get("clinic_name")),
+                "city": city,
+                "district": clean_text((doctor_dim or {}).get("district")),
+                "state": state,
+                "field_rep_id_resolved": clean_text((doctor_dim or {}).get("field_rep_id_resolved")),
+                "field_rep_external_id": clean_text((doctor_dim or {}).get("field_rep_external_id")),
+                "campaign_name": clean_text(campaign.get("campaign_name")),
+                "brand_name": clean_text(campaign.get("brand_name")),
+                "enrollment_unresolved_flag": "false",
+            }
+        )
+        base_seen.add(key)
+        bridge_campaign_doctor_base_rows.append(
+            {
+                "campaign_id_original": clean_text(campaign.get("campaign_id_original")) or campaign_id_normalized,
+                "campaign_id_normalized": campaign_id_normalized,
+                "doctor_key": mapped_doctor_key,
+                "doctor_id": resolved_doctor_id,
+                "full_name": full_name,
+                "clinic_name": clean_text((doctor_dim or {}).get("clinic_name")),
+                "city": city,
+                "district": clean_text((doctor_dim or {}).get("district")),
+                "state": state,
+                "field_rep_id_resolved": clean_text((doctor_dim or {}).get("field_rep_id_resolved")),
+                "field_rep_external_id": clean_text((doctor_dim or {}).get("field_rep_external_id")),
+                "enrolled_at_ts": enrolled_at,
                 "is_enrolled_flag": "true",
             }
         )

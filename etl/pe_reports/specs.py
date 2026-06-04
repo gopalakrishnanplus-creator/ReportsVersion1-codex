@@ -51,6 +51,7 @@ class SourceTableSpec:
     key_columns: list[str]
     watermark_field: str | None = None
     lookback_days: int = 30
+    source_filters: dict[str, str] | None = None
 
 
 PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
@@ -159,21 +160,23 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         watermark_field="updated_at",
     ),
     "catalog_therapyarea": SourceTableSpec(
-        source_table="catalog_therapyarea",
+        source_table="pe_content_item_v2",
         raw_table="catalog_therapyarea_raw",
         bronze_table="catalog_therapyarea",
-        columns=["id", "code", "display_name", "description", "sort_order", "is_active"],
+        columns=["id", "code", "display_name", "description", "sort_order", "is_active", "content_type"],
         key_columns=["id"],
+        source_filters={"content_type": "therapy_area"},
     ),
     "catalog_triggercluster": SourceTableSpec(
-        source_table="catalog_triggercluster",
+        source_table="pe_content_item_v2",
         raw_table="catalog_triggercluster_raw",
         bronze_table="catalog_triggercluster",
-        columns=["id", "code", "display_name", "description", "language_code", "is_active", "sort_order"],
+        columns=["id", "code", "display_name", "description", "language_code", "is_active", "sort_order", "content_type"],
         key_columns=["id"],
+        source_filters={"content_type": "trigger_cluster"},
     ),
     "catalog_trigger": SourceTableSpec(
-        source_table="catalog_trigger",
+        source_table="pe_content_item_v2",
         raw_table="catalog_trigger_raw",
         bronze_table="catalog_trigger",
         columns=[
@@ -188,11 +191,13 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
             "primary_therapy_id",
             "is_active",
             "sort_order",
+            "content_type",
         ],
         key_columns=["id"],
+        source_filters={"content_type": "trigger"},
     ),
     "catalog_video": SourceTableSpec(
-        source_table="catalog_video",
+        source_table="pe_content_item_v2",
         raw_table="catalog_video_raw",
         bronze_table="catalog_video",
         columns=[
@@ -208,19 +213,22 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
             "is_active",
             "created_at",
             "updated_at",
+            "content_type",
         ],
         key_columns=["id"],
         watermark_field="updated_at",
+        source_filters={"content_type": "video"},
     ),
     "catalog_videolanguage": SourceTableSpec(
-        source_table="catalog_videolanguage",
+        source_table="pe_content_item_v2",
         raw_table="catalog_videolanguage_raw",
         bronze_table="catalog_videolanguage",
-        columns=["id", "video_id", "language_code", "title", "youtube_url"],
+        columns=["id", "video_id", "language_code", "title", "youtube_url", "content_type"],
         key_columns=["id"],
+        source_filters={"content_type": "video_language"},
     ),
     "catalog_videocluster": SourceTableSpec(
-        source_table="catalog_videocluster",
+        source_table="pe_content_item_v2",
         raw_table="catalog_videocluster_raw",
         bronze_table="catalog_videocluster",
         columns=[
@@ -235,30 +243,53 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
             "is_active",
             "created_at",
             "updated_at",
+            "content_type",
         ],
         key_columns=["id"],
         watermark_field="updated_at",
+        source_filters={"content_type": "video_cluster"},
     ),
     "catalog_videoclusterlanguage": SourceTableSpec(
-        source_table="catalog_videoclusterlanguage",
+        source_table="pe_content_item_v2",
         raw_table="catalog_videoclusterlanguage_raw",
         bronze_table="catalog_videoclusterlanguage",
-        columns=["id", "video_cluster_id", "language_code", "name"],
+        columns=["id", "video_cluster_id", "language_code", "name", "content_type"],
         key_columns=["id"],
+        source_filters={"content_type": "cluster_language"},
     ),
     "catalog_videoclustervideo": SourceTableSpec(
-        source_table="catalog_videoclustervideo",
+        source_table="pe_content_item_v2",
         raw_table="catalog_videoclustervideo_raw",
         bronze_table="catalog_videoclustervideo",
-        columns=["id", "video_cluster_id", "video_id", "sort_order"],
+        columns=["id", "video_cluster_id", "video_id", "sort_order", "content_type"],
         key_columns=["id"],
+        source_filters={"content_type": "video_cluster_video"},
     ),
     "catalog_videotriggermap": SourceTableSpec(
-        source_table="catalog_videotriggermap",
+        source_table="pe_content_item_v2",
         raw_table="catalog_videotriggermap_raw",
         bronze_table="catalog_videotriggermap",
-        columns=["id", "video_id", "trigger_id", "is_primary", "sort_order"],
+        columns=["id", "video_id", "trigger_id", "is_primary", "sort_order", "content_type"],
         key_columns=["id"],
+        source_filters={"content_type": "video_trigger_map"},
+    ),
+    "pe_rep_assignment_credit": SourceTableSpec(
+        source_table="pe_rep_assignment_credit_v2",
+        raw_table="pe_rep_assignment_credit_raw",
+        bronze_table="pe_rep_assignment_credit",
+        columns=[
+            "rep_assignment_credit_uuid",
+            "campaign_uuid",
+            "doctor_uuid",
+            "field_rep_uuid",
+            "credit_type",
+            "credit_source_table",
+            "credit_source_pk",
+            "credit_effective_from",
+            "credit_effective_to",
+        ],
+        key_columns=["rep_assignment_credit_uuid"],
+        watermark_field="credit_effective_from",
     ),
 }
 
@@ -291,7 +322,7 @@ MASTER_TABLE_SPECS: dict[str, SourceTableSpec] = {
         source_table="doctor_v2",
         raw_table="campaign_doctor_raw",
         bronze_table="campaign_doctor",
-        columns=["id", "doctor_id", "full_name", "email", "phone", "city", "state", "created_at"],
+        columns=["doctor_uuid", "id", "doctor_id", "full_name", "email", "phone", "city", "state", "created_at"],
         key_columns=["id"],
         watermark_field="created_at",
     ),
@@ -300,8 +331,12 @@ MASTER_TABLE_SPECS: dict[str, SourceTableSpec] = {
         raw_table="campaign_doctorcampaignenrollment_raw",
         bronze_table="campaign_doctorcampaignenrollment",
         columns=[
+            "doctor_campaign_enrollment_uuid",
             "campaign_id",
             "doctor_id",
+            "campaign_uuid",
+            "doctor_uuid",
+            "registered_by_field_rep_uuid",
             "registered_at",
             "created_at",
             "updated_at",
@@ -317,6 +352,7 @@ MASTER_TABLE_SPECS: dict[str, SourceTableSpec] = {
         raw_table="campaign_campaign_raw",
         bronze_table="campaign_campaign",
         columns=[
+            "campaign_uuid",
             "id",
             "name",
             "brand_id",
@@ -338,7 +374,7 @@ MASTER_TABLE_SPECS: dict[str, SourceTableSpec] = {
         source_table="brand_v2",
         raw_table="campaign_brand_raw",
         bronze_table="campaign_brand",
-        columns=["id", "name"],
+        columns=["brand_uuid", "id", "name"],
         key_columns=["id"],
     ),
     "campaign_fieldrep": SourceTableSpec(
@@ -346,6 +382,7 @@ MASTER_TABLE_SPECS: dict[str, SourceTableSpec] = {
         raw_table="campaign_fieldrep_raw",
         bronze_table="campaign_fieldrep",
         columns=[
+            "field_rep_uuid",
             "id",
             "full_name",
             "phone_number",
@@ -362,7 +399,7 @@ MASTER_TABLE_SPECS: dict[str, SourceTableSpec] = {
         source_table="campaign_field_rep_assignment_v2",
         raw_table="campaign_campaignfieldrep_raw",
         bronze_table="campaign_campaignfieldrep",
-        columns=["id", "campaign_id", "field_rep_id"],
+        columns=["campaign_field_rep_assignment_uuid", "id", "campaign_id", "field_rep_id", "campaign_uuid", "field_rep_uuid"],
         key_columns=["id"],
     ),
 }

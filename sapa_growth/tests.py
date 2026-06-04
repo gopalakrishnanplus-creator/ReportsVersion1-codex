@@ -15,7 +15,7 @@ from etl.sapa_growth import raw as sapa_raw
 from etl.sapa_growth import storage as sapa_storage
 from etl.sapa_growth import gold as sapa_gold
 from etl.sapa_growth.mysql import extract_rows
-from etl.sapa_growth.silver import _best_dim_for_event, _doctor_indexes, _doctor_matches_for_api
+from etl.sapa_growth.silver import _activity_events_as_legacy_rows, _best_dim_for_event, _doctor_indexes, _doctor_matches_for_api
 from etl.sapa_growth.specs import RAW_AUDIT_COLUMNS
 from sapa_growth import services as sapa_services
 from sapa_growth.logic import classify_metric_event, explode_followup_schedule, map_course_status, normalize_phone, webinar_effective_date
@@ -127,6 +127,37 @@ class SapaGrowthLogicTests(SimpleTestCase):
             sapa_raw.ingest_mysql_sources("run-1", "2026-06-03T00:00:00+00:00")
 
         snapshot_mock.assert_not_called()
+
+    def test_rfa_activity_v2_payloads_convert_to_legacy_activity_rows(self):
+        converted = _activity_events_as_legacy_rows(
+            [
+                {
+                    "source_table": "redflags_patientsubmission",
+                    "source_pk_value": "fallback-id",
+                    "event_at": "2026-06-03 10:00:00",
+                    "event_payload_json": json.dumps(
+                        {
+                            "record_id": "sub-1",
+                            "doctor_id": "DOC001",
+                            "patient_id": "PAT001",
+                            "form_id": "FRM001",
+                            "language_code": "en",
+                            "overall_flag_code": "red",
+                            "submitted_at": "2026-06-03 09:55:00",
+                        }
+                    ),
+                },
+                {
+                    "source_table": "redflags_submissionredflag",
+                    "source_pk_value": "7",
+                    "event_payload_json": json.dumps({"id": 7, "red_flag_id": "RF001", "submission_id": "sub-1"}),
+                },
+            ]
+        )
+
+        self.assertEqual(converted["redflags_patientsubmission"][0]["record_id"], "sub-1")
+        self.assertEqual(converted["redflags_patientsubmission"][0]["doctor_id"], "DOC001")
+        self.assertEqual(converted["redflags_submissionredflag"][0]["red_flag_id"], "RF001")
 
     def test_map_course_status(self):
         self.assertEqual(map_course_status("In Progress"), "Started")
