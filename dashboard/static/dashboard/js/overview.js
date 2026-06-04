@@ -473,6 +473,51 @@
       .replace(/'/g, '&#039;');
   }
 
+  function stateRowsHtml(states) {
+    if (!Array.isArray(states) || !states.length) {
+      return '<p class="subtext">No state data available.</p>';
+    }
+    return states.map((state) => `
+      <div class="state-row">
+        <div>
+          <strong>${escapeHtml(state.state)}</strong>
+          <p>Health: ${escapeHtml(state.health_score)}%</p>
+          <p>Open: ${escapeHtml(state.open_pct)}%</p>
+        </div>
+        <div class="state-right">
+          <span class="badge ${escapeHtml(String(state.label || '').toLowerCase())}">${escapeHtml(state.label)}</span>
+          <p>Reached: ${escapeHtml(state.reached_pct)}%</p>
+          <p>Consumed: ${escapeHtml(state.consumed_pct)}%</p>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function loadStateAttention() {
+    const statePanel = document.getElementById('state_panel');
+    const stateList = document.getElementById('state-list');
+    const stateViewAll = document.getElementById('state-view-all');
+    const stateUrl = statePanel?.dataset?.stateUrl || '';
+    if (!statePanel || !stateList || !stateUrl) return;
+    try {
+      const response = await fetch(stateUrl, { credentials: 'same-origin' });
+      if (!response.ok) {
+        throw new Error(`State summary failed with status ${response.status}`);
+      }
+      const payload = await response.json();
+      const cardStates = payload.state_attention_card || payload.state_attention || [];
+      stateList.innerHTML = stateRowsHtml(cardStates);
+      if (stateViewAll && Number(payload.state_count || 0) > cardStates.length) {
+        stateViewAll.href = payload.state_list_url || stateViewAll.href;
+        stateViewAll.classList.remove('hidden');
+      }
+    } catch (error) {
+      stateList.innerHTML = '<p class="subtext">State data is still processing. Try View All after refreshing the report.</p>';
+    }
+  }
+
+  loadStateAttention();
+
   function currentModalOpen() {
     return Boolean(
       (fieldRepPanel && !fieldRepPanel.classList.contains('hidden'))
