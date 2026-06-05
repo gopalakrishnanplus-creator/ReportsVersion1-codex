@@ -505,15 +505,7 @@ def _with_delta(current: int | None, previous: int | None) -> dict[str, Any]:
 def _dashboard_tiles(summary: dict[str, Any], filters: dict[str, str | None]) -> dict[str, list[dict[str, Any]]]:
     return {
         "field_rep": [
-            {
-                "title": "Webinar Registrations",
-                "value": summary["webinar_registrations_weekly"],
-                "cumulative": summary["webinar_registrations_cumulative"],
-                "delta": summary["webinar_registrations_weekly"] - summary["webinar_registrations_previous"],
-                "href": _metric_href("webinar_registrations", filters),
-                "theme": "teal",
-                "supported": True,
-            },
+            # Webinar registrations are temporarily hidden until campaign attribution is finalized.
             {
                 "title": "Onboarded Doctors (User Created)",
                 "value": summary["onboarded_doctors_weekly"],
