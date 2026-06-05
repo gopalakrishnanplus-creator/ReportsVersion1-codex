@@ -22,6 +22,10 @@ from etl.reporting_corrections import (
     normalize_name,
     normalize_phone,
 )
+from etl.reporting_privacy import (
+    active_campaign_privacy_allowlist,
+    filter_rows_by_campaign_fields,
+)
 
 
 RFA_DEFAULT_DB = "rfa_master_dev"
@@ -815,6 +819,51 @@ def _load_source() -> dict[str, list[dict[str, Any]]]:
     if table_exists(RAW_V2_MASTER_SCHEMA, "campaign_v2") and table_exists(RAW_V2_INCLINIC_SCHEMA, "inclinic_collateral_transaction_v2"):
         return _load_source_from_raw_v2()
     return _load_source_from_mysql_v2()
+
+
+def _apply_campaign_privacy_to_source(source: dict[str, list[dict[str, Any]]], allowlist: set[str]) -> dict[str, list[dict[str, Any]]]:
+    if not allowlist:
+        return source
+
+    output = {key: list(rows) for key, rows in source.items()}
+    campaign_fields_by_source = {
+        "campaign_v2": ("legacy_campaign_id", "id", "campaign_id", "brand_campaign_id"),
+        "campaign_management_campaign": ("brand_campaign_id", "id", "campaign_id", "legacy_campaign_id"),
+        "campaign_field_rep_assignment_v2": ("legacy_campaign_id", "campaign_id"),
+        "doctor_field_rep_roster_bridge_v2": ("legacy_campaign_id", "campaign_id"),
+        "inclinic_assigned_doctor_roster_v2": ("legacy_campaign_id", "campaign_id"),
+        "inclinic_campaign_collateral_v2": ("legacy_campaign_id", "campaign_id", "old_campaign_id", "brand_campaign_id"),
+        "inclinic_campaign_field_rep_assignment_v2": ("legacy_campaign_id", "campaign_id", "old_campaign_id", "brand_campaign_id"),
+        "inclinic_collateral_transaction_v2": ("legacy_campaign_id", "old_brand_campaign_id", "brand_campaign_id", "campaign_id"),
+        "inclinic_share_event_v2": ("legacy_campaign_id", "old_brand_campaign_id", "brand_campaign_id", "campaign_id"),
+    }
+    for source_key, fields in campaign_fields_by_source.items():
+        output[source_key] = filter_rows_by_campaign_fields(output.get(source_key, []), allowlist, fields)
+
+    allowed_rep_ids: set[str] = set()
+    for source_key in ("campaign_field_rep_assignment_v2", "inclinic_campaign_field_rep_assignment_v2", "doctor_field_rep_roster_bridge_v2", "inclinic_assigned_doctor_roster_v2"):
+        for row in output.get(source_key, []):
+            for field in ("field_rep_id", "campaign_fieldrep_id", "current_campaign_fieldrep_id", "registered_by_id", "old_field_rep_id"):
+                value = _field(row, field)
+                if value:
+                    allowed_rep_ids.add(value)
+
+    if allowed_rep_ids:
+        output["field_rep_v2"] = [
+            row
+            for row in output.get("field_rep_v2", [])
+            if _field(row, "current_campaign_fieldrep_id", "id") in allowed_rep_ids
+        ]
+        output["inclinic_field_rep_identity_v2"] = [
+            row
+            for row in output.get("inclinic_field_rep_identity_v2", [])
+            if _field(row, "campaign_fieldrep_id") in allowed_rep_ids
+        ]
+    else:
+        output["field_rep_v2"] = []
+        output["inclinic_field_rep_identity_v2"] = []
+
+    return output
 
 
 def _validate_required_v2_source_counts(source: dict[str, list[dict[str, Any]]]) -> None:
@@ -1903,6 +1952,8 @@ def build_v2_reporting(run_id: str) -> dict[str, Any]:
     now = _now()
     source = _load_source()
     _validate_required_v2_source_counts(source)
+    privacy_allowlist = active_campaign_privacy_allowlist()
+    source = _apply_campaign_privacy_to_source(source, privacy_allowlist)
 
     ensure_schema("silver")
     _drop_bronze_views()
@@ -1959,6 +2010,7 @@ def build_v2_reporting(run_id: str) -> dict[str, Any]:
             "silver.bridge_brand_campaign_doctor_base": len(bridge_rows),
             "silver.doctor_action_first_seen": len(action_rows),
             "ops.reporting_data_correction_rule_active": len(correction_rules),
+            "ops.reporting_campaign_privacy_allowlist_active": len(privacy_allowlist),
         },
         "preservation_counts": preservation_counts,
         "issues": issues,

@@ -6,6 +6,7 @@ from typing import Any
 
 from etl.pe_reports.specs import BRONZE_SCHEMA, SILVER_SCHEMA
 from etl.pe_reports.storage import fetch_table, replace_table
+from etl.reporting_privacy import active_campaign_privacy_allowlist, campaign_allowed_by_allowlist
 from etl.pe_reports.utils import (
     as_int,
     clean_text,
@@ -334,6 +335,22 @@ def _stringify_row(row: dict[str, Any]) -> dict[str, str]:
 def _replace_silver_table(table: str, rows: list[dict[str, Any]]) -> None:
     columns = list(rows[0].keys()) if rows else SILVER_DEFAULT_COLUMNS[table]
     replace_table(SILVER_SCHEMA, table, columns, [_stringify_row(row) for row in rows])
+
+
+def _pe_campaign_allowed(row: dict[str, Any], allowlist: set[str]) -> bool:
+    if not allowlist:
+        return True
+    for field in ("campaign_id_normalized", "campaign_id_original", "campaign_key", "campaign_id"):
+        value = clean_text(row.get(field))
+        if value and campaign_allowed_by_allowlist(value, allowlist):
+            return True
+    return False
+
+
+def _filter_pe_campaign_rows(rows: list[dict[str, Any]], allowlist: set[str]) -> list[dict[str, Any]]:
+    if not allowlist:
+        return rows
+    return [row for row in rows if _pe_campaign_allowed(row, allowlist)]
 
 
 def _preferred_localized_label(rows: list[dict[str, Any]], value_field: str, fallback: str | None = None) -> str | None:
@@ -708,6 +725,7 @@ def _best_registered_at(row: dict[str, Any]) -> str | None:
 def build_silver(run_id: str) -> dict[str, Any]:
     issues: dict[str, int] = defaultdict(int)
     counts: dict[str, int] = {}
+    privacy_allowlist = active_campaign_privacy_allowlist()
 
     doctor_rows = fetch_table(BRONZE_SCHEMA, "redflags_doctor")
     campaign_doctor_rows = fetch_table(BRONZE_SCHEMA, "campaign_doctor")
@@ -1008,6 +1026,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
         )
         issues["publisher_campaign_without_system_pe"] += 1
 
+    dim_campaign_rows = _filter_pe_campaign_rows(dim_campaign_rows, privacy_allowlist)
     campaign_by_id = {clean_text(row.get("campaign_id_normalized")): row for row in dim_campaign_rows if clean_text(row.get("campaign_id_normalized"))}
     campaigns_by_banner_target_url: dict[str, list[str]] = defaultdict(list)
     for campaign in dim_campaign_rows:
@@ -1090,6 +1109,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             campaign_id_by_uuid.get(clean_text(row.get("campaign_uuid")) or "")
             or normalize_campaign_id(row.get("campaign_uuid"))
         )
+        if privacy_allowlist and not campaign_allowed_by_allowlist(campaign_id_normalized, privacy_allowlist):
+            continue
         campaign_doctor_id = (
             campaign_doctor_id_by_uuid.get(clean_text(row.get("doctor_uuid")) or "")
             or clean_text(row.get("doctor_uuid"))
@@ -1113,6 +1134,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         campaign_id_normalized = normalize_campaign_id(row.get("campaign_id"))
         campaign_doctor_id = clean_text(row.get("doctor_id"))
         if not campaign_id_normalized or not campaign_doctor_id:
+            continue
+        if privacy_allowlist and not campaign_allowed_by_allowlist(campaign_id_normalized, privacy_allowlist):
             continue
         mapped = map_by_campaign_doctor_id.get(campaign_doctor_id, {})
         mapped_doctor_key = clean_text(mapped.get("doctor_key"))
@@ -1190,6 +1213,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         campaigns_by_doctor[mapped_doctor_key].append(campaign_id_normalized)
 
     for (campaign_id_normalized, campaign_doctor_id), credit in rep_credit_by_campaign_doctor.items():
+        if privacy_allowlist and not campaign_allowed_by_allowlist(campaign_id_normalized, privacy_allowlist):
+            continue
         mapped = map_by_campaign_doctor_id.get(campaign_doctor_id, {})
         mapped_doctor_key = clean_text(mapped.get("doctor_key"))
         if not mapped_doctor_key or not clean_text((doctor_by_key.get(mapped_doctor_key or "") or {}).get("doctor_id")):
@@ -1275,6 +1300,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             campaign_by_cluster_code=campaign_by_cluster_code,
             campaign_videos_by_campaign=campaign_videos_by_campaign,
         )
+        if privacy_allowlist and not _pe_campaign_allowed(attribution, privacy_allowlist):
+            continue
         dq_errors = []
         if not doctor_id:
             dq_errors.append("missing_doctor_id")
@@ -1341,6 +1368,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
     for row in playback_rows:
         share_public_id = clean_text(row.get("share_public_id"))
         share = share_by_public_id.get(share_public_id or "")
+        if privacy_allowlist and not share:
+            continue
         doctor_id = clean_text((share or {}).get("doctor_id")) or clean_text(row.get("doctor_id"))
         doctor = doctor_by_key.get(clean_text((share or {}).get("doctor_key")) or doctor_id or "")
         milestone = as_int(row.get("milestone_percent"), default=-1)
@@ -1407,6 +1436,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             campaign_by_id=campaign_by_id,
             campaigns_by_banner_target_url=campaigns_by_banner_target_url,
         )
+        if privacy_allowlist and not _pe_campaign_allowed(attribution, privacy_allowlist):
+            continue
         dq_errors = []
         if not doctor_id:
             dq_errors.append("missing_doctor_id")
@@ -1570,6 +1601,46 @@ def build_silver(run_id: str) -> dict[str, Any]:
             }
         )
 
+    if privacy_allowlist:
+        allowed_doctor_keys = {
+            clean_text(row.get("doctor_key"))
+            for rows in (
+                fact_campaign_enrollment_rows,
+                bridge_campaign_doctor_base_rows,
+                share_rows_enriched,
+                playback_rows_enriched,
+                banner_click_rows_enriched,
+                funnel_rows,
+                fact_video_view_rows,
+            )
+            for row in rows
+            if clean_text(row.get("doctor_key"))
+        }
+        allowed_campaign_doctor_ids = {
+            clean_text(row.get("campaign_doctor_id"))
+            for row in fact_campaign_enrollment_rows + bridge_campaign_doctor_base_rows
+            if clean_text(row.get("campaign_doctor_id"))
+        }
+        allowed_field_rep_ids = {
+            clean_text(row.get(field))
+            for rows in (
+                fact_campaign_enrollment_rows,
+                bridge_campaign_doctor_base_rows,
+                share_rows_enriched,
+                playback_rows_enriched,
+                banner_click_rows_enriched,
+                funnel_rows,
+                fact_video_view_rows,
+            )
+            for row in rows
+            for field in ("registered_by_field_rep_id", "field_rep_id_resolved")
+            if clean_text(row.get(field))
+        }
+        dim_doctor_rows = [row for row in dim_doctor_rows if clean_text(row.get("doctor_key")) in allowed_doctor_keys]
+        dim_field_rep_rows = [row for row in dim_field_rep_rows if clean_text(row.get("field_rep_id")) in allowed_field_rep_ids]
+        map_rows = [row for row in map_rows if clean_text(row.get("campaign_doctor_id")) in allowed_campaign_doctor_ids]
+        recon_rows = [row for row in recon_rows if clean_text(row.get("doctor_id")) in allowed_doctor_keys]
+
     _replace_silver_table("dim_field_rep", dim_field_rep_rows)
     _replace_silver_table("map_campaign_doctor_to_doctor", map_rows)
     _replace_silver_table("dim_doctor", dim_doctor_rows)
@@ -1605,6 +1676,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             "fact_share_funnel_first_seen": len(funnel_rows),
             "fact_video_view": len(fact_video_view_rows),
             "recon_doctor_share_summary": len(recon_rows),
+            "ops.reporting_campaign_privacy_allowlist_active": len(privacy_allowlist),
         }
     )
 

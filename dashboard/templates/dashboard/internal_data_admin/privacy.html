@@ -1,0 +1,94 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}Campaign Privacy Allowlist{% endblock %}
+{% block heading %}Campaign Privacy Allowlist{% endblock %}
+
+{% block content %}
+<nav class="ida-toolbar">
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-home' %}">Back to Data Admin</a>
+</nav>
+
+<section class="ida-band">
+  <div>
+    <h2>Allow PII only for selected campaigns</h2>
+    <p class="ida-muted">Add campaign IDs here when doctor, patient, and field-rep names, numbers, and emails may remain in derived dashboards. When at least one entry is active, campaign-scoped reporting rows outside this allowlist are excluded during ETL rebuild.</p>
+  </div>
+  <div class="ida-safety-note">
+    <strong>No RAW deletion</strong>
+    <span>Source and RAW rows are preserved. Deactivate entries and rerun ETL to change what derived reports include.</span>
+  </div>
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Status</p>
+  {% if is_allowlist_active %}
+  <h2>{{ active_rules|length }} active campaign{{ active_rules|length|pluralize }} allowed</h2>
+  <p class="ida-muted">Dashboards should include PII only for these campaign IDs after the next ETL rebuild.</p>
+  {% else %}
+  <h2>Allowlist inactive</h2>
+  <p class="ida-muted">No active campaign privacy entries exist, so existing report behavior remains unchanged.</p>
+  {% endif %}
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Add Campaign</p>
+  <form class="ida-form ida-record-form" method="post">
+    {% csrf_token %}
+    <input type="hidden" name="privacy_action" value="add">
+    <div class="ida-field-grid">
+      <label class="ida-field">
+        <span>Campaign ID to allow</span>
+        <input type="text" name="campaign_id" placeholder="83ce7fc7c965433ab2b9717394abe3c1" required>
+      </label>
+      <label class="ida-field ida-field-wide">
+        <span>Reason</span>
+        <input type="text" name="reason" placeholder="Approved campaign for report PII visibility" required>
+      </label>
+    </div>
+    <button class="ida-button" type="submit">Allow Campaign</button>
+  </form>
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Allowlist Entries</p>
+  <div class="ida-table-wrap">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Campaign ID</th>
+          <th>Normalized</th>
+          <th>Reason</th>
+          <th>Created</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rule in rules %}
+        <tr>
+          <td>{% if rule.is_active %}<strong>Active</strong>{% else %}Inactive{% endif %}</td>
+          <td><code>{{ rule.campaign_id }}</code></td>
+          <td><code>{{ rule.campaign_id_normalized }}</code></td>
+          <td>{{ rule.reason }}</td>
+          <td>{{ rule.created_at }}<br><span>{{ rule.created_by }}</span></td>
+          <td>
+            {% if rule.is_active %}
+            <form method="post">
+              {% csrf_token %}
+              <input type="hidden" name="privacy_action" value="deactivate">
+              <input type="hidden" name="rule_id" value="{{ rule.rule_id }}">
+              <button class="ida-button ida-button-secondary" type="submit">Deactivate</button>
+            </form>
+            {% else %}
+            <span class="ida-muted">No action</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6">No campaign privacy allowlist entries have been created.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

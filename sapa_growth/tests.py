@@ -350,6 +350,9 @@ class SapaGrowthLogicTests(SimpleTestCase):
         with patch("etl.sapa_growth.silver.fetch_table", side_effect=lambda _schema, table: rows_by_table.get(table, [])), patch(
             "etl.sapa_growth.silver.replace_table",
             side_effect=lambda schema, table, columns, rows: replace_calls.append((schema, table, columns, list(rows))),
+        ), patch(
+            "etl.sapa_growth.silver.active_campaign_privacy_allowlist",
+            return_value=set(),
         ):
             sapa_silver.build_silver("run-1")
 

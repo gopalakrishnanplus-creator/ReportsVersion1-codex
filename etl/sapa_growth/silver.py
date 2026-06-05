@@ -9,6 +9,7 @@ from django.conf import settings
 
 from etl.sapa_growth.specs import BRONZE_SCHEMA, SILVER_SCHEMA
 from etl.sapa_growth.storage import fetch_table, replace_table
+from etl.reporting_privacy import active_campaign_privacy_allowlist, campaign_allowed_by_allowlist
 from sapa_growth.logic import (
     as_int,
     canonical_doctor_key,
@@ -120,6 +121,10 @@ def _campaign_key_label(*rows: dict[str, Any] | None) -> tuple[str, str]:
     if not label:
         label = default_label if key == default_key else key.replace("-", " ").replace("_", " ").title()
     return key, label
+
+
+def _sapa_campaign_allowed(value: Any, allowlist: set[str]) -> bool:
+    return campaign_allowed_by_allowlist(value, allowlist)
 
 
 def _truthy(value: Any) -> bool:
@@ -284,6 +289,7 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
 
 def build_silver(run_id: str) -> dict[str, Any]:
     now_iso = _now_iso()
+    privacy_allowlist = active_campaign_privacy_allowlist()
 
     campaign_doctors = fetch_table(BRONZE_SCHEMA, "campaign_doctor")
     campaign_enrollments = fetch_table(BRONZE_SCHEMA, "campaign_doctorcampaignenrollment")
@@ -327,6 +333,12 @@ def build_silver(run_id: str) -> dict[str, Any]:
         for row in campaign_rows
         if clean_text(row.get("id")) and (not has_rfa_flag_values or _truthy(row.get("system_rfa")))
     }
+    if privacy_allowlist:
+        rfa_campaigns = {
+            campaign_id: row
+            for campaign_id, row in rfa_campaigns.items()
+            if _sapa_campaign_allowed(campaign_id, privacy_allowlist)
+        }
     field_rep_by_id = {clean_text(row.get("id")): row for row in source_field_rep_rows if clean_text(row.get("id"))}
     field_rep_by_external = {
         _norm_id(row.get("brand_supplied_field_rep_id")): row
@@ -339,6 +351,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         campaign_id = clean_text(row.get("campaign_id"))
         field_rep_id = clean_text(row.get("field_rep_id"))
         if not campaign_id or not field_rep_id:
+            continue
+        if privacy_allowlist and campaign_id not in rfa_campaigns:
             continue
         campaign_rep_ids[campaign_id].add(field_rep_id)
         rep_campaign_ids[field_rep_id].add(campaign_id)
@@ -405,6 +419,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             )
         if output:
             return output
+        if privacy_allowlist:
+            return []
         campaign_key, campaign_label = _campaign_key_label(campaign_row, doctor_row)
         rep_info = resolve_field_rep((doctor_row or {}).get("field_rep_id"))
         return [
@@ -444,6 +460,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             )
         if output:
             return [_best_dim_for_event(output, doctor_row.get("created_at")) or output[0]]
+        if privacy_allowlist:
+            return []
         campaign_key, campaign_label = _campaign_key_label(doctor_row)
         rep_info = resolve_field_rep(doctor_row.get("field_rep_id"))
         return [{"campaign_id": "", "campaign_key": campaign_key, "campaign_label": campaign_label, "campaign_start_date": "", "campaign_end_date": "", "field_rep_id": rep_info["field_rep_id"], "field_rep_name": rep_info["field_rep_name"], "field_rep_state": rep_info["field_rep_state"], "registered_at": ""}]
@@ -674,6 +692,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             submitted_at = iso_datetime(row.get("submitted_at"))
             for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"{source_table}:{source_submission_id}", submitted_at):
                 filters = _doctor_filters(doctor_dim)
+                if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
+                    continue
                 overall_flag = (_empty_text(row.get("overall_flag_code"))).lower()
                 submission_key = f"{source_table}:{source_submission_id}"
                 if filters["campaign_key"]:
@@ -800,6 +820,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         event_ts = _empty_text(iso_datetime(row.get("ts")))
         for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"metric:{row.get('id')}", event_ts):
             filters = _doctor_filters(doctor_dim)
+            if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
+                continue
             classifications = classify_metric_event(row.get("event_type"), row.get("action_key"))
             metric_event_id = _empty_text(row.get("id"))
             if filters["campaign_key"]:
@@ -871,6 +893,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         for item in explode_followup_schedule(row):
             for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"followup:{row.get('id')}", item["scheduled_followup_date"]):
                 filters = _doctor_filters(doctor_dim)
+                if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
+                    continue
                 reminder_id = _empty_text(row.get("id"))
                 if filters["campaign_key"]:
                     reminder_id = f"{reminder_id}:campaign:{filters['campaign_key']}"
@@ -990,6 +1014,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         )
         for matched_dim, match_method in _doctor_matches_for_api(row, dim_by_email, dim_by_phone, effective_date):
             filters = _doctor_filters(matched_dim)
+            if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
+                continue
             registration_key = base_registration_key
             if filters["campaign_key"]:
                 registration_key = f"{registration_key}:campaign:{filters['campaign_key']}"
@@ -1058,6 +1084,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         course_match_date = row.get("completed_at") or row.get("started_at") or row.get("enrolled_at") or date.today().isoformat()
         for matched_dim, match_method in _doctor_matches_for_api(row, dim_by_email, dim_by_phone, course_match_date):
             filters = _doctor_filters(matched_dim)
+            if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
+                continue
             course_progress_rows.append(
                 {
                     "extract_snapshot_date": date.today().isoformat(),
@@ -1250,9 +1278,17 @@ def build_silver(run_id: str) -> dict[str, Any]:
 
     screening_count_by_doctor = Counter(row["doctor_key"] for row in screening_rows)
     red_tag_count_by_doctor = Counter(row["doctor_key"] for row in screening_rows if row["is_red_tag"] == "true")
+    allowed_recon_doctor_keys = {
+        key
+        for row in dim_rows
+        for key in (clean_text(row.get("doctor_key")), clean_text(row.get("base_doctor_key")))
+        if key
+    }
     recon_rows = []
     for outcome in clinic_outcomes:
         doctor_key = canonical_doctor_key(outcome.get("doctor_id"))
+        if privacy_allowlist and doctor_key not in allowed_recon_doctor_keys:
+            continue
         recon_rows.append(
             {
                 "doctor_key": doctor_key,
@@ -1327,6 +1363,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             "fact_webinar_registration": len(webinar_fact_rows),
             "fact_course_user_progress": len(course_progress_rows),
             "fact_doctor_status_daily": len(doctor_status_rows),
+            "ops.reporting_campaign_privacy_allowlist_active": len(privacy_allowlist),
         },
         "issues": {
             "invalid_course_status": dict(invalid_course_status_counter),
