@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock, patch
 
 from django.conf import settings
@@ -7,6 +8,7 @@ from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 
 import dashboard.views
+from etl import inclinic_pipeline
 from etl.pipelines import bronze_transform, raw_ingestion, silver_transform, v2_reporting
 from dashboard.internal_data_admin import (
     ColumnInfo,
@@ -1338,6 +1340,84 @@ class V2ReportingPreservationTests(SimpleTestCase):
         source = {key: [{"id": "1"}] for key in v2_reporting.REQUIRED_V2_SOURCE_KEYS}
 
         v2_reporting._validate_required_v2_source_counts(source)
+
+    def test_field_rep_state_falls_back_to_inclinic_identity_v2_state(self):
+        source = {
+            "field_rep_v2": [
+                {
+                    "id": "2282",
+                    "current_campaign_fieldrep_id": "2282",
+                    "current_brand_supplied_field_rep_id": "5014",
+                    "display_name": "Deen Bandhu",
+                    "state": "",
+                    "is_active": "1",
+                }
+            ],
+            "inclinic_field_rep_identity_v2": [
+                {
+                    "campaign_fieldrep_id": "2282",
+                    "campaign_fieldrep_state": "uttar pradesh",
+                    "is_current": "1",
+                    "source_updated_at": "2026-06-05 09:30:00",
+                }
+            ],
+        }
+
+        rows = v2_reporting._field_rep_rows(source, "2026-06-05T00:00:00+00:00")
+
+        self.assertEqual(rows[0]["state"], "uttar pradesh")
+        self.assertEqual(rows[0]["state_normalized"], "Uttar Pradesh")
+
+    def test_field_rep_state_keeps_master_state_before_identity_fallback(self):
+        source = {
+            "field_rep_v2": [
+                {
+                    "id": "2282",
+                    "current_campaign_fieldrep_id": "2282",
+                    "current_brand_supplied_field_rep_id": "5014",
+                    "display_name": "Deen Bandhu",
+                    "state": "Delhi",
+                    "is_active": "1",
+                }
+            ],
+            "inclinic_field_rep_identity_v2": [
+                {
+                    "campaign_fieldrep_id": "2282",
+                    "campaign_fieldrep_state": "uttar pradesh",
+                    "is_current": "1",
+                }
+            ],
+        }
+
+        rows = v2_reporting._field_rep_rows(source, "2026-06-05T00:00:00+00:00")
+
+        self.assertEqual(rows[0]["state"], "Delhi")
+        self.assertEqual(rows[0]["state_normalized"], "Delhi")
+
+    @patch.dict(os.environ, {"INCLINIC_REPORTING_SOURCE_MODE": "v2"}, clear=False)
+    @patch("etl.inclinic_pipeline.log_run")
+    @patch("etl.inclinic_pipeline.build_gold")
+    @patch("etl.inclinic_pipeline.build_v2_reporting")
+    @patch("etl.inclinic_pipeline.refresh_raw_v2_from_source")
+    @patch("etl.inclinic_pipeline.ensure_control_tables")
+    def test_inclinic_v2_pipeline_refreshes_source_by_default(
+        self,
+        ensure_control_tables,
+        refresh_raw_v2_from_source,
+        build_v2_reporting,
+        build_gold,
+        log_run,
+    ):
+        os.environ.pop("INCLINIC_REPORTING_REFRESH_RAW_V2_FROM_SOURCE", None)
+        refresh_raw_v2_from_source.return_value = {"raw_v2_inclinic.inclinic_field_rep_identity_v2": 1}
+        build_v2_reporting.return_value = {"counts": {}, "issues": {}, "preservation_counts": {}}
+
+        result = inclinic_pipeline.run_pipeline(run_id="state-refresh-test", trigger_type="manual")
+
+        self.assertEqual(result["status"], "SUCCESS")
+        refresh_raw_v2_from_source.assert_called_once_with("state-refresh-test")
+        build_gold.assert_called_once_with("state-refresh-test")
+        log_run.assert_called_once()
 
     def test_share_rep_resolution_trusts_source_id_when_email_conflicts(self):
         source = {

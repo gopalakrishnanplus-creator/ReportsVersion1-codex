@@ -22,7 +22,7 @@ def run_pipeline(run_id: str | None = None, trigger_type: str = "manual") -> dic
         source_mode = os.environ.get("INCLINIC_REPORTING_SOURCE_MODE", "v2").strip().lower()
         if source_mode == "v2":
             refresh_counts = {}
-            refresh_source_v2 = os.environ.get("INCLINIC_REPORTING_REFRESH_RAW_V2_FROM_SOURCE", "0").strip().lower()
+            refresh_source_v2 = os.environ.get("INCLINIC_REPORTING_REFRESH_RAW_V2_FROM_SOURCE", "1").strip().lower()
             if refresh_source_v2 in {"1", "true", "yes", "y", "on"}:
                 refresh_counts = refresh_raw_v2_from_source(run_id)
             silver_result = build_v2_reporting(run_id)
