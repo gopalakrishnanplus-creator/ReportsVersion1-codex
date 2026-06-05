@@ -23,7 +23,7 @@ from reporting.campaign_performance import CampaignPerformanceNotFound, _configu
 UNMAPPED_ACTIVITY_FIELD_REP_ID = "__unmapped_activity__"
 
 
-def _fetch_dicts(sql: str, params=None, query_timeout_ms: int | None = None):
+def _fetch_dicts(sql: str, params=None):
     with connection.cursor() as cursor:
         if query_timeout_ms:
             cursor.execute("SET statement_timeout = %s", [int(query_timeout_ms)])
@@ -2416,7 +2416,6 @@ def _state_attention_source_rows(
             latest_week.get("week_start_date"),
             latest_week.get("week_end_date"),
         ],
-        query_timeout_ms=12000,
     )
 
 
@@ -3518,7 +3517,6 @@ def _build_report_context(
     selected_campaign: str,
     week_filter: int | None = None,
     include_field_rep_doctor_details: bool = True,
-    include_state_attention: bool = True,
 ) -> dict[str, Any]:
     selected_schema = None
     all_weekly_rows: list[dict[str, Any]] = []
@@ -4261,7 +4259,6 @@ def field_rep_doctor_details(request: HttpRequest, brand_campaign_id: str):
             normalized_campaign_id,
             week_filter,
             include_field_rep_doctor_details=True,
-            include_state_attention=False,
         )
     payload, status = _field_rep_doctor_detail_payload(context, rep_id, metric_key)
     return JsonResponse(payload, status=status)
@@ -4274,12 +4271,7 @@ def export_report(request: HttpRequest, brand_campaign_id: str):
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(
-        normalized_campaign_id,
-        week_filter,
-        include_field_rep_doctor_details=False,
-        include_state_attention=False,
-    )
+    context = _build_report_context(normalized_campaign_id, week_filter, include_field_rep_doctor_details=False)
     filename = _export_filename("in_clinic_report", context, "pdf")
     title = f"In-Clinic Sharing Report - {context.get('brand_name') or normalized_campaign_id}"
     return _pdf_response(filename, title, _campaign_pdf_lines(context))

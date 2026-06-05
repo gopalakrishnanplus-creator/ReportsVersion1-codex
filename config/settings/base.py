@@ -78,7 +78,7 @@ def _csv_env(*names: str, default: list[str] | None = None) -> list[str]:
 
 ALLOWED_HOSTS = _csv_env(
     "DJANGO_ALLOWED_HOSTS",
-    default=["reports.inditech.co.in", "localhost", "127.0.0.1"],
+    default=["reports.inditech.co.in", "localhost", "127.0.0.1", "13.126.7.118"],
 )
 CSRF_TRUSTED_ORIGINS = _csv_env(
     "DJANGO_CSRF_TRUSTED_ORIGINS",
