@@ -1167,6 +1167,9 @@ def _field_rep_insight_rows(
         period_start,
         period_end,
         *brand_keys,
+        *brand_keys,
+        *brand_keys,
+        *brand_keys,
         *current_collateral_ids,
     ]
     return _fetch_dicts(
@@ -1245,6 +1248,42 @@ def _field_rep_insight_rows(
             WHERE external_rep_key <> ''
             {alias_key_unions}
         ),
+        doctor_identity_lookup AS (
+            SELECT DISTINCT ON (d.doctor_identity_key)
+                d.doctor_identity_key,
+                d.name,
+                d.phone,
+                d.doctor_phone_normalized,
+                d._silver_updated_at
+            FROM silver.dim_doctor d
+            WHERE COALESCE(NULLIF(d.doctor_identity_key, ''), '') <> ''
+            ORDER BY
+                d.doctor_identity_key,
+                CASE
+                    WHEN NULLIF(btrim(d.name), '') IS NULL
+                      OR lower(btrim(d.name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                    THEN 1 ELSE 0
+                END,
+                d.id DESC
+        ),
+        doctor_id_lookup AS (
+            SELECT DISTINCT ON (d.id::text)
+                d.id::text AS doctor_id,
+                d.name,
+                d.phone,
+                d.doctor_phone_normalized,
+                d._silver_updated_at
+            FROM silver.dim_doctor d
+            WHERE COALESCE(NULLIF(d.id::text, ''), '') <> ''
+            ORDER BY
+                d.id::text,
+                CASE
+                    WHEN NULLIF(btrim(d.name), '') IS NULL
+                      OR lower(btrim(d.name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                    THEN 1 ELSE 0
+                END,
+                d.id DESC
+        ),
         campaign_roster_matches AS (
             SELECT DISTINCT ON (ark.field_rep_id, b.doctor_identity_key)
                 ark.field_rep_id,
@@ -1265,22 +1304,17 @@ def _field_rep_insight_rows(
              AND ark.key_type = 'campaign_fieldrep_id'
             JOIN assigned_reps ar_rule
               ON ar_rule.field_rep_id = ark.field_rep_id
+            LEFT JOIN doctor_identity_lookup d_identity
+              ON d_identity.doctor_identity_key = b.doctor_identity_key
+            LEFT JOIN doctor_id_lookup d_master
+              ON COALESCE(NULLIF(b.doctor_master_id_resolved, ''), '') <> ''
+             AND d_master.doctor_id = b.doctor_master_id_resolved
             LEFT JOIN LATERAL (
-                SELECT d.name, d.phone, d.doctor_phone_normalized, d._silver_updated_at
-                FROM silver.dim_doctor d
-                WHERE d.doctor_identity_key = b.doctor_identity_key
-                   OR (
-                      COALESCE(NULLIF(b.doctor_master_id_resolved, ''), '') <> ''
-                      AND d.id::text = b.doctor_master_id_resolved
-                   )
-                ORDER BY
-                    CASE
-                        WHEN NULLIF(btrim(d.name), '') IS NULL
-                          OR lower(btrim(d.name)) IN ('unknown doctor', 'unknown', 'null', 'none')
-                        THEN 1 ELSE 0
-                    END,
-                    d.id DESC
-                LIMIT 1
+                SELECT
+                    COALESCE(NULLIF(btrim(d_identity.name), ''), NULLIF(btrim(d_master.name), '')) AS name,
+                    COALESCE(NULLIF(btrim(d_identity.phone), ''), NULLIF(btrim(d_master.phone), '')) AS phone,
+                    COALESCE(NULLIF(btrim(d_identity.doctor_phone_normalized), ''), NULLIF(btrim(d_master.doctor_phone_normalized), '')) AS doctor_phone_normalized,
+                    COALESCE(NULLIF(btrim(d_identity._silver_updated_at), ''), NULLIF(btrim(d_master._silver_updated_at), '')) AS _silver_updated_at
             ) d_bridge ON TRUE
             WHERE {_normalized_sql('b.brand_campaign_id')} IN ({brand_placeholders})
               AND COALESCE(NULLIF(b.doctor_identity_key, ''), '') <> ''
@@ -1419,6 +1453,124 @@ def _field_rep_insight_rows(
         activity_period AS (
             SELECT %s::date AS period_start, %s::date AS period_end
         ),
+        transaction_doctor_lookup AS (
+            SELECT DISTINCT ON ({_normalized_sql('tx.brand_campaign_id')}, tx.collateral_id::text, tx.doctor_identity_key)
+                {_normalized_sql('tx.brand_campaign_id')} AS brand_campaign_key,
+                tx.collateral_id::text AS collateral_id,
+                tx.doctor_identity_key,
+                tx.doctor_name,
+                tx.doctor_number
+            FROM silver.fact_collateral_transaction tx
+            WHERE {_normalized_sql('tx.brand_campaign_id')} IN ({brand_placeholders})
+              AND COALESCE(NULLIF(tx.doctor_identity_key, ''), '') <> ''
+            ORDER BY
+                {_normalized_sql('tx.brand_campaign_id')},
+                tx.collateral_id::text,
+                tx.doctor_identity_key,
+                CASE
+                    WHEN NULLIF(btrim(tx.doctor_name), '') IS NULL
+                      OR lower(btrim(tx.doctor_name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                    THEN 1 ELSE 0
+                END,
+                COALESCE(tx.updated_at_ts, tx.created_at_ts, tx.transaction_date_ts) DESC NULLS LAST,
+                tx.id DESC
+        ),
+        rep_evidence_candidates AS (
+            SELECT
+                {_normalized_sql('tx.brand_campaign_id')} AS brand_campaign_key,
+                tx.collateral_id::text AS collateral_id,
+                tx.doctor_identity_key AS doctor_key,
+                NULLIF({_normalized_sql('tx.field_rep_email')}, '') AS email_rep_key,
+                COALESCE(
+                    NULLIF({_normalized_sql('tx.field_rep_master_id_resolved')}, ''),
+                    NULLIF({_normalized_sql('tx.field_rep_id')}, '')
+                ) AS master_rep_key,
+                COALESCE(
+                    NULLIF({_normalized_sql('tx.brand_supplied_field_rep_id_resolved')}, ''),
+                    NULLIF({_normalized_sql('tx.field_rep_unique_id')}, '')
+                ) AS brand_rep_key,
+                NULLIF({_normalized_sql('tx.field_rep_id')}, '') AS numeric_rep_key,
+                COALESCE(NULLIF(btrim(tx.field_rep_id), ''), '') AS source_field_rep_id,
+                COALESCE(NULLIF(btrim(tx.field_rep_email), ''), '') AS source_field_rep_email,
+                COALESCE(
+                    NULLIF(btrim(tx.brand_supplied_field_rep_id_resolved), ''),
+                    NULLIF(btrim(tx.field_rep_unique_id), ''),
+                    ''
+                ) AS source_brand_rep_id,
+                'collateral_transaction'::text AS evidence_source,
+                10 AS source_rank,
+                COALESCE(
+                    NULLIF(tx.opened_event_ts, ''),
+                    NULLIF(tx.video_gt_50_event_ts, ''),
+                    NULLIF(tx.pdf_download_event_ts, ''),
+                    NULLIF(tx.reached_event_ts, ''),
+                    NULLIF(tx.updated_at_ts, ''),
+                    NULLIF(tx.created_at_ts, ''),
+                    NULLIF(tx.transaction_date_ts, '')
+                ) AS evidence_ts,
+                tx.id::text AS source_id
+            FROM silver.fact_collateral_transaction tx
+            WHERE {_normalized_sql('tx.brand_campaign_id')} IN ({brand_placeholders})
+              AND COALESCE(NULLIF(tx.doctor_identity_key, ''), '') <> ''
+              AND COALESCE(
+                    NULLIF({_normalized_sql('tx.field_rep_master_id_resolved')}, ''),
+                    NULLIF({_normalized_sql('tx.field_rep_id')}, ''),
+                    NULLIF({_normalized_sql('tx.brand_supplied_field_rep_id_resolved')}, ''),
+                    NULLIF({_normalized_sql('tx.field_rep_unique_id')}, ''),
+                    NULLIF({_normalized_sql('tx.field_rep_email')}, '')
+                  ) IS NOT NULL
+              AND lower(btrim(COALESCE(tx._dq_errors, ''))) NOT IN ('missing', 'conflict', 'ambiguous')
+            UNION ALL
+            SELECT
+                {_normalized_sql('s.brand_campaign_id')} AS brand_campaign_key,
+                s.collateral_id::text AS collateral_id,
+                s.doctor_identity_key AS doctor_key,
+                NULLIF({_normalized_sql('s.field_rep_email')}, '') AS email_rep_key,
+                NULLIF({_normalized_sql('s.field_rep_id::text')}, '') AS master_rep_key,
+                ''::text AS brand_rep_key,
+                ''::text AS numeric_rep_key,
+                COALESCE(NULLIF(btrim(s.field_rep_id::text), ''), '') AS source_field_rep_id,
+                COALESCE(NULLIF(btrim(s.field_rep_email), ''), '') AS source_field_rep_email,
+                ''::text AS source_brand_rep_id,
+                'share_log'::text AS evidence_source,
+                20 AS source_rank,
+                COALESCE(
+                    NULLIF(s.share_timestamp_ts, ''),
+                    NULLIF(s.updated_at_ts, ''),
+                    NULLIF(s.created_at_ts, ''),
+                    NULLIF(s.reached_event_ts, '')
+                ) AS evidence_ts,
+                s.id::text AS source_id
+            FROM silver.fact_share_log s
+            WHERE {_normalized_sql('s.brand_campaign_id')} IN ({brand_placeholders})
+              AND COALESCE(NULLIF(s.doctor_identity_key, ''), '') <> ''
+              AND COALESCE(
+                    NULLIF({_normalized_sql('s.field_rep_id::text')}, ''),
+                    NULLIF({_normalized_sql('s.field_rep_email')}, '')
+                  ) IS NOT NULL
+        ),
+        rep_evidence_latest AS (
+            SELECT DISTINCT ON (brand_campaign_key, collateral_id, doctor_key)
+                brand_campaign_key,
+                collateral_id,
+                doctor_key,
+                email_rep_key,
+                master_rep_key,
+                brand_rep_key,
+                numeric_rep_key,
+                source_field_rep_id,
+                source_field_rep_email,
+                source_brand_rep_id,
+                evidence_source
+            FROM rep_evidence_candidates
+            ORDER BY
+                brand_campaign_key,
+                collateral_id,
+                doctor_key,
+                source_rank,
+                evidence_ts DESC NULLS LAST,
+                source_id DESC NULLS LAST
+        ),
         action_dates AS (
             SELECT
                 a.brand_campaign_id,
@@ -1441,36 +1593,12 @@ def _field_rep_insight_rows(
                 CASE WHEN a.video_gt_50_first_ts IS NULL OR btrim(a.video_gt_50_first_ts) = '' OR lower(btrim(a.video_gt_50_first_ts)) = 'null' THEN NULL ELSE a.video_gt_50_first_ts::date END AS video_gt_50_first_date,
                 CASE WHEN a.pdf_download_first_ts IS NULL OR btrim(a.pdf_download_first_ts) = '' OR lower(btrim(a.pdf_download_first_ts)) = 'null' THEN NULL ELSE a.pdf_download_first_ts::date END AS pdf_download_first_date
             FROM silver.doctor_action_first_seen a
-            LEFT JOIN LATERAL (
-                SELECT d.name, d.phone, d.doctor_phone_normalized
-                FROM silver.dim_doctor d
-                WHERE d.doctor_identity_key = a.doctor_identity_key
-                ORDER BY
-                    CASE
-                        WHEN NULLIF(btrim(d.name), '') IS NULL
-                          OR lower(btrim(d.name)) IN ('unknown doctor', 'unknown', 'null', 'none')
-                        THEN 1 ELSE 0
-                    END,
-                    d._silver_updated_at DESC NULLS LAST,
-                    d.id DESC
-                LIMIT 1
-            ) d_action ON TRUE
-            LEFT JOIN LATERAL (
-                SELECT tx.doctor_name, tx.doctor_number
-                FROM silver.fact_collateral_transaction tx
-                WHERE {_normalized_sql('tx.brand_campaign_id')} = {_normalized_sql('a.brand_campaign_id')}
-                  AND tx.collateral_id::text = a.collateral_id::text
-                  AND tx.doctor_identity_key = a.doctor_identity_key
-                ORDER BY
-                    CASE
-                        WHEN NULLIF(btrim(tx.doctor_name), '') IS NULL
-                          OR lower(btrim(tx.doctor_name)) IN ('unknown doctor', 'unknown', 'null', 'none')
-                        THEN 1 ELSE 0
-                    END,
-                    COALESCE(tx.updated_at_ts, tx.created_at_ts, tx.transaction_date_ts) DESC NULLS LAST,
-                    tx.id DESC
-                LIMIT 1
-            ) tx_action ON TRUE
+            LEFT JOIN doctor_identity_lookup d_action
+              ON d_action.doctor_identity_key = a.doctor_identity_key
+            LEFT JOIN transaction_doctor_lookup tx_action
+              ON tx_action.brand_campaign_key = {_normalized_sql('a.brand_campaign_id')}
+             AND tx_action.collateral_id = a.collateral_id::text
+             AND tx_action.doctor_identity_key = a.doctor_identity_key
             WHERE {_normalized_sql('a.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_action}
         ),
@@ -1529,92 +1657,10 @@ def _field_rep_insight_rows(
                 END AS pdf_flag
             FROM action_dates ad
             CROSS JOIN activity_period p
-            LEFT JOIN LATERAL (
-                SELECT
-                    rep.email_rep_key,
-                    rep.master_rep_key,
-                    rep.brand_rep_key,
-                    rep.numeric_rep_key,
-                    rep.source_field_rep_id,
-                    rep.source_field_rep_email,
-                    rep.source_brand_rep_id,
-                    rep.evidence_source
-                FROM (
-                    SELECT
-                        NULLIF({_normalized_sql('tx.field_rep_email')}, '') AS email_rep_key,
-                        COALESCE(
-                            NULLIF({_normalized_sql('tx.field_rep_master_id_resolved')}, ''),
-                            NULLIF({_normalized_sql('tx.field_rep_id')}, '')
-                        ) AS master_rep_key,
-                        COALESCE(
-                            NULLIF({_normalized_sql('tx.brand_supplied_field_rep_id_resolved')}, ''),
-                            NULLIF({_normalized_sql('tx.field_rep_unique_id')}, '')
-                        ) AS brand_rep_key,
-                        NULLIF({_normalized_sql('tx.field_rep_id')}, '') AS numeric_rep_key,
-                        COALESCE(NULLIF(btrim(tx.field_rep_id), ''), '') AS source_field_rep_id,
-                        COALESCE(NULLIF(btrim(tx.field_rep_email), ''), '') AS source_field_rep_email,
-                        COALESCE(
-                            NULLIF(btrim(tx.brand_supplied_field_rep_id_resolved), ''),
-                            NULLIF(btrim(tx.field_rep_unique_id), ''),
-                            ''
-                        ) AS source_brand_rep_id,
-                        'collateral_transaction'::text AS evidence_source,
-                        10 AS source_rank,
-                        COALESCE(
-                            NULLIF(tx.opened_event_ts, ''),
-                            NULLIF(tx.video_gt_50_event_ts, ''),
-                            NULLIF(tx.pdf_download_event_ts, ''),
-                            NULLIF(tx.reached_event_ts, ''),
-                            NULLIF(tx.updated_at_ts, ''),
-                            NULLIF(tx.created_at_ts, ''),
-                            NULLIF(tx.transaction_date_ts, '')
-                        ) AS evidence_ts,
-                        tx.id AS source_id
-                    FROM silver.fact_collateral_transaction tx
-                    WHERE {_normalized_sql('tx.brand_campaign_id')} = {_normalized_sql('ad.brand_campaign_id')}
-                      AND tx.collateral_id::text = ad.collateral_id::text
-                      AND tx.doctor_identity_key = ad.doctor_key
-                      AND COALESCE(
-                            NULLIF({_normalized_sql('tx.field_rep_master_id_resolved')}, ''),
-                            NULLIF({_normalized_sql('tx.field_rep_id')}, ''),
-                            NULLIF({_normalized_sql('tx.brand_supplied_field_rep_id_resolved')}, ''),
-                            NULLIF({_normalized_sql('tx.field_rep_unique_id')}, ''),
-                            NULLIF({_normalized_sql('tx.field_rep_email')}, '')
-                          ) IS NOT NULL
-                      AND lower(btrim(COALESCE(tx._dq_errors, ''))) NOT IN ('missing', 'conflict', 'ambiguous')
-                    UNION ALL
-                    SELECT
-                        NULLIF({_normalized_sql('s.field_rep_email')}, '') AS email_rep_key,
-                        NULLIF({_normalized_sql('s.field_rep_id::text')}, '') AS master_rep_key,
-                        ''::text AS brand_rep_key,
-                        ''::text AS numeric_rep_key,
-                        COALESCE(NULLIF(btrim(s.field_rep_id::text), ''), '') AS source_field_rep_id,
-                        COALESCE(NULLIF(btrim(s.field_rep_email), ''), '') AS source_field_rep_email,
-                        ''::text AS source_brand_rep_id,
-                        'share_log'::text AS evidence_source,
-                        20 AS source_rank,
-                        COALESCE(
-                            NULLIF(s.share_timestamp_ts, ''),
-                            NULLIF(s.updated_at_ts, ''),
-                            NULLIF(s.created_at_ts, ''),
-                            NULLIF(s.reached_event_ts, '')
-                        ) AS evidence_ts,
-                        s.id AS source_id
-                    FROM silver.fact_share_log s
-                    WHERE {_normalized_sql('s.brand_campaign_id')} = {_normalized_sql('ad.brand_campaign_id')}
-                      AND s.collateral_id::text = ad.collateral_id::text
-                      AND s.doctor_identity_key = ad.doctor_key
-                      AND COALESCE(
-                            NULLIF({_normalized_sql('s.field_rep_id::text')}, ''),
-                            NULLIF({_normalized_sql('s.field_rep_email')}, '')
-                          ) IS NOT NULL
-                ) rep
-                ORDER BY
-                    rep.source_rank,
-                    rep.evidence_ts DESC NULLS LAST,
-                    rep.source_id DESC NULLS LAST
-                LIMIT 1
-            ) rep_evidence ON TRUE
+            LEFT JOIN rep_evidence_latest rep_evidence
+              ON rep_evidence.brand_campaign_key = {_normalized_sql('ad.brand_campaign_id')}
+             AND rep_evidence.collateral_id = ad.collateral_id::text
+             AND rep_evidence.doctor_key = ad.doctor_key
             WHERE (
                 ad.reached_first_date IS NOT NULL
                 AND (p.period_start IS NULL OR ad.reached_first_date >= p.period_start)
