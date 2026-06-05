@@ -75,7 +75,7 @@ DETAIL_SPECS = {
         "date_field": "first_seen_at",
         "summary_date_field": "first_seen_at",
         "summary_unique_field": "doctor_key",
-        "title": "Onboarded Doctors",
+        "title": "Enrolled Doctors",
         "weekly": True,
         "predicate": lambda row: row.get("onboarding_flag") == "true",
         "columns": ["doctor_display_name", "doctor_key", "city", "state", "field_rep_id", "first_seen_at"],
@@ -507,7 +507,7 @@ def _dashboard_tiles(summary: dict[str, Any], filters: dict[str, str | None]) ->
         "field_rep": [
             # Webinar registrations are temporarily hidden until campaign attribution is finalized.
             {
-                "title": "Onboarded Doctors (User Created)",
+                "title": "Enrolled Doctors",
                 "value": summary["onboarded_doctors_weekly"],
                 "cumulative": summary["onboarded_doctors_cumulative"],
                 "delta": summary["onboarded_doctors_weekly"] - summary["onboarded_doctors_previous"],
@@ -1162,7 +1162,7 @@ def export_dashboard_xlsx(filters: dict[str, str | None], request: HttpRequest) 
     summary = context["summary"]
     for label, field in (
         ("Webinar Registrations (Weekly)", "webinar_registrations_weekly"),
-        ("Onboarded Doctors (Weekly)", "onboarded_doctors_weekly"),
+        ("Enrolled Doctors (Weekly)", "onboarded_doctors_weekly"),
         ("Active Clinics", "active_clinics_current"),
         ("Inactive Clinics", "inactive_clinics_current"),
         ("Total Screenings (Weekly)", "total_screenings_weekly"),

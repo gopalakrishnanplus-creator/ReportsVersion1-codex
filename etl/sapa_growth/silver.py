@@ -535,7 +535,9 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     "recruited_via": _empty_text(doctor_row.get("recruited_via")),
                     "first_seen_at": _empty_text(iso_datetime(doctor_row.get("created_at"))),
                     "latest_seen_at": _empty_text(iso_datetime(doctor_row.get("created_at"))),
-                    "is_user_created_doctor": "false",
+                    # campaign_doctor = field-rep recruitment; redflags_doctor = self recruitment.
+                    # Both are enrolled doctors for SAPA dashboard reporting.
+                    "is_user_created_doctor": "true",
                     "has_campaign_source": "false",
                     "has_redflags_source": "true",
                     "identity_quality_status": "logical_doctor_id" if doctor_id else "redflags_missing_doctor_id",
