@@ -579,9 +579,54 @@ def _archive_replaced_reporting_rows(
     return {**reason_counts, "archived": len(rows_to_archive)}
 
 
-def _state_for_rep(rep: dict[str, Any] | None) -> str:
-    state = _clean((rep or {}).get("state"))
+UNKNOWN_STATE_VALUES = {"", "null", "none", "unknown", "na", "n/a", "-"}
+
+
+def _clean_state(value: Any) -> str:
+    state = _clean(value)
+    return "" if state.lower() in UNKNOWN_STATE_VALUES else state
+
+
+def _state_for_value(value: Any) -> str:
+    state = _clean_state(value)
     return state.title() if state else "UNKNOWN"
+
+
+def _state_for_rep(rep: dict[str, Any] | None) -> str:
+    return _state_for_value((rep or {}).get("state"))
+
+
+def _identity_state_by_campaign_fieldrep(source: dict[str, list[dict[str, Any]]]) -> dict[str, str]:
+    state_by_rep: dict[str, tuple[tuple[str, str, str], str]] = {}
+    state_fields = (
+        "state",
+        "state_normalized",
+        "campaign_fieldrep_state",
+        "user_management_state",
+        "portal_state",
+        "field_rep_state",
+    )
+    for identity in source.get("inclinic_field_rep_identity_v2", []):
+        if not _row_is_current(identity):
+            continue
+        rep_id = _field(identity, "campaign_fieldrep_id", "field_rep_uuid")
+        state = ""
+        for field in state_fields:
+            state = _clean_state(identity.get(field))
+            if state:
+                break
+        if not rep_id or not state:
+            continue
+        key = normalize_key(rep_id)
+        freshness = (
+            _clean(identity.get("source_updated_at")),
+            _clean(identity.get("migrated_at")),
+            _clean(identity.get("source_created_at")),
+        )
+        current = state_by_rep.get(key)
+        if current is None or freshness >= current[0]:
+            state_by_rep[key] = (freshness, state)
+    return {key: state for key, (_, state) in state_by_rep.items()}
 
 
 RAW_V2_SOURCE_TABLES = {
@@ -922,12 +967,14 @@ def _campaign_rows(source: dict[str, list[dict[str, Any]]]) -> list[dict[str, An
 
 def _field_rep_rows(source: dict[str, list[dict[str, Any]]], now: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    identity_state_by_rep = _identity_state_by_campaign_fieldrep(source)
     for rep in source["field_rep_v2"]:
         if not _row_is_current(rep):
             continue
         rep_id = _field(rep, "current_campaign_fieldrep_id", "id")
         if not rep_id:
             continue
+        state = _clean_state(rep.get("state")) or identity_state_by_rep.get(normalize_key(rep_id), "")
         rows.append(
             {
                 "id": rep_id,
@@ -940,10 +987,10 @@ def _field_rep_rows(source: dict[str, list[dict[str, Any]]], now: str) -> list[d
                 "updated_at": _field(rep, "updated_at"),
                 "brand_id": _clean(rep.get("brand_id")),
                 "user_id": _clean(rep.get("user_id")),
-                "state": _clean(rep.get("state")),
+                "state": state,
                 "field_rep_phone_normalized": _phone(rep.get("phone_number")),
                 "field_rep_email_best": _clean(rep.get("primary_email")),
-                "state_normalized": _state_for_rep(rep),
+                "state_normalized": _state_for_value(state),
                 "is_active_flag": "true" if _truthy(rep.get("is_active")) else "false",
                 "created_at_ts": _field(rep, "created_at"),
                 "updated_at_ts": _field(rep, "updated_at"),
