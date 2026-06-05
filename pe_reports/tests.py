@@ -11,7 +11,7 @@ from etl.pe_reports import pipeline as pe_pipeline
 from etl.pe_reports import raw as pe_raw
 from etl.pe_reports import storage as pe_storage
 from etl.pe_reports.gold import _latest_business_date, build_benchmark_row, compute_health_components
-from etl.pe_reports.silver import attribute_banner_click_row, attribute_share_row, match_campaign_doctors, rollup_share_funnel
+from etl.pe_reports.silver import attribute_banner_click_row, attribute_share_row, match_campaign_doctors, resolve_playback_share, rollup_share_funnel
 from etl.pe_reports.specs import RAW_AUDIT_COLUMNS, SourceTableSpec
 from etl.pe_reports.utils import clean_text, week_end_saturday
 from pe_reports.reporting import build_dashboard_payload
@@ -308,6 +308,47 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(result["campaign_attribution_method"], "ambiguous_video")
         self.assertEqual(result["is_campaign_attributed_flag"], "false")
 
+    def test_cluster_share_uses_single_active_campaign_when_content_is_reused(self):
+        result = attribute_share_row(
+            {
+                "shared_item_type": "cluster",
+                "shared_item_code": "acute-wheeze-basic",
+                "shared_item_name": "Acute wheeze / asthma attack (basic pack)",
+                "doctor_key": "DOC-1",
+                "shared_at_ts": "2026-06-04 19:58:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "old-camp": {"campaign_id_original": "old-camp", "campaign_id_normalized": "old-camp", "start_date": "2026-03-01", "end_date": "2026-03-31"},
+                "current-camp": {"campaign_id_original": "current-camp", "campaign_id_normalized": "current-camp", "start_date": "2026-06-01", "end_date": "2026-06-30"},
+            },
+            campaign_by_cluster_code={"acute-wheeze-basic": ["old-camp", "current-camp"]},
+            campaign_videos_by_campaign={},
+        )
+        self.assertEqual(result["campaign_id_normalized"], "current-camp")
+        self.assertEqual(result["campaign_attribution_method"], "direct_cluster_active_window")
+        self.assertEqual(result["is_campaign_attributed_flag"], "true")
+
+    def test_cluster_share_can_match_campaign_by_shared_item_name(self):
+        result = attribute_share_row(
+            {
+                "shared_item_type": "cluster",
+                "shared_item_code": "source-code-not-in-catalog",
+                "shared_item_name": "Acute wheeze / asthma attack (basic pack)",
+                "doctor_key": "DOC-1",
+                "shared_at_ts": "2026-06-04 19:58:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "camp-a": {"campaign_id_original": "camp-a", "campaign_id_normalized": "camp-a", "start_date": "2026-06-01", "end_date": "2026-06-30"},
+            },
+            campaign_by_cluster_code={},
+            campaign_videos_by_campaign={},
+            campaign_by_cluster_reference={"acutewheezeasthmaattackbasicpack": ["camp-a"]},
+        )
+        self.assertEqual(result["campaign_id_normalized"], "camp-a")
+        self.assertEqual(result["is_campaign_attributed_flag"], "true")
+
     def test_banner_click_prefers_matching_banner_target_url(self):
         result = attribute_banner_click_row(
             {
@@ -330,6 +371,31 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(result["campaign_attribution_method"], "banner_target_url")
         self.assertEqual(result["is_campaign_attributed_flag"], "true")
 
+    def test_banner_click_prefers_direct_banner_campaign_id(self):
+        result = attribute_banner_click_row(
+            {
+                "doctor_key": "",
+                "doctor_id": "0",
+                "banner_id": "84eb4434-0646-4fb4-b61a-04721919db3f",
+                "banner_target_url": "https://www.inditech.co.in/",
+                "clicked_at_ts": "2026-06-04 19:57:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "84eb443406464fb4b61a04721919db3f": {
+                    "campaign_id_original": "84eb4434-0646-4fb4-b61a-04721919db3f",
+                    "campaign_id_normalized": "84eb443406464fb4b61a04721919db3f",
+                    "start_date": "2026-06-01",
+                    "end_date": "2026-06-30",
+                },
+            },
+            campaigns_by_banner_target_url={"https://www.inditech.co.in": ["other-campaign"]},
+            campaigns_by_banner_id={"84eb443406464fb4b61a04721919db3f": ["84eb443406464fb4b61a04721919db3f"]},
+        )
+        self.assertEqual(result["campaign_id_normalized"], "84eb443406464fb4b61a04721919db3f")
+        self.assertEqual(result["campaign_attribution_method"], "banner_id")
+        self.assertEqual(result["is_campaign_attributed_flag"], "true")
+
     def test_banner_click_falls_back_to_single_active_doctor_campaign(self):
         result = attribute_banner_click_row(
             {
@@ -347,6 +413,31 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(result["campaign_id_normalized"], "camp-a")
         self.assertEqual(result["campaign_attribution_method"], "doctor_active_campaign")
         self.assertEqual(result["is_campaign_attributed_flag"], "true")
+
+    def test_playback_without_share_reference_matches_latest_doctor_video_share(self):
+        share = {
+            "share_public_id": "SHARE-1",
+            "source_share_id": "101",
+            "doctor_id": "DOC001",
+            "shared_item_type": "video",
+            "shared_item_code": "acute-wheeze-video",
+            "video_code": "acute-wheeze-video",
+            "shared_at_ts": "2026-04-27 17:30:00",
+        }
+        resolved = resolve_playback_share(
+            {
+                "share_public_id": "",
+                "share_id": "",
+                "doctor_id": "DOC001",
+                "video_code": "acute-wheeze-video",
+                "occurred_at": "2026-04-27 17:31:00",
+            },
+            share_by_public_id={"SHARE-1": share},
+            share_by_source_id={"101": share},
+            share_rows=[share],
+            bundle_videos_by_code={},
+        )
+        self.assertEqual(resolved, share)
 
     def test_rollup_keeps_orphan_playback_outside_share_funnel_and_counts_any_video_threshold_once(self):
         rolled = rollup_share_funnel(
