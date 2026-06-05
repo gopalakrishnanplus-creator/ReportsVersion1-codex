@@ -24,7 +24,10 @@ from etl.reporting_corrections import (
 )
 from etl.reporting_privacy import (
     active_campaign_privacy_allowlist,
+    active_person_privacy_rules,
     filter_rows_by_campaign_fields,
+    person_privacy_allowed_campaigns_for_row,
+    row_visible_by_person_privacy,
 )
 
 
@@ -862,6 +865,112 @@ def _apply_campaign_privacy_to_source(source: dict[str, list[dict[str, Any]]], a
     else:
         output["field_rep_v2"] = []
         output["inclinic_field_rep_identity_v2"] = []
+
+    return output
+
+
+def _row_visible_for_person_privacy(
+    row: dict[str, Any],
+    person_rules: list[dict[str, Any]],
+    *,
+    campaign_fields: tuple[str, ...],
+    email_fields: tuple[str, ...] = (),
+    phone_fields: tuple[str, ...] = (),
+) -> bool:
+    return row_visible_by_person_privacy(
+        row,
+        person_rules,
+        campaign_fields=campaign_fields,
+        email_fields=email_fields,
+        phone_fields=phone_fields,
+    )
+
+
+def _apply_person_privacy_to_source(source: dict[str, list[dict[str, Any]]], person_rules: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    if not person_rules:
+        return source
+
+    output = {key: list(rows) for key, rows in source.items()}
+    doctor_campaign_fields = ("legacy_campaign_id", "old_brand_campaign_id", "brand_campaign_id", "campaign_id")
+    for source_key, phone_fields in {
+        "doctor_field_rep_roster_bridge_v2": ("doctor_phone_normalized", "doctor_phone_raw"),
+        "inclinic_assigned_doctor_roster_v2": ("doctor_phone_normalized", "doctor_phone_raw"),
+        "inclinic_share_event_v2": ("doctor_phone_normalized", "old_doctor_identifier"),
+        "inclinic_collateral_transaction_v2": ("doctor_phone_normalized", "old_doctor_number"),
+    }.items():
+        output[source_key] = [
+            row
+            for row in output.get(source_key, [])
+            if _row_visible_for_person_privacy(
+                row,
+                person_rules,
+                campaign_fields=doctor_campaign_fields,
+                email_fields=("doctor_email", "old_doctor_email", "email"),
+                phone_fields=phone_fields,
+            )
+        ]
+
+    restricted_rep_allowed_campaigns: dict[str, set[str]] = defaultdict(set)
+    for row in output.get("field_rep_v2", []):
+        rep_id = _field(row, "current_campaign_fieldrep_id", "id")
+        allowed = person_privacy_allowed_campaigns_for_row(
+            row,
+            person_rules,
+            email_fields=("primary_email", "email", "field_rep_email"),
+            phone_fields=("phone_number", "primary_phone_raw", "primary_phone_normalized"),
+        )
+        if rep_id and allowed is not None:
+            restricted_rep_allowed_campaigns[rep_id].update(allowed)
+
+    for row in output.get("inclinic_field_rep_identity_v2", []):
+        rep_id = _field(row, "campaign_fieldrep_id")
+        allowed = person_privacy_allowed_campaigns_for_row(
+            row,
+            person_rules,
+            email_fields=("email_normalized", "user_management_email", "auth_user_email", "source_value", "source_value_normalized"),
+            phone_fields=("phone_normalized", "campaign_fieldrep_phone_number"),
+        )
+        if rep_id and allowed is not None:
+            restricted_rep_allowed_campaigns[rep_id].update(allowed)
+
+    if restricted_rep_allowed_campaigns:
+        rep_scoped_source_keys = (
+            "campaign_field_rep_assignment_v2",
+            "inclinic_campaign_field_rep_assignment_v2",
+            "doctor_field_rep_roster_bridge_v2",
+            "inclinic_assigned_doctor_roster_v2",
+            "inclinic_share_event_v2",
+            "inclinic_collateral_transaction_v2",
+        )
+        for source_key in rep_scoped_source_keys:
+            filtered_rows = []
+            for row in output.get(source_key, []):
+                rep_id = _field(row, "field_rep_id", "campaign_fieldrep_id", "current_campaign_fieldrep_id", "registered_by_id", "old_field_rep_id")
+                allowed_campaigns = restricted_rep_allowed_campaigns.get(rep_id)
+                if allowed_campaigns and not filter_rows_by_campaign_fields([row], allowed_campaigns, ("legacy_campaign_id", "campaign_id", "old_campaign_id", "old_brand_campaign_id", "brand_campaign_id")):
+                    continue
+                filtered_rows.append(row)
+            output[source_key] = filtered_rows
+
+        visible_restricted_rep_ids: set[str] = set()
+        for source_key in ("campaign_field_rep_assignment_v2", "inclinic_campaign_field_rep_assignment_v2"):
+            for row in output.get(source_key, []):
+                rep_id = _field(row, "field_rep_id", "campaign_fieldrep_id", "current_campaign_fieldrep_id", "registered_by_id", "old_field_rep_id")
+                if rep_id in restricted_rep_allowed_campaigns:
+                    visible_restricted_rep_ids.add(rep_id)
+
+        output["field_rep_v2"] = [
+            row
+            for row in output.get("field_rep_v2", [])
+            if _field(row, "current_campaign_fieldrep_id", "id") not in restricted_rep_allowed_campaigns
+            or _field(row, "current_campaign_fieldrep_id", "id") in visible_restricted_rep_ids
+        ]
+        output["inclinic_field_rep_identity_v2"] = [
+            row
+            for row in output.get("inclinic_field_rep_identity_v2", [])
+            if _field(row, "campaign_fieldrep_id") not in restricted_rep_allowed_campaigns
+            or _field(row, "campaign_fieldrep_id") in visible_restricted_rep_ids
+        ]
 
     return output
 
@@ -1954,6 +2063,8 @@ def build_v2_reporting(run_id: str) -> dict[str, Any]:
     _validate_required_v2_source_counts(source)
     privacy_allowlist = active_campaign_privacy_allowlist()
     source = _apply_campaign_privacy_to_source(source, privacy_allowlist)
+    person_privacy_rules = active_person_privacy_rules()
+    source = _apply_person_privacy_to_source(source, person_privacy_rules)
 
     ensure_schema("silver")
     _drop_bronze_views()
@@ -2011,6 +2122,7 @@ def build_v2_reporting(run_id: str) -> dict[str, Any]:
             "silver.doctor_action_first_seen": len(action_rows),
             "ops.reporting_data_correction_rule_active": len(correction_rules),
             "ops.reporting_campaign_privacy_allowlist_active": len(privacy_allowlist),
+            "ops.reporting_person_privacy_rule_active": len(person_privacy_rules),
         },
         "preservation_counts": preservation_counts,
         "issues": issues,

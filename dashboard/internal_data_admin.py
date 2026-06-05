@@ -31,9 +31,12 @@ from etl.reporting_corrections import (
 )
 from etl.reporting_privacy import (
     create_campaign_privacy_allowlist_rule,
+    create_person_privacy_rule,
     deactivate_campaign_privacy_allowlist_rule,
+    deactivate_person_privacy_rule,
     ensure_campaign_privacy_table,
     list_campaign_privacy_allowlist_rules,
+    list_person_privacy_rules,
 )
 
 
@@ -2376,6 +2379,14 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
 
     if request.method == "POST":
         action = request.POST.get("privacy_action") or "add"
+        if action == "deactivate_person":
+            rule_id = (request.POST.get("rule_id") or "").strip()
+            if deactivate_person_privacy_rule(rule_id):
+                messages.success(request, "Person visibility rule deactivated. Rerun ETL to refresh derived dashboards.")
+            else:
+                messages.error(request, "Person visibility rule was not found.")
+            return redirect("internal-data-admin-privacy")
+
         if action == "deactivate":
             rule_id = (request.POST.get("rule_id") or "").strip()
             if deactivate_campaign_privacy_allowlist_rule(rule_id):
@@ -2383,6 +2394,21 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
             else:
                 messages.error(request, "Campaign privacy allowlist entry was not found.")
             return redirect("internal-data-admin-privacy")
+
+        if action == "add_person":
+            try:
+                create_person_privacy_rule(
+                    person_label=request.POST.get("person_label", ""),
+                    email=request.POST.get("email", ""),
+                    phone=request.POST.get("phone", ""),
+                    allowed_campaign_id=request.POST.get("allowed_campaign_id", ""),
+                    reason=request.POST.get("reason", ""),
+                    created_by=actor,
+                )
+                messages.success(request, "Person visibility rule created. Rerun ETL to refresh derived dashboards.")
+                return redirect("internal-data-admin-privacy")
+            except Exception as exc:
+                messages.error(request, f"Person visibility rule could not be created: {exc}")
 
         if action == "add":
             try:
@@ -2398,13 +2424,18 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
 
     rules = list_campaign_privacy_allowlist_rules(include_inactive=True)
     active_rules = [rule for rule in rules if rule.get("is_active")]
+    person_rules = list_person_privacy_rules(include_inactive=True)
+    active_person_rules = [rule for rule in person_rules if rule.get("is_active")]
     return render(
         request,
         "dashboard/internal_data_admin/privacy.html",
         {
             "rules": rules,
             "active_rules": active_rules,
+            "person_rules": person_rules,
+            "active_person_rules": active_person_rules,
             "is_allowlist_active": bool(active_rules),
+            "is_person_privacy_active": bool(active_person_rules),
         },
     )
 
