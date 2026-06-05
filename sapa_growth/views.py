@@ -181,7 +181,7 @@ def detail_view(request: HttpRequest, metric: str, campaign_key: str | None = No
         return redirect(_campaign_route("login", campaign_key))
     filters = parse_global_filters(request.GET, campaign_key=campaign_key)
     page = int(request.GET.get("page", "1") or "1")
-    context = detail_context(metric, filters, page=page)
+    context = detail_context(metric, filters, page=page, selected_window=request.GET.get("window", ""))
     return render(request, "sapa_growth/detail.html", context)
 
 
@@ -196,7 +196,7 @@ def detail_export(request: HttpRequest, metric: str, campaign_key: str | None = 
     if not is_authenticated(request, "sapa", _campaign_scope_key(campaign_key)):
         return redirect(_campaign_route("login", campaign_key))
     filters = parse_global_filters(request.GET, campaign_key=campaign_key)
-    return export_detail_csv(metric, filters, request)
+    return export_detail_csv(metric, filters, request, selected_window=request.GET.get("window", ""))
 
 
 def certified_export(request: HttpRequest, campaign_key: str | None = None) -> HttpResponse:

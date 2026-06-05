@@ -211,6 +211,15 @@ DETAIL_SPECS = {
     },
 }
 
+DETAIL_WINDOWS = [
+    {"key": "last_24_hours", "label": "Last 24 Hours", "days": 0},
+    {"key": "last_week", "label": "Last Week", "days": 6},
+    {"key": "last_month", "label": "Last Month", "days": 29},
+    {"key": "cumulative", "label": "Cumulative", "days": None},
+]
+
+DETAIL_WINDOW_KEYS = {str(window["key"]) for window in DETAIL_WINDOWS}
+
 
 def _scope_campaign_key(scope: Any = None) -> str:
     if isinstance(scope, dict):
@@ -307,6 +316,18 @@ def _metric_href(metric: str, filters: dict[str, str | None]) -> str:
     base = _campaign_route_base(filters)
     query_string = current_filters_query(filters, include_campaign=not clean_text(filters.get("campaign_key")))
     return f"{base}details/{metric}/" + (f"?{query_string}" if query_string else "")
+
+
+def _normalize_detail_window(value: Any) -> str:
+    window_key = clean_text(value)
+    return window_key if window_key in DETAIL_WINDOW_KEYS else ""
+
+
+def _detail_window_href(metric: str, filters: dict[str, str | None], window_key: str) -> str:
+    base = f"{_campaign_route_base(filters)}details/{metric}/"
+    filters_query = current_filters_query(filters, include_campaign=not clean_text(filters.get("campaign_key")))
+    window_query = urlencode({"window": window_key})
+    return f"{base}?{filters_query}&{window_query}" if filters_query else f"{base}?{window_query}"
 
 
 def _latest_refresh(scope: Any = None) -> dict[str, Any] | None:
@@ -839,6 +860,82 @@ def _count_window(
     }
 
 
+def _window_bounds(window_key: str, as_of: date) -> tuple[date | None, date | None]:
+    normalized = _normalize_detail_window(window_key)
+    if normalized == "cumulative":
+        return None, None
+    days = next((window["days"] for window in DETAIL_WINDOWS if window["key"] == normalized), None)
+    if days is None:
+        return None, None
+    return as_of - timedelta(days=int(days)), as_of
+
+
+def _filter_rows_by_detail_window(rows: list[dict[str, Any]], date_field: str | None, as_of: date, window_key: str) -> list[dict[str, Any]]:
+    if not date_field:
+        return rows
+    start, end = _window_bounds(window_key, as_of)
+    filtered = []
+    for row in rows:
+        row_date = parse_date(row.get(date_field))
+        if row_date is None:
+            continue
+        if start and row_date < start:
+            continue
+        if end and row_date > end:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def _dedupe_latest_rows(rows: list[dict[str, Any]], key_field: str, date_field: str) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in sorted(rows, key=lambda item: item.get(date_field) or "", reverse=True):
+        key = clean_text(row.get(key_field))
+        if key and key not in latest:
+            latest[key] = row
+    return list(latest.values())
+
+
+def _status_history_rows_for_window(
+    filters: dict[str, str | None],
+    *,
+    predicate: Any,
+    as_of: date,
+    window_key: str,
+) -> list[dict[str, Any]]:
+    rows = filter_rows(_gold_rows("rpt_doctor_status_history", filters), filters)
+    rows = _filter_rows_by_detail_window(rows, "as_of_date", as_of, window_key)
+    rows = [row for row in rows if predicate(row)]
+    output = []
+    for row in _dedupe_latest_rows(rows, "doctor_key", "as_of_date"):
+        item = dict(row)
+        item["active_flag"] = clean_text(row.get("is_active"))
+        item["inactive_flag"] = clean_text(row.get("is_inactive"))
+        output.append(item)
+    return output
+
+
+def _certified_rows_for_window(filters: dict[str, str | None], as_of: date, window_key: str) -> list[dict[str, Any]]:
+    history_rows = filter_rows(_gold_rows("rpt_doctor_status_history", filters), filters)
+    history_rows = _filter_rows_by_detail_window(history_rows, "as_of_date", as_of, window_key)
+    course_rows = filter_rows(_gold_rows("rpt_course_detail", filters), filters)
+    enrolled = set(_doctor_course_enrollments(course_rows).keys())
+    rows = [
+        row
+        for row in history_rows
+        if row.get("is_active") == "true" and clean_text(row.get("doctor_key")) in enrolled
+    ]
+    output = []
+    for index, row in enumerate(_dedupe_latest_rows(rows, "doctor_key", "as_of_date"), start=1):
+        item = dict(row)
+        item["serial_order"] = str(index)
+        item["certification_status"] = "Course enrolled and active"
+        item["certification_date"] = clean_text(row.get("as_of_date"))
+        item["certification_source"] = "Doctor course enrollment"
+        output.append(item)
+    return output
+
+
 def _status_history_window_counts(
     filters: dict[str, str | None],
     *,
@@ -862,10 +959,11 @@ def _certified_window_counts(filters: dict[str, str | None], as_of: date) -> dic
     )
 
 
-def _metric_summary_cards(metric: str, filters: dict[str, str | None], refresh: dict[str, Any]) -> list[dict[str, Any]]:
+def _metric_summary_cards(metric: str, filters: dict[str, str | None], refresh: dict[str, Any], selected_window: str = "") -> list[dict[str, Any]]:
     spec = DETAIL_SPECS[metric]
     as_of = parse_date(refresh.get("as_of_date")) or date.today()
     summary_mode = spec.get("summary_mode")
+    selected_window = _normalize_detail_window(selected_window)
     if summary_mode == "status_history_active":
         counts = _status_history_window_counts(filters, predicate=lambda row: row.get("is_active") == "true", as_of=as_of)
     elif summary_mode == "status_history_inactive":
@@ -880,7 +978,16 @@ def _metric_summary_cards(metric: str, filters: dict[str, str | None], refresh: 
             as_of=as_of,
             unique_field=spec.get("summary_unique_field"),
         )
-    return [{"label": label, "count": count} for label, count in counts.items()]
+    return [
+        {
+            "key": window["key"],
+            "label": window["label"],
+            "count": counts.get(str(window["label"]), 0),
+            "href": _detail_window_href(metric, filters, str(window["key"])),
+            "selected": selected_window == window["key"],
+        }
+        for window in DETAIL_WINDOWS
+    ]
 
 
 def _base_rows_for_metric(metric: str, filters: dict[str, str | None]) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
@@ -894,21 +1001,34 @@ def _base_rows_for_metric(metric: str, filters: dict[str, str | None]) -> tuple[
     return spec, rows, refresh
 
 
-def _rows_for_metric(metric: str, filters: dict[str, str | None]) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+def _rows_for_metric(metric: str, filters: dict[str, str | None], selected_window: str = "") -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
     spec, rows, refresh = _base_rows_for_metric(metric, filters)
     as_of = parse_date(refresh.get("as_of_date")) or date.today()
+    selected_window = _normalize_detail_window(selected_window)
+    summary_mode = spec.get("summary_mode")
     if metric in {"patient_videos", "doctor_videos"}:
+        if selected_window:
+            rows = _filter_rows_by_detail_window(rows, spec.get("summary_date_field"), as_of, selected_window)
         rows = [
             row
             for row in build_video_rankings(_enrich_video_rows(rows))
             if clean_text(row.get("audience")) == ("patient" if metric == "patient_videos" else "doctor")
         ]
     elif metric == "certified_clinics":
-        rows = _derived_certified_rows(
-            filters,
-            _gold_rows("rpt_doctor_status_current", filters),
-            _gold_rows("rpt_course_detail", filters),
-        )
+        if selected_window:
+            rows = _certified_rows_for_window(filters, as_of, selected_window)
+        else:
+            rows = _derived_certified_rows(
+                filters,
+                _gold_rows("rpt_doctor_status_current", filters),
+                _gold_rows("rpt_course_detail", filters),
+            )
+    elif summary_mode == "status_history_active" and selected_window:
+        rows = _status_history_rows_for_window(filters, predicate=lambda row: row.get("is_active") == "true", as_of=as_of, window_key=selected_window)
+    elif summary_mode == "status_history_inactive" and selected_window:
+        rows = _status_history_rows_for_window(filters, predicate=lambda row: row.get("is_inactive") == "true", as_of=as_of, window_key=selected_window)
+    elif selected_window:
+        rows = _filter_rows_by_detail_window(rows, spec.get("summary_date_field") or spec.get("date_field"), as_of, selected_window)
     elif spec.get("weekly"):
         weekly_start = as_of - timedelta(days=6)
         date_field = spec.get("date_field")
@@ -925,18 +1045,26 @@ def _rows_for_metric(metric: str, filters: dict[str, str | None]) -> tuple[dict[
     return spec, rows, refresh or {}
 
 
-def detail_context(metric: str, filters: dict[str, str | None], page: int = 1, per_page: int = 25) -> dict[str, Any]:
-    spec, rows, refresh = _rows_for_metric(metric, filters)
+def detail_context(metric: str, filters: dict[str, str | None], page: int = 1, per_page: int = 25, selected_window: str = "") -> dict[str, Any]:
+    selected_window = _normalize_detail_window(selected_window)
+    spec, _, refresh = _base_rows_for_metric(metric, filters)
+    rows = []
+    if selected_window:
+        spec, rows, refresh = _rows_for_metric(metric, filters, selected_window=selected_window)
     total_rows = len(rows)
     page = max(page, 1)
     start = (page - 1) * per_page
     end = start + per_page
     page_rows = rows[start:end]
     filters_query = current_filters_query(filters, include_campaign=not clean_text(filters.get("campaign_key")))
+    selected_window_query = urlencode({"window": selected_window}) if selected_window else ""
+    detail_query_parts = [query for query in [filters_query, selected_window_query] if query]
+    detail_query = "&".join(detail_query_parts)
+    selected_label = next((str(window["label"]) for window in DETAIL_WINDOWS if window["key"] == selected_window), "")
     return {
         "metric": metric,
         "title": spec["title"],
-        "summary_cards": _metric_summary_cards(metric, filters, refresh),
+        "summary_cards": _metric_summary_cards(metric, filters, refresh, selected_window=selected_window),
         "columns": spec["columns"],
         "rows": page_rows,
         "row_count": total_rows,
@@ -944,18 +1072,22 @@ def detail_context(metric: str, filters: dict[str, str | None], page: int = 1, p
         "page_count": max(1, ceil(total_rows / per_page)) if total_rows else 1,
         "filters": filters,
         "filters_query": filters_query,
+        "detail_query": detail_query,
+        "selected_window": selected_window,
+        "selected_window_label": selected_label,
+        "has_selected_window": bool(selected_window),
         "route_base": _campaign_route_base(filters),
         "dashboard_href": _campaign_route_base(filters) + (f"?{filters_query}" if filters_query else ""),
-        "export_href": f"{_campaign_route_base(filters)}details/{metric}/export/" + (f"?{filters_query}" if filters_query else ""),
+        "export_href": f"{_campaign_route_base(filters)}details/{metric}/export/" + (f"?{detail_query}" if detail_query else ""),
         "last_updated": refresh.get("published_at", ""),
         "as_of_date": refresh.get("as_of_date", ""),
     }
 
 
-def export_detail_csv(metric: str, filters: dict[str, str | None], request: HttpRequest) -> HttpResponse:
+def export_detail_csv(metric: str, filters: dict[str, str | None], request: HttpRequest, selected_window: str = "") -> HttpResponse:
     import csv
 
-    spec, rows, _ = _rows_for_metric(metric, filters)
+    spec, rows, _ = _rows_for_metric(metric, filters, selected_window=_normalize_detail_window(selected_window))
     response = HttpResponse(content_type="text/csv")
     response["Content-Disposition"] = f'attachment; filename="sapa-growth-{metric}.csv"'
     writer = csv.writer(response)
