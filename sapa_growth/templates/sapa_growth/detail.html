@@ -17,25 +17,39 @@
       </div>
       <div class="detail-actions">
         <a class="ghost-button" href="{{ dashboard_href }}">Back to Dashboard</a>
+        {% if has_selected_window %}
         <a class="download-button" href="{{ export_href }}">Export CSV</a>
+        {% endif %}
       </div>
     </section>
 
     <section class="filters-card">
-      <p><strong>Rows:</strong> {{ row_count }}</p>
+      {% if has_selected_window %}
+      <p><strong>{{ selected_window_label }} rows:</strong> {{ row_count }}</p>
+      {% else %}
+      <p><strong>Select a period:</strong> click one of the compact count tiles below to load its table.</p>
+      {% endif %}
       <p><strong>Filters:</strong> State={{ filters.state|default:"All" }}, Field Rep={{ filters.field_rep_id|default:"All" }}, Doctor={{ filters.doctor_key|default:"All" }}</p>
     </section>
 
-    <section class="cards-grid four-up">
+    <section class="detail-period-grid" aria-label="Detail period counts">
       {% for card in summary_cards %}
-      <article class="metric-card metric-card--neutral">
-        <div class="metric-card__title">{{ card.label }}</div>
-        <div class="metric-card__value">{{ card.count }}</div>
-      </article>
+      <a class="detail-period-card{% if card.selected %} is-selected{% endif %}" href="{{ card.href }}" aria-label="Show {{ card.label }} table">
+        <span class="detail-period-card__label">{{ card.label }}</span>
+        <strong class="detail-period-card__value">{{ card.count }}</strong>
+      </a>
       {% endfor %}
     </section>
 
+    {% if has_selected_window %}
     <section class="table-card">
+      <div class="detail-table-head">
+        <div>
+          <h2>{{ selected_window_label }} Detail</h2>
+          <p class="detail-meta">{{ row_count }} matching row{{ row_count|pluralize }}</p>
+        </div>
+        <a class="download-button download-button--compact" href="{{ export_href }}">Export CSV</a>
+      </div>
       <div class="table-wrap">
         <table class="detail-table">
           <thead>
@@ -71,15 +85,20 @@
       {% if page_count > 1 %}
       <div class="pagination">
         {% if page > 1 %}
-        <a href="?{% if filters_query %}{{ filters_query }}&{% endif %}page={{ page|add:"-1" }}">Previous</a>
+        <a href="?{% if detail_query %}{{ detail_query }}&{% endif %}page={{ page|add:"-1" }}">Previous</a>
         {% endif %}
         <span>Page {{ page }} of {{ page_count }}</span>
         {% if page < page_count %}
-        <a href="?{% if filters_query %}{{ filters_query }}&{% endif %}page={{ page|add:"1" }}">Next</a>
+        <a href="?{% if detail_query %}{{ detail_query }}&{% endif %}page={{ page|add:"1" }}">Next</a>
         {% endif %}
       </div>
       {% endif %}
     </section>
+    {% else %}
+    <section class="detail-empty-card">
+      <p>No table is loaded yet. Choose Last 24 Hours, Last Week, Last Month, or Cumulative above.</p>
+    </section>
+    {% endif %}
   </main>
 </body>
 </html>

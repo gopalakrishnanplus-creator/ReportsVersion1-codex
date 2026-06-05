@@ -363,7 +363,38 @@ class SapaGrowthLogicTests(SimpleTestCase):
             context = detail_context("total_screenings", {"campaign_key": "growth-clinic", "state": None, "field_rep_id": None, "doctor_key": None})
         self.assertEqual([card["label"] for card in context["summary_cards"]], ["Last 24 Hours", "Last Week", "Last Month", "Cumulative"])
         self.assertEqual([card["count"] for card in context["summary_cards"]], [1, 2, 3, 4])
+        self.assertFalse(context["has_selected_window"])
+        self.assertEqual(context["rows"], [])
         self.assertEqual(context["route_base"], "/sapa-growth/campaign/growth-clinic/")
+
+    def test_detail_context_loads_table_for_selected_window(self):
+        with patch("sapa_growth.services._gold_rows") as gold_rows_mock, patch(
+            "sapa_growth.services._latest_refresh",
+            return_value={"as_of_date": "2026-04-27", "published_at": "2026-04-27T10:00:00Z"},
+        ):
+            def fake_gold_rows(table: str, scope=None):
+                if table == "rpt_screening_detail":
+                    return [
+                        {"submitted_at": "2026-04-27", "doctor_key": "DOC-1", "campaign_key": "growth-clinic"},
+                        {"submitted_at": "2026-04-25", "doctor_key": "DOC-2", "campaign_key": "growth-clinic"},
+                        {"submitted_at": "2026-04-05", "doctor_key": "DOC-3", "campaign_key": "growth-clinic"},
+                        {"submitted_at": "2026-03-01", "doctor_key": "DOC-4", "campaign_key": "growth-clinic"},
+                    ]
+                return []
+
+            gold_rows_mock.side_effect = fake_gold_rows
+            context = detail_context(
+                "total_screenings",
+                {"campaign_key": "growth-clinic", "state": None, "field_rep_id": None, "doctor_key": None},
+                selected_window="last_week",
+            )
+
+        self.assertTrue(context["has_selected_window"])
+        self.assertEqual(context["selected_window_label"], "Last Week")
+        self.assertEqual(context["row_count"], 2)
+        self.assertEqual(len(context["rows"]), 2)
+        self.assertEqual([card["selected"] for card in context["summary_cards"]], [False, True, False, False])
+        self.assertIn("window=last_week", context["export_href"])
 
     def test_campaign_rows_are_read_from_registered_campaign_schema(self):
         with patch(
