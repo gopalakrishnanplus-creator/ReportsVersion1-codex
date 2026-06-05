@@ -604,6 +604,20 @@ RAW_V2_SOURCE_TABLES = {
     },
 }
 
+REQUIRED_V2_SOURCE_KEYS = (
+    "campaign_v2",
+    "field_rep_v2",
+    "campaign_field_rep_assignment_v2",
+    "doctor_field_rep_roster_bridge_v2",
+    "campaign_management_campaign",
+    "inclinic_assigned_doctor_roster_v2",
+    "inclinic_collateral_v2",
+    "inclinic_campaign_collateral_v2",
+    "inclinic_campaign_field_rep_assignment_v2",
+    "inclinic_collateral_transaction_v2",
+    "inclinic_share_event_v2",
+)
+
 RAW_V2_KEY_CANDIDATES: dict[str, tuple[tuple[str, ...], ...]] = {
     "campaign_v2": (("campaign_uuid",), ("id",), ("source_table", "source_pk_value")),
     "field_rep_v2": (("field_rep_uuid",), ("id",), ("source_table", "source_pk_value")),
@@ -732,6 +746,20 @@ def _load_source() -> dict[str, list[dict[str, Any]]]:
     if table_exists(RAW_V2_MASTER_SCHEMA, "campaign_v2") and table_exists(RAW_V2_INCLINIC_SCHEMA, "inclinic_collateral_transaction_v2"):
         return _load_source_from_raw_v2()
     return _load_source_from_mysql_v2()
+
+
+def _validate_required_v2_source_counts(source: dict[str, list[dict[str, Any]]]) -> None:
+    empty_required_tables = [
+        source_key
+        for source_key in REQUIRED_V2_SOURCE_KEYS
+        if len(source.get(source_key, [])) <= 0
+    ]
+    if empty_required_tables:
+        raise RuntimeError(
+            "InClinic V2 source safety check failed before silver/gold rebuild. "
+            "Required V2 source tables returned zero rows: "
+            f"{', '.join(empty_required_tables)}. Existing InClinic reporting tables were not replaced."
+        )
 
 
 def _rep_brand_id_by_campaign_fieldrep(source: dict[str, list[dict[str, Any]]]) -> dict[str, str]:
@@ -1793,6 +1821,7 @@ def _record_dq_issues(run_id: str, source: dict[str, list[dict[str, Any]]]) -> d
 def build_v2_reporting(run_id: str) -> dict[str, Any]:
     now = _now()
     source = _load_source()
+    _validate_required_v2_source_counts(source)
 
     ensure_schema("silver")
     _drop_bronze_views()

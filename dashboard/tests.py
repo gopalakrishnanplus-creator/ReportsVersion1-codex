@@ -451,7 +451,12 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(payload["doctor_count"], 2)
         self.assertEqual(payload["doctors"][0]["name"], "Dr Meera Rao")
         self.assertEqual(payload["doctors"][0]["phone"], "9999999999")
-        context_mock.assert_called_once_with("demo", None, include_field_rep_doctor_details=True)
+        context_mock.assert_called_once_with(
+            "demo",
+            None,
+            include_field_rep_doctor_details=True,
+            include_state_attention=False,
+        )
 
     def test_unmapped_doctors_export_downloads_manual_mapping_workbook(self):
         self._authenticated_campaign_session()
@@ -536,6 +541,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertNotIn("THEN 'Aligarh'", sql)
         self.assertNotIn("state_normalized <> 'UNKNOWN'", sql)
         self.assertNotIn("total_state,0)/4.0", sql)
+        self.assertEqual(fetch_mock.call_args.kwargs.get("query_timeout_ms"), 12000)
 
     def test_inclinic_silver_uses_strict_rep_mapping_and_backfilled_transaction_ids(self):
         with patch("etl.pipelines.silver_transform.execute") as execute_mock:
@@ -1318,6 +1324,21 @@ class DashboardAccessViewTests(SimpleTestCase):
 
 
 class V2ReportingPreservationTests(SimpleTestCase):
+    def test_v2_source_safety_fails_before_blank_reporting_rebuild(self):
+        source = {key: [{"id": "1"}] for key in v2_reporting.REQUIRED_V2_SOURCE_KEYS}
+        source["inclinic_share_event_v2"] = []
+
+        with self.assertRaisesMessage(
+            RuntimeError,
+            "Existing InClinic reporting tables were not replaced",
+        ):
+            v2_reporting._validate_required_v2_source_counts(source)
+
+    def test_v2_source_safety_allows_populated_required_sources(self):
+        source = {key: [{"id": "1"}] for key in v2_reporting.REQUIRED_V2_SOURCE_KEYS}
+
+        v2_reporting._validate_required_v2_source_counts(source)
+
     def test_share_rep_resolution_trusts_source_id_when_email_conflicts(self):
         source = {
             "inclinic_field_rep_identity_v2": [

@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.db import connection
-from django.db.utils import OperationalError, ProgrammingError
+from django.db.utils import DatabaseError, OperationalError, ProgrammingError
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -23,14 +23,23 @@ from reporting.campaign_performance import CampaignPerformanceNotFound, _configu
 UNMAPPED_ACTIVITY_FIELD_REP_ID = "__unmapped_activity__"
 
 
-def _fetch_dicts(sql: str, params=None):
+def _fetch_dicts(sql: str, params=None, query_timeout_ms: int | None = None):
     with connection.cursor() as cursor:
-        if params is None:
-            cursor.execute(sql)
-        else:
-            cursor.execute(sql, params)
-        cols = [c[0] for c in cursor.description]
-        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+        if query_timeout_ms:
+            cursor.execute("SET statement_timeout = %s", [int(query_timeout_ms)])
+        try:
+            if params is None:
+                cursor.execute(sql)
+            else:
+                cursor.execute(sql, params)
+            cols = [c[0] for c in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+        finally:
+            if query_timeout_ms:
+                try:
+                    cursor.execute("SET statement_timeout = 0")
+                except DatabaseError:
+                    connection.close_if_unusable_or_obsolete()
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -2407,6 +2416,7 @@ def _state_attention_source_rows(
             latest_week.get("week_start_date"),
             latest_week.get("week_end_date"),
         ],
+        query_timeout_ms=12000,
     )
 
 
@@ -3508,6 +3518,7 @@ def _build_report_context(
     selected_campaign: str,
     week_filter: int | None = None,
     include_field_rep_doctor_details: bool = True,
+    include_state_attention: bool = True,
 ) -> dict[str, Any]:
     selected_schema = None
     all_weekly_rows: list[dict[str, Any]] = []
@@ -3626,31 +3637,47 @@ def _build_report_context(
             )
             company_logo_url = _build_media_logo_url(primary_schedule.get("company_logo"))
 
-        assigned_total_doctors = _assigned_doctor_count(requested_campaign, brand_campaign_variants)
-        field_rep_insights = _field_rep_insight_rows(
-            requested_campaign,
-            brand_campaign_variants,
-            current_field_rep_collateral_ids,
-            schedule_start_raw,
-            schedule_end_raw,
-            include_doctor_details=include_field_rep_doctor_details,
-        )
+        try:
+            assigned_total_doctors = _assigned_doctor_count(requested_campaign, brand_campaign_variants)
+        except DatabaseError as exc:
+            assigned_total_doctors = 0
+            error_message = error_message or f"Assigned doctor totals are temporarily unavailable: {exc}"
+
+        try:
+            field_rep_insights = _field_rep_insight_rows(
+                requested_campaign,
+                brand_campaign_variants,
+                current_field_rep_collateral_ids,
+                schedule_start_raw,
+                schedule_end_raw,
+                include_doctor_details=include_field_rep_doctor_details,
+            )
+        except DatabaseError as exc:
+            field_rep_insights = []
+            error_message = error_message or f"Field representative insights are temporarily unavailable: {exc}"
         field_rep_assigned_total = sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights)
         roster_total_doctors = assigned_total_doctors or field_rep_assigned_total
         unmapped_activity_doctors = sum(
             _to_int(row.get("doctors_sent")) for row in field_rep_insights if row.get("is_unmapped_activity")
         )
         reporting_total_doctors = max(roster_total_doctors, field_rep_assigned_total + unmapped_activity_doctors)
-        all_weekly_rows = _weekly_rows_for_current_collateral(
-            requested_campaign,
-            brand_campaign_variants,
-            current_collateral_ids,
-            reporting_total_doctors,
-            schedule_start_raw,
-            schedule_end_raw,
-        )
+        try:
+            all_weekly_rows = _weekly_rows_for_current_collateral(
+                requested_campaign,
+                brand_campaign_variants,
+                current_collateral_ids,
+                reporting_total_doctors,
+                schedule_start_raw,
+                schedule_end_raw,
+            )
+        except DatabaseError as exc:
+            all_weekly_rows = []
+            error_message = error_message or f"Campaign weekly metrics are temporarily unavailable: {exc}"
         if not current_collateral_ids and not any(_row_has_week_data(row) for row in all_weekly_rows):
-            fallback_weekly_rows = _fetch_dicts(f"SELECT * FROM {selected_schema}.kpi_weekly_summary ORDER BY week_index")
+            try:
+                fallback_weekly_rows = _fetch_dicts(f"SELECT * FROM {selected_schema}.kpi_weekly_summary ORDER BY week_index")
+            except DatabaseError:
+                fallback_weekly_rows = []
             if fallback_weekly_rows:
                 all_weekly_rows = fallback_weekly_rows
         for row in all_weekly_rows:
@@ -3671,47 +3698,53 @@ def _build_report_context(
         metric_rows = weekly_rows if week_filter else metric_weekly_rows
 
         if not company_logo_url:
-            fallback_logo = _fetch_dicts(
-                """
-                WITH matched_campaign AS (
-                    SELECT
-                        cm.company_logo,
-                        ROW_NUMBER() OVER (
-                            ORDER BY
-                                CASE
-                                    WHEN regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g') THEN 1
-                                    WHEN cm.id::text = btrim(%s) THEN 2
-                                    ELSE 3
-                                END,
-                                cm.id DESC
-                        ) AS rn
-                    FROM bronze.campaign_management_campaign cm
-                    LEFT JOIN silver.map_brand_campaign_to_campaign m
-                      ON regexp_replace(lower(btrim(m.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
-                    WHERE
-                        regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
-                        OR cm.id::text = btrim(%s)
-                        OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
+            try:
+                fallback_logo = _fetch_dicts(
+                    """
+                    WITH matched_campaign AS (
+                        SELECT
+                            cm.company_logo,
+                            ROW_NUMBER() OVER (
+                                ORDER BY
+                                    CASE
+                                        WHEN regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g') THEN 1
+                                        WHEN cm.id::text = btrim(%s) THEN 2
+                                        ELSE 3
+                                    END,
+                                    cm.id DESC
+                            ) AS rn
+                        FROM bronze.campaign_management_campaign cm
+                        LEFT JOIN silver.map_brand_campaign_to_campaign m
+                          ON regexp_replace(lower(btrim(m.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
+                        WHERE
+                            regexp_replace(lower(btrim(cm.brand_campaign_id)), '-', '', 'g') = regexp_replace(lower(btrim(%s)), '-', '', 'g')
+                            OR cm.id::text = btrim(%s)
+                            OR cm.id::text = NULLIF(btrim(m.campaign_id_resolved), '')
+                    )
+                    SELECT company_logo
+                    FROM matched_campaign
+                    WHERE rn = 1
+                    """,
+                    [selected_campaign, selected_campaign, selected_campaign, selected_campaign, selected_campaign],
                 )
-                SELECT company_logo
-                FROM matched_campaign
-                WHERE rn = 1
-                """,
-                [selected_campaign, selected_campaign, selected_campaign, selected_campaign, selected_campaign],
-            )
+            except DatabaseError:
+                fallback_logo = []
             if fallback_logo:
                 company_logo_url = _build_media_logo_url(fallback_logo[0].get("company_logo"))
 
         if collateral_name in {"", "N/A", "Collateral"}:
-            fallback_collateral = _fetch_dicts(
-                """
-                SELECT MIN(NULLIF(c.title, '')) AS collateral_title
-                FROM silver.fact_collateral_transaction t
-                LEFT JOIN bronze.collateral_management_collateral c ON c.id = t.collateral_id
-                WHERE t.brand_campaign_id = %s
-                """,
-                [selected_campaign],
-            )
+            try:
+                fallback_collateral = _fetch_dicts(
+                    """
+                    SELECT MIN(NULLIF(c.title, '')) AS collateral_title
+                    FROM silver.fact_collateral_transaction t
+                    LEFT JOIN bronze.collateral_management_collateral c ON c.id = t.collateral_id
+                    WHERE t.brand_campaign_id = %s
+                    """,
+                    [selected_campaign],
+                )
+            except DatabaseError:
+                fallback_collateral = []
             if fallback_collateral:
                 collateral_name = fallback_collateral[0].get("collateral_title") or collateral_name
 
@@ -3728,7 +3761,7 @@ def _build_report_context(
                     latest_week.get("week_start_date"),
                     latest_week.get("week_end_date"),
                 )
-            except (ProgrammingError, OperationalError):
+            except DatabaseError:
                 period_metrics = {}
             if period_metrics:
                 latest_week = {**latest_week, **period_metrics}
@@ -3758,7 +3791,7 @@ def _build_report_context(
             health_rows = data_weekly_rows or metric_rows
             try:
                 collateral_health_source = _collateral_health_rows(requested_campaign, brand_campaign_variants)
-            except (ProgrammingError, OperationalError):
+            except DatabaseError:
                 collateral_health_source = []
             collateral_comparison_ids.update(_unique_non_empty(row.get("collateral_id") for row in collateral_health_source))
             show_collateral_comparison_extras = len(collateral_comparison_ids) > 1
@@ -3802,16 +3835,19 @@ def _build_report_context(
             )
 
             bridge_base_exists = _table_exists("silver", "bridge_brand_campaign_doctor_base")
-            try:
-                state_rows = _state_attention_source_rows(
-                    requested_campaign,
-                    brand_campaign_variants,
-                    selected_schema,
-                    latest_week,
-                    bridge_base_exists,
-                    current_collateral_ids,
-                )
-            except (ProgrammingError, OperationalError):
+            if include_state_attention:
+                try:
+                    state_rows = _state_attention_source_rows(
+                        requested_campaign,
+                        brand_campaign_variants,
+                        selected_schema,
+                        latest_week,
+                        bridge_base_exists,
+                        current_collateral_ids,
+                    )
+                except DatabaseError:
+                    state_rows = []
+            else:
                 state_rows = []
 
             state_buckets: dict[str, dict[str, float]] = {}
@@ -3904,14 +3940,17 @@ def _build_report_context(
                     _to_float(r.get("health_score")),
                 ),
             ) if collateral_health_source else {}
-            bench_rows = _fetch_dicts(
-                """
-                SELECT avg_campaign_health_score
-                FROM gold_global.benchmark_last_10_campaigns
-                ORDER BY as_of_date DESC
-                LIMIT 1
-                """
-            )
+            try:
+                bench_rows = _fetch_dicts(
+                    """
+                    SELECT avg_campaign_health_score
+                    FROM gold_global.benchmark_last_10_campaigns
+                    ORDER BY as_of_date DESC
+                    LIMIT 1
+                    """
+                )
+            except DatabaseError:
+                bench_rows = []
             benchmark_health = _to_float(bench_rows[0]["avg_campaign_health_score"]) if bench_rows else 0.0
 
             collateral_cards["current"] = {
@@ -3993,7 +4032,7 @@ def _build_report_context(
                         LIMIT 1
                         """
                     )
-                except (ProgrammingError, OperationalError):
+                except DatabaseError:
                     benchmark_metric_rows = []
             bm = benchmark_metric_rows[0] if benchmark_metric_rows else {}
             benchmark_reached_pct = round(_to_float(bm.get("reached_pct")), 1)
@@ -4222,6 +4261,7 @@ def field_rep_doctor_details(request: HttpRequest, brand_campaign_id: str):
             normalized_campaign_id,
             week_filter,
             include_field_rep_doctor_details=True,
+            include_state_attention=False,
         )
     payload, status = _field_rep_doctor_detail_payload(context, rep_id, metric_key)
     return JsonResponse(payload, status=status)
@@ -4234,7 +4274,12 @@ def export_report(request: HttpRequest, brand_campaign_id: str):
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(normalized_campaign_id, week_filter, include_field_rep_doctor_details=False)
+    context = _build_report_context(
+        normalized_campaign_id,
+        week_filter,
+        include_field_rep_doctor_details=False,
+        include_state_attention=False,
+    )
     filename = _export_filename("in_clinic_report", context, "pdf")
     title = f"In-Clinic Sharing Report - {context.get('brand_name') or normalized_campaign_id}"
     return _pdf_response(filename, title, _campaign_pdf_lines(context))
@@ -4247,7 +4292,11 @@ def export_field_rep_insights(request: HttpRequest, brand_campaign_id: str):
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(normalized_campaign_id, week_filter)
+    context = _build_report_context(
+        normalized_campaign_id,
+        week_filter,
+        include_state_attention=False,
+    )
     return _field_rep_insights_excel_response(context)
 
 
@@ -4258,7 +4307,11 @@ def export_unmapped_doctors(request: HttpRequest, brand_campaign_id: str):
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(normalized_campaign_id, week_filter)
+    context = _build_report_context(
+        normalized_campaign_id,
+        week_filter,
+        include_state_attention=False,
+    )
     return _manual_mapping_excel_response(context)
 
 
