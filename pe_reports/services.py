@@ -285,6 +285,13 @@ def dashboard_context(campaign_id: str, filters: dict[str, str | None]) -> dict[
             "delta": int(summary.get("unique_recipient_references_cumulative") or 0) - int(previous_month_summary.get("unique_recipient_references_cumulative") or 0),
             "href": _metric_href(campaign_id, "unique_recipients", effective_filters),
         },
+        {
+            "title": "Banner Clicks",
+            "value": summary.get("banner_clicks_cumulative", 0),
+            "subtitle": f"Clicks attributed to this campaign",
+            "delta": int(summary.get("banner_clicks_cumulative") or 0) - int(previous_month_summary.get("banner_clicks_cumulative") or 0),
+            "href": _metric_href(campaign_id, "banner_clicks", effective_filters),
+        },
     ]
     playback_cards = [
         {

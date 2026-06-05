@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections import defaultdict
 from typing import Any
@@ -86,6 +87,7 @@ SILVER_DEFAULT_COLUMNS: dict[str, list[str]] = {
         "local_video_cluster_id",
         "local_video_cluster_code",
         "local_video_cluster_name",
+        "local_selection_json",
         "start_date",
         "end_date",
         "created_at_ts",
@@ -465,6 +467,51 @@ def _campaign_attribution_payload(
         "is_campaign_attributed_flag": "true",
         "dq_error": "",
     }
+
+
+def _selection_json_references(value: Any) -> list[str]:
+    text = clean_text(value)
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        parsed = text
+
+    output: list[str] = []
+    ignored = {
+        "false",
+        "true",
+        "null",
+        "none",
+        "video",
+        "videos",
+        "cluster",
+        "clusters",
+        "selected",
+        "items",
+        "en",
+        "hi",
+    }
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                key_text = clean_text(key)
+                if key_text and len(key_text) >= 4 and key_text.lower() not in ignored:
+                    output.append(key_text)
+                visit(child)
+            return
+        if isinstance(node, list):
+            for child in node:
+                visit(child)
+            return
+        item = clean_text(node)
+        if item and len(item) >= 4 and item.lower() not in ignored:
+            output.append(item)
+
+    visit(parsed)
+    return unique_preserving_order(output)
 
 
 def resolve_field_rep_identity(
@@ -1171,6 +1218,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
                 "local_video_cluster_id": clean_text((local or {}).get("video_cluster_id")),
                 "local_video_cluster_code": clean_text((bundle or {}).get("video_cluster_code")) or clean_text((bundle or {}).get("code")),
                 "local_video_cluster_name": clean_text((bundle or {}).get("display_name")) or _preferred_localized_label(bundle_lang_by_id.get(clean_text((local or {}).get("video_cluster_id")) or "", []), "name"),
+                "local_selection_json": clean_text((local or {}).get("selection_json")),
                 "start_date": first_non_empty(iso_date((local or {}).get("start_date")), iso_date(row.get("start_date"))),
                 "end_date": first_non_empty(iso_date((local or {}).get("end_date")), iso_date(row.get("end_date"))),
                 "created_at_ts": first_non_empty(iso_datetime(row.get("created_at")), iso_datetime((local or {}).get("created_at"))),
@@ -1202,6 +1250,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
                 "local_video_cluster_id": clean_text(row.get("video_cluster_id")),
                 "local_video_cluster_code": clean_text((bundle or {}).get("video_cluster_code")) or clean_text((bundle or {}).get("code")),
                 "local_video_cluster_name": clean_text((bundle or {}).get("display_name")) or clean_text(row.get("new_video_cluster_name")),
+                "local_selection_json": clean_text(row.get("selection_json")),
                 "start_date": iso_date(row.get("start_date")),
                 "end_date": iso_date(row.get("end_date")),
                 "created_at_ts": first_non_empty(iso_datetime(row.get("created_at")), iso_datetime(row.get("_ingested_at"))),
@@ -1234,12 +1283,18 @@ def build_silver(run_id: str) -> dict[str, Any]:
     for campaign in dim_campaign_rows:
         campaign_id_normalized = clean_text(campaign.get("campaign_id_normalized"))
         cluster_code = clean_text(campaign.get("local_video_cluster_code"))
-        if not campaign_id_normalized or not cluster_code:
+        if not campaign_id_normalized:
+            continue
+        selection_refs = _selection_json_references(campaign.get("local_selection_json"))
+        for reference in selection_refs:
+            _append_content_reference(campaign_by_cluster_reference, reference, campaign_id_normalized)
+            _append_content_reference(campaign_by_video_reference, reference, campaign_id_normalized)
+        _append_content_reference(campaign_by_cluster_reference, campaign.get("local_video_cluster_name"), campaign_id_normalized)
+        _append_content_reference(campaign_by_cluster_reference, campaign.get("campaign_name"), campaign_id_normalized)
+        if not cluster_code:
             continue
         campaign_by_cluster_code[cluster_code].append(campaign_id_normalized)
         _append_content_reference(campaign_by_cluster_reference, cluster_code, campaign_id_normalized)
-        _append_content_reference(campaign_by_cluster_reference, campaign.get("local_video_cluster_name"), campaign_id_normalized)
-        _append_content_reference(campaign_by_cluster_reference, campaign.get("campaign_name"), campaign_id_normalized)
         video_codes = bundle_videos_by_code.get(cluster_code, [])
         if not video_codes:
             bridge_campaign_content_rows.append(

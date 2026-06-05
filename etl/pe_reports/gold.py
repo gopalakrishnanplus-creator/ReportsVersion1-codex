@@ -145,6 +145,7 @@ CAMPAIGN_DEFAULT_COLUMNS: dict[str, list[str]] = {
         "shares_viewed_100_cumulative",
         "video_shares_cumulative",
         "bundle_shares_cumulative",
+        "banner_clicks_cumulative",
         "activation_pct",
         "play_rate_pct",
         "engagement_50_pct",
@@ -868,6 +869,7 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", notes: str = "") -> 
         cumulative_viewed_100 = len([row for row in campaign_share_rows if clean_text(row.get("is_viewed_100")) == "true"])
         cumulative_video_shares = len([row for row in campaign_share_rows if clean_text(row.get("shared_item_type")) == "video"])
         cumulative_bundle_shares = len([row for row in campaign_share_rows if clean_text(row.get("shared_item_type")) == "cluster"])
+        cumulative_banner_clicks = len(campaign_banner_click_rows)
         health = compute_health_components(
             enrolled_doctors_current=cumulative_enrolled,
             doctors_sharing_unique=cumulative_doctors_sharing,
@@ -896,6 +898,7 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", notes: str = "") -> 
             "shares_viewed_100_cumulative": cumulative_viewed_100,
             "video_shares_cumulative": cumulative_video_shares,
             "bundle_shares_cumulative": cumulative_bundle_shares,
+            "banner_clicks_cumulative": cumulative_banner_clicks,
             "activation_pct": health["activation_pct"],
             "play_rate_pct": health["play_rate_pct"],
             "engagement_50_pct": health["engagement_50_pct"],
