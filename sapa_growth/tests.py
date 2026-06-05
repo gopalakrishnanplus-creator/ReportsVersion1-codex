@@ -12,6 +12,7 @@ from django.urls import resolve, reverse
 from etl.sapa_growth import bronze as sapa_bronze
 from etl.sapa_growth import pipeline as sapa_pipeline
 from etl.sapa_growth import raw as sapa_raw
+from etl.sapa_growth import silver as sapa_silver
 from etl.sapa_growth import storage as sapa_storage
 from etl.sapa_growth import gold as sapa_gold
 from etl.sapa_growth.mysql import extract_rows
@@ -310,6 +311,55 @@ class SapaGrowthLogicTests(SimpleTestCase):
         matches = _doctor_matches_for_api({"email": "doctor@example.com"}, by_email, by_phone, "2026-04-20")
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0][0]["campaign_key"], "new")
+
+    def test_redflags_only_doctor_counts_as_enrolled_doctor(self):
+        rows_by_table = {
+            "campaign_campaign": [
+                {
+                    "id": "camp-a",
+                    "name": "Campaign A",
+                    "brand_id": "brand-a",
+                    "system_rfa": "true",
+                    "start_date": "2026-05-01",
+                    "end_date": "",
+                }
+            ],
+            "campaign_fieldrep": [
+                {
+                    "id": "fieldrep-1",
+                    "brand_supplied_field_rep_id": "FR1",
+                    "full_name": "Rep One",
+                    "state": "Karnataka",
+                }
+            ],
+            "campaign_campaignfieldrep": [{"campaign_id": "camp-a", "field_rep_id": "fieldrep-1"}],
+            "redflags_doctor": [
+                {
+                    "doctor_id": "DOC-RF-1",
+                    "first_name": "Self",
+                    "last_name": "Doctor",
+                    "email": "self@example.com",
+                    "field_rep_id": "fieldrep-1",
+                    "created_at": "2026-05-20 10:00:00",
+                    "state": "Karnataka",
+                }
+            ],
+        }
+        replace_calls = []
+
+        with patch("etl.sapa_growth.silver.fetch_table", side_effect=lambda _schema, table: rows_by_table.get(table, [])), patch(
+            "etl.sapa_growth.silver.replace_table",
+            side_effect=lambda schema, table, columns, rows: replace_calls.append((schema, table, columns, list(rows))),
+        ):
+            sapa_silver.build_silver("run-1")
+
+        dim_call = next(call for call in replace_calls if call[1] == "dim_doctor_clinic")
+        dim_rows = dim_call[3]
+        self.assertEqual(len(dim_rows), 1)
+        self.assertEqual(dim_rows[0]["campaign_key"], "camp-a")
+        self.assertEqual(dim_rows[0]["is_user_created_doctor"], "true")
+        self.assertEqual(dim_rows[0]["has_campaign_source"], "false")
+        self.assertEqual(dim_rows[0]["has_redflags_source"], "true")
 
     def test_dashboard_pdf_export_returns_pdf_attachment(self):
         request = RequestFactory().post(
