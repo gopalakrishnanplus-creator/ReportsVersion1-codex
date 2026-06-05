@@ -1,7 +1,7 @@
 {% extends "dashboard/internal_data_admin/base.html" %}
 
-{% block title %}Campaign Privacy Allowlist{% endblock %}
-{% block heading %}Campaign Privacy Allowlist{% endblock %}
+{% block title %}Reporting Privacy Controls{% endblock %}
+{% block heading %}Reporting Privacy Controls{% endblock %}
 
 {% block content %}
 <nav class="ida-toolbar">
@@ -10,28 +10,111 @@
 
 <section class="ida-band">
   <div>
-    <h2>Allow PII only for selected campaigns</h2>
-    <p class="ida-muted">Add campaign IDs here when doctor, patient, and field-rep names, numbers, and emails may remain in derived dashboards. When at least one entry is active, campaign-scoped reporting rows outside this allowlist are excluded during ETL rebuild.</p>
+    <h2>Hide specific people except in one campaign</h2>
+    <p class="ida-muted">Add a person by email and/or phone, then enter the only campaign where that person may remain visible. Matching doctor, patient, and field-rep rows are excluded from other derived dashboards during ETL rebuild.</p>
   </div>
   <div class="ida-safety-note">
     <strong>No RAW deletion</strong>
-    <span>Source and RAW rows are preserved. Deactivate entries and rerun ETL to change what derived reports include.</span>
+    <span>Source and RAW rows are preserved. These controls only change derived reporting output after ETL is rerun.</span>
   </div>
 </section>
 
 <section class="ida-panel">
   <p class="ida-eyebrow">Status</p>
-  {% if is_allowlist_active %}
-  <h2>{{ active_rules|length }} active campaign{{ active_rules|length|pluralize }} allowed</h2>
-  <p class="ida-muted">Dashboards should include PII only for these campaign IDs after the next ETL rebuild.</p>
+  {% if is_person_privacy_active %}
+  <h2>{{ active_person_rules|length }} active person visibility rule{{ active_person_rules|length|pluralize }}</h2>
+  <p class="ida-muted">Only the specified campaign will show each matching person's PII after the next ETL rebuild.</p>
   {% else %}
-  <h2>Allowlist inactive</h2>
-  <p class="ida-muted">No active campaign privacy entries exist, so existing report behavior remains unchanged.</p>
+  <h2>No person-specific rules active</h2>
+  <p class="ida-muted">Add the testing users below to hide them everywhere except their approved campaign.</p>
   {% endif %}
 </section>
 
 <section class="ida-panel">
-  <p class="ida-eyebrow">Add Campaign</p>
+  <p class="ida-eyebrow">Add Person Rule</p>
+  <form class="ida-form ida-record-form" method="post">
+    {% csrf_token %}
+    <input type="hidden" name="privacy_action" value="add_person">
+    <div class="ida-field-grid">
+      <label class="ida-field">
+        <span>User / record label</span>
+        <input type="text" name="person_label" placeholder="Test user 1">
+      </label>
+      <label class="ida-field">
+        <span>Email to hide</span>
+        <input type="email" name="email" placeholder="test.user@example.com">
+      </label>
+      <label class="ida-field">
+        <span>Phone to hide</span>
+        <input type="text" name="phone" placeholder="9876543210">
+      </label>
+      <label class="ida-field">
+        <span>Allowed campaign ID</span>
+        <input type="text" name="allowed_campaign_id" placeholder="83ce7fc7c965433ab2b9717394abe3c1" required>
+      </label>
+      <label class="ida-field ida-field-wide">
+        <span>Reason</span>
+        <input type="text" name="reason" placeholder="Testing user should appear only in approved campaign" required>
+      </label>
+    </div>
+    <button class="ida-button" type="submit">Save Person Rule</button>
+  </form>
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Person Visibility Rules</p>
+  <div class="ida-table-wrap">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>User / record</th>
+          <th>Email</th>
+          <th>Phone</th>
+          <th>Allowed campaign</th>
+          <th>Reason</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rule in person_rules %}
+        <tr>
+          <td>{% if rule.is_active %}<strong>Active</strong>{% else %}Inactive{% endif %}</td>
+          <td>{{ rule.person_label|default:"Specific record" }}</td>
+          <td><code>{{ rule.email }}</code></td>
+          <td><code>{{ rule.phone }}</code></td>
+          <td><code>{{ rule.allowed_campaign_id }}</code></td>
+          <td>{{ rule.reason }}</td>
+          <td>
+            {% if rule.is_active %}
+            <form method="post">
+              {% csrf_token %}
+              <input type="hidden" name="privacy_action" value="deactivate_person">
+              <input type="hidden" name="rule_id" value="{{ rule.rule_id }}">
+              <button class="ida-button ida-button-secondary" type="submit">Deactivate</button>
+            </form>
+            {% else %}
+            <span class="ida-muted">No action</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="7">No person visibility rules have been created.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Advanced Campaign-wide Allowlist</p>
+  {% if is_allowlist_active %}
+  <h2>{{ active_rules|length }} campaign{{ active_rules|length|pluralize }} globally allowed</h2>
+  <p class="ida-muted">When this advanced list is active, all campaign-scoped reporting rows outside these campaign IDs are excluded. Use person rules above for test-user cleanup.</p>
+  {% else %}
+  <h2>Campaign-wide allowlist inactive</h2>
+  <p class="ida-muted">This advanced control is optional. Leave it empty unless you want every dashboard restricted to selected campaigns only.</p>
+  {% endif %}
   <form class="ida-form ida-record-form" method="post">
     {% csrf_token %}
     <input type="hidden" name="privacy_action" value="add">
@@ -50,7 +133,7 @@
 </section>
 
 <section class="ida-panel">
-  <p class="ida-eyebrow">Allowlist Entries</p>
+  <p class="ida-eyebrow">Campaign-wide Entries</p>
   <div class="ida-table-wrap">
     <table class="ida-data-table">
       <thead>

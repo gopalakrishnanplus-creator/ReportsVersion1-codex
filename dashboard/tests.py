@@ -14,6 +14,7 @@ from etl.reporting_privacy import (
     campaign_allowed_by_allowlist,
     filter_rows_by_campaign_fields,
     normalize_campaign_id,
+    row_visible_by_person_privacy,
 )
 from dashboard.internal_data_admin import (
     ColumnInfo,
@@ -293,6 +294,43 @@ class DashboardRoutingTests(SimpleTestCase):
         filtered = filter_rows_by_campaign_fields(rows, allowlist, ("campaign_id",))
 
         self.assertEqual([row["row_id"] for row in filtered], ["keep"])
+
+    def test_person_privacy_helper_hides_matching_person_outside_allowed_campaign(self):
+        rules = [
+            {
+                "email_normalized": "test.user@example.com",
+                "phone_normalized": "9876543210",
+                "allowed_campaign_id_normalized": normalize_campaign_id("Allowed Campaign"),
+            }
+        ]
+
+        self.assertTrue(
+            row_visible_by_person_privacy(
+                {"campaign_id": "Allowed-Campaign", "email": "TEST.USER@example.com"},
+                rules,
+                campaign_fields=("campaign_id",),
+                email_fields=("email",),
+                phone_fields=("phone",),
+            )
+        )
+        self.assertFalse(
+            row_visible_by_person_privacy(
+                {"campaign_id": "Other Campaign", "phone": "+91 98765 43210"},
+                rules,
+                campaign_fields=("campaign_id",),
+                email_fields=("email",),
+                phone_fields=("phone",),
+            )
+        )
+        self.assertTrue(
+            row_visible_by_person_privacy(
+                {"campaign_id": "Other Campaign", "email": "real.user@example.com"},
+                rules,
+                campaign_fields=("campaign_id",),
+                email_fields=("email",),
+                phone_fields=("phone",),
+            )
+        )
 
 
 class DashboardAccessViewTests(SimpleTestCase):
@@ -713,6 +751,24 @@ class DashboardAccessViewTests(SimpleTestCase):
         with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
             "dashboard.internal_data_admin.ensure_campaign_privacy_table",
         ), patch(
+            "dashboard.internal_data_admin.list_person_privacy_rules",
+            return_value=[
+                {
+                    "rule_id": "person-rule-1",
+                    "person_label": "Test user 1",
+                    "email": "test.user@example.com",
+                    "email_normalized": "test.user@example.com",
+                    "phone": "9876543210",
+                    "phone_normalized": "9876543210",
+                    "allowed_campaign_id": "83ce7fc7c965433ab2b9717394abe3c1",
+                    "allowed_campaign_id_normalized": "83ce7fc7c965433ab2b9717394abe3c1",
+                    "reason": "Testing user should appear only in approved campaign",
+                    "is_active": True,
+                    "created_by": "internal_admin",
+                    "created_at": "2026-06-05 10:00:00+00",
+                }
+            ],
+        ), patch(
             "dashboard.internal_data_admin.list_campaign_privacy_allowlist_rules",
             return_value=[
                 {
@@ -729,9 +785,56 @@ class DashboardAccessViewTests(SimpleTestCase):
             response = self.client.get("/_internal/data-admin/privacy/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Campaign Privacy Allowlist")
-        self.assertContains(response, "1 active campaign allowed")
+        self.assertContains(response, "Reporting Privacy Controls")
+        self.assertContains(response, "1 active person visibility rule")
+        self.assertContains(response, "test.user@example.com")
         self.assertContains(response, "83ce7fc7c965433ab2b9717394abe3c1")
+
+    def test_internal_data_admin_privacy_post_adds_person_rule(self):
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin.ensure_campaign_privacy_table",
+        ), patch(
+            "dashboard.internal_data_admin.create_person_privacy_rule",
+            return_value="person-rule-1",
+        ) as create_rule:
+            response = self.client.post(
+                "/_internal/data-admin/privacy/",
+                {
+                    "privacy_action": "add_person",
+                    "person_label": "Test user 1",
+                    "email": "test.user@example.com",
+                    "phone": "9876543210",
+                    "allowed_campaign_id": "83ce7fc7c965433ab2b9717394abe3c1",
+                    "reason": "Testing user should appear only in approved campaign",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/_internal/data-admin/privacy/")
+        create_rule.assert_called_once_with(
+            person_label="Test user 1",
+            email="test.user@example.com",
+            phone="9876543210",
+            allowed_campaign_id="83ce7fc7c965433ab2b9717394abe3c1",
+            reason="Testing user should appear only in approved campaign",
+            created_by="internal_admin",
+        )
+
+    def test_internal_data_admin_privacy_post_deactivates_person_rule(self):
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin.ensure_campaign_privacy_table",
+        ), patch(
+            "dashboard.internal_data_admin.deactivate_person_privacy_rule",
+            return_value=True,
+        ) as deactivate_rule:
+            response = self.client.post(
+                "/_internal/data-admin/privacy/",
+                {"privacy_action": "deactivate_person", "rule_id": "person-rule-1"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/_internal/data-admin/privacy/")
+        deactivate_rule.assert_called_once_with("person-rule-1")
 
     def test_internal_data_admin_privacy_post_adds_campaign_rule(self):
         with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
@@ -1458,6 +1561,46 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertEqual([row["field_rep_id"] for row in filtered["campaign_field_rep_assignment_v2"]], ["rep-1"])
         self.assertEqual([row["display_name"] for row in filtered["field_rep_v2"]], ["Allowed Rep"])
         self.assertEqual([row["email_normalized"] for row in filtered["inclinic_field_rep_identity_v2"]], ["allowed@example.com"])
+
+    def test_person_privacy_filter_keeps_test_user_only_in_allowed_inclinic_campaign(self):
+        rules = [
+            {
+                "email_normalized": "test.rep@example.com",
+                "phone_normalized": "9876543210",
+                "allowed_campaign_id_normalized": normalize_campaign_id("Allowed Campaign"),
+            }
+        ]
+        source = {
+            "inclinic_collateral_transaction_v2": [
+                {"legacy_campaign_id": "Allowed Campaign", "doctor_phone_normalized": "9876543210", "campaign_fieldrep_id": "rep-1"},
+                {"legacy_campaign_id": "Other Campaign", "doctor_phone_normalized": "9876543210", "campaign_fieldrep_id": "rep-1"},
+                {"legacy_campaign_id": "Other Campaign", "doctor_phone_normalized": "9999999999", "campaign_fieldrep_id": "rep-2"},
+            ],
+            "inclinic_share_event_v2": [],
+            "doctor_field_rep_roster_bridge_v2": [],
+            "inclinic_assigned_doctor_roster_v2": [],
+            "campaign_field_rep_assignment_v2": [
+                {"legacy_campaign_id": "Allowed Campaign", "field_rep_id": "rep-1"},
+                {"legacy_campaign_id": "Other Campaign", "field_rep_id": "rep-1"},
+                {"legacy_campaign_id": "Other Campaign", "field_rep_id": "rep-2"},
+            ],
+            "inclinic_campaign_field_rep_assignment_v2": [],
+            "field_rep_v2": [
+                {"current_campaign_fieldrep_id": "rep-1", "primary_email": "test.rep@example.com", "phone_number": "9876543210"},
+                {"current_campaign_fieldrep_id": "rep-2", "primary_email": "real.rep@example.com", "phone_number": "9999999999"},
+            ],
+            "inclinic_field_rep_identity_v2": [
+                {"campaign_fieldrep_id": "rep-1", "email_normalized": "test.rep@example.com"},
+                {"campaign_fieldrep_id": "rep-2", "email_normalized": "real.rep@example.com"},
+            ],
+        }
+
+        filtered = v2_reporting._apply_person_privacy_to_source(source, rules)
+
+        self.assertEqual([row["legacy_campaign_id"] for row in filtered["inclinic_collateral_transaction_v2"]], ["Allowed Campaign", "Other Campaign"])
+        self.assertEqual([row["field_rep_id"] for row in filtered["campaign_field_rep_assignment_v2"]], ["rep-1", "rep-2"])
+        self.assertEqual([row["legacy_campaign_id"] for row in filtered["campaign_field_rep_assignment_v2"]], ["Allowed Campaign", "Other Campaign"])
+        self.assertEqual([row["current_campaign_fieldrep_id"] for row in filtered["field_rep_v2"]], ["rep-1", "rep-2"])
 
     def test_field_rep_state_falls_back_to_inclinic_identity_v2_state(self):
         source = {

@@ -9,7 +9,13 @@ from django.conf import settings
 
 from etl.sapa_growth.specs import BRONZE_SCHEMA, SILVER_SCHEMA
 from etl.sapa_growth.storage import fetch_table, replace_table
-from etl.reporting_privacy import active_campaign_privacy_allowlist, campaign_allowed_by_allowlist
+from etl.reporting_privacy import (
+    active_campaign_privacy_allowlist,
+    active_person_privacy_rules,
+    campaign_allowed_by_allowlist,
+    person_privacy_matching_rules,
+    row_visible_by_person_privacy,
+)
 from sapa_growth.logic import (
     as_int,
     canonical_doctor_key,
@@ -125,6 +131,27 @@ def _campaign_key_label(*rows: dict[str, Any] | None) -> tuple[str, str]:
 
 def _sapa_campaign_allowed(value: Any, allowlist: set[str]) -> bool:
     return campaign_allowed_by_allowlist(value, allowlist)
+
+
+def _sapa_person_visible(row: dict[str, Any], person_rules: list[dict[str, Any]]) -> bool:
+    return row_visible_by_person_privacy(
+        row,
+        person_rules,
+        campaign_fields=("campaign_id", "campaign_key", "brand_campaign_id"),
+        email_fields=("canonical_email", "email", "user_email"),
+        phone_fields=("canonical_phone", "canonical_whatsapp_no", "phone", "patient_whatsapp"),
+    )
+
+
+def _sapa_person_matches(row: dict[str, Any], person_rules: list[dict[str, Any]]) -> bool:
+    return bool(
+        person_privacy_matching_rules(
+            row,
+            person_rules,
+            email_fields=("canonical_email", "email", "user_email"),
+            phone_fields=("canonical_phone", "canonical_whatsapp_no", "phone", "patient_whatsapp"),
+        )
+    )
 
 
 def _truthy(value: Any) -> bool:
@@ -290,6 +317,7 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
 def build_silver(run_id: str) -> dict[str, Any]:
     now_iso = _now_iso()
     privacy_allowlist = active_campaign_privacy_allowlist()
+    person_privacy_rules = active_person_privacy_rules()
 
     campaign_doctors = fetch_table(BRONZE_SCHEMA, "campaign_doctor")
     campaign_enrollments = fetch_table(BRONZE_SCHEMA, "campaign_doctorcampaignenrollment")
@@ -565,6 +593,14 @@ def build_silver(run_id: str) -> dict[str, Any]:
                 }
             )
 
+    person_restricted_source_doctor_ids = {
+        clean_text(row.get("source_doctor_id"))
+        for row in dim_rows
+        if clean_text(row.get("source_doctor_id")) and _sapa_person_matches(row, person_privacy_rules)
+    }
+    if person_privacy_rules:
+        dim_rows = [row for row in dim_rows if _sapa_person_visible(row, person_privacy_rules)]
+
     dim_columns = [
         "doctor_key",
         "source_doctor_id",
@@ -680,6 +716,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         if dim_matches:
             match = _best_dim_for_event(dim_matches, event_date)
             return [(match["doctor_key"], match)] if match else []
+        if doctor_id and doctor_id in person_restricted_source_doctor_ids:
+            return []
         if doctor_id:
             return [(f"unmatched:{doctor_id}", None)]
         return [(f"unmatched:{source_hint}", None)]
@@ -693,6 +731,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"{source_table}:{source_submission_id}", submitted_at):
                 filters = _doctor_filters(doctor_dim)
                 if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
+                    continue
+                if person_privacy_rules and not _sapa_person_visible({**(doctor_dim or {}), **filters}, person_privacy_rules):
                     continue
                 overall_flag = (_empty_text(row.get("overall_flag_code"))).lower()
                 submission_key = f"{source_table}:{source_submission_id}"
@@ -822,6 +862,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             filters = _doctor_filters(doctor_dim)
             if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
                 continue
+            if person_privacy_rules and not _sapa_person_visible({**(doctor_dim or {}), **filters}, person_privacy_rules):
+                continue
             classifications = classify_metric_event(row.get("event_type"), row.get("action_key"))
             metric_event_id = _empty_text(row.get("id"))
             if filters["campaign_key"]:
@@ -894,6 +936,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"followup:{row.get('id')}", item["scheduled_followup_date"]):
                 filters = _doctor_filters(doctor_dim)
                 if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
+                    continue
+                if person_privacy_rules and not _sapa_person_visible({**(doctor_dim or {}), **filters, **row}, person_privacy_rules):
                     continue
                 reminder_id = _empty_text(row.get("id"))
                 if filters["campaign_key"]:
@@ -1016,6 +1060,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             filters = _doctor_filters(matched_dim)
             if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
                 continue
+            if person_privacy_rules and not _sapa_person_visible({**(matched_dim or {}), **filters, **row}, person_privacy_rules):
+                continue
             registration_key = base_registration_key
             if filters["campaign_key"]:
                 registration_key = f"{registration_key}:campaign:{filters['campaign_key']}"
@@ -1085,6 +1131,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         for matched_dim, match_method in _doctor_matches_for_api(row, dim_by_email, dim_by_phone, course_match_date):
             filters = _doctor_filters(matched_dim)
             if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
+                continue
+            if person_privacy_rules and not _sapa_person_visible({**(matched_dim or {}), **filters, **row}, person_privacy_rules):
                 continue
             course_progress_rows.append(
                 {
@@ -1364,6 +1412,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             "fact_course_user_progress": len(course_progress_rows),
             "fact_doctor_status_daily": len(doctor_status_rows),
             "ops.reporting_campaign_privacy_allowlist_active": len(privacy_allowlist),
+            "ops.reporting_person_privacy_rule_active": len(person_privacy_rules),
         },
         "issues": {
             "invalid_course_status": dict(invalid_course_status_counter),

@@ -6,7 +6,13 @@ from typing import Any
 
 from etl.pe_reports.specs import BRONZE_SCHEMA, SILVER_SCHEMA
 from etl.pe_reports.storage import fetch_table, replace_table
-from etl.reporting_privacy import active_campaign_privacy_allowlist, campaign_allowed_by_allowlist
+from etl.reporting_privacy import (
+    active_campaign_privacy_allowlist,
+    active_person_privacy_rules,
+    campaign_allowed_by_allowlist,
+    person_privacy_matching_rules,
+    row_visible_by_person_privacy,
+)
 from etl.pe_reports.utils import (
     as_int,
     clean_text,
@@ -351,6 +357,27 @@ def _filter_pe_campaign_rows(rows: list[dict[str, Any]], allowlist: set[str]) ->
     if not allowlist:
         return rows
     return [row for row in rows if _pe_campaign_allowed(row, allowlist)]
+
+
+def _pe_person_visible(row: dict[str, Any], person_rules: list[dict[str, Any]]) -> bool:
+    return row_visible_by_person_privacy(
+        row,
+        person_rules,
+        campaign_fields=("campaign_id_normalized", "campaign_id_original", "campaign_key", "campaign_id"),
+        email_fields=("email", "recipient_email", "user_email"),
+        phone_fields=("phone_normalized", "whatsapp_normalized", "phone", "phone_number_normalized", "recipient_reference"),
+    )
+
+
+def _pe_person_matches(row: dict[str, Any], person_rules: list[dict[str, Any]]) -> bool:
+    return bool(
+        person_privacy_matching_rules(
+            row,
+            person_rules,
+            email_fields=("email", "recipient_email", "user_email"),
+            phone_fields=("phone_normalized", "whatsapp_normalized", "phone", "phone_number_normalized", "recipient_reference"),
+        )
+    )
 
 
 def _preferred_localized_label(rows: list[dict[str, Any]], value_field: str, fallback: str | None = None) -> str | None:
@@ -726,6 +753,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
     issues: dict[str, int] = defaultdict(int)
     counts: dict[str, int] = {}
     privacy_allowlist = active_campaign_privacy_allowlist()
+    person_privacy_rules = active_person_privacy_rules()
 
     doctor_rows = fetch_table(BRONZE_SCHEMA, "redflags_doctor")
     campaign_doctor_rows = fetch_table(BRONZE_SCHEMA, "campaign_doctor")
@@ -1152,6 +1180,16 @@ def build_silver(run_id: str) -> dict[str, Any]:
         state = first_non_empty(clean_text((doctor_dim or {}).get("state")), clean_text(campaign_doctor.get("state")))
         city = first_non_empty(clean_text((doctor_dim or {}).get("city")), clean_text(campaign_doctor.get("city")))
         full_name = first_non_empty(clean_text((doctor_dim or {}).get("full_name")), clean_text(campaign_doctor.get("full_name")))
+        if person_privacy_rules and not _pe_person_visible(
+            {
+                **(doctor_dim or {}),
+                **campaign_doctor,
+                "campaign_id_normalized": campaign_id_normalized,
+                "campaign_id_original": clean_text((campaign or {}).get("campaign_id_original")) or clean_text(row.get("campaign_id")),
+            },
+            person_privacy_rules,
+        ):
+            continue
 
         fact_campaign_enrollment_rows.append(
             {
@@ -1235,6 +1273,16 @@ def build_silver(run_id: str) -> dict[str, Any]:
         city = first_non_empty(clean_text((doctor_dim or {}).get("city")), clean_text(campaign_doctor.get("city")))
         full_name = first_non_empty(clean_text((doctor_dim or {}).get("full_name")), clean_text(campaign_doctor.get("full_name")))
         enrolled_at = iso_datetime(credit["row"].get("credit_effective_from"))
+        if person_privacy_rules and not _pe_person_visible(
+            {
+                **(doctor_dim or {}),
+                **campaign_doctor,
+                "campaign_id_normalized": campaign_id_normalized,
+                "campaign_id_original": clean_text(campaign.get("campaign_id_original")) or campaign_id_normalized,
+            },
+            person_privacy_rules,
+        ):
+            continue
 
         fact_campaign_enrollment_rows.append(
             {
@@ -1301,6 +1349,15 @@ def build_silver(run_id: str) -> dict[str, Any]:
             campaign_videos_by_campaign=campaign_videos_by_campaign,
         )
         if privacy_allowlist and not _pe_campaign_allowed(attribution, privacy_allowlist):
+            continue
+        if person_privacy_rules and not _pe_person_visible(
+            {
+                **(doctor or {}),
+                **attribution,
+                "recipient_reference": row.get("recipient_reference"),
+            },
+            person_privacy_rules,
+        ):
             continue
         dq_errors = []
         if not doctor_id:
@@ -1372,6 +1429,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             continue
         doctor_id = clean_text((share or {}).get("doctor_id")) or clean_text(row.get("doctor_id"))
         doctor = doctor_by_key.get(clean_text((share or {}).get("doctor_key")) or doctor_id or "")
+        if person_privacy_rules and not _pe_person_visible({**(doctor or {}), **(share or {})}, person_privacy_rules):
+            continue
         milestone = as_int(row.get("milestone_percent"), default=-1)
         dq_errors = []
         if clean_text(row.get("event_type")) == "progress" and milestone not in {25, 50, 75, 100}:
@@ -1437,6 +1496,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
             campaigns_by_banner_target_url=campaigns_by_banner_target_url,
         )
         if privacy_allowlist and not _pe_campaign_allowed(attribution, privacy_allowlist):
+            continue
+        if person_privacy_rules and not _pe_person_visible({**(doctor or {}), **attribution}, person_privacy_rules):
             continue
         dq_errors = []
         if not doctor_id:
@@ -1641,6 +1702,61 @@ def build_silver(run_id: str) -> dict[str, Any]:
         map_rows = [row for row in map_rows if clean_text(row.get("campaign_doctor_id")) in allowed_campaign_doctor_ids]
         recon_rows = [row for row in recon_rows if clean_text(row.get("doctor_id")) in allowed_doctor_keys]
 
+    if person_privacy_rules:
+        visible_doctor_keys = {
+            clean_text(row.get("doctor_key"))
+            for rows in (
+                fact_campaign_enrollment_rows,
+                bridge_campaign_doctor_base_rows,
+                share_rows_enriched,
+                playback_rows_enriched,
+                banner_click_rows_enriched,
+                funnel_rows,
+                fact_video_view_rows,
+            )
+            for row in rows
+            if clean_text(row.get("doctor_key"))
+        }
+        visible_field_rep_ids = {
+            clean_text(row.get(field))
+            for rows in (
+                fact_campaign_enrollment_rows,
+                bridge_campaign_doctor_base_rows,
+                share_rows_enriched,
+                playback_rows_enriched,
+                banner_click_rows_enriched,
+                funnel_rows,
+                fact_video_view_rows,
+            )
+            for row in rows
+            for field in ("registered_by_field_rep_id", "field_rep_id_resolved")
+            if clean_text(row.get(field))
+        }
+        person_matched_doctor_ids = {
+            clean_text(row.get("doctor_id"))
+            for row in dim_doctor_rows
+            if clean_text(row.get("doctor_id")) and _pe_person_matches(row, person_privacy_rules)
+        }
+        dim_doctor_rows = [
+            row
+            for row in dim_doctor_rows
+            if not _pe_person_matches(row, person_privacy_rules)
+            or clean_text(row.get("doctor_key")) in visible_doctor_keys
+        ]
+        dim_field_rep_rows = [
+            row
+            for row in dim_field_rep_rows
+            if not _pe_person_matches(row, person_privacy_rules)
+            or clean_text(row.get("field_rep_id")) in visible_field_rep_ids
+        ]
+        visible_dim_doctor_ids = {clean_text(dim.get("doctor_id")) for dim in dim_doctor_rows if clean_text(dim.get("doctor_id"))}
+        recon_rows = [
+            row
+            for row in recon_rows
+            if clean_text(row.get("doctor_id")) not in person_matched_doctor_ids
+            or clean_text(row.get("doctor_id")) in visible_dim_doctor_ids
+        ]
+
     _replace_silver_table("dim_field_rep", dim_field_rep_rows)
     _replace_silver_table("map_campaign_doctor_to_doctor", map_rows)
     _replace_silver_table("dim_doctor", dim_doctor_rows)
@@ -1677,6 +1793,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             "fact_video_view": len(fact_video_view_rows),
             "recon_doctor_share_summary": len(recon_rows),
             "ops.reporting_campaign_privacy_allowlist_active": len(privacy_allowlist),
+            "ops.reporting_person_privacy_rule_active": len(person_privacy_rules),
         }
     )
 

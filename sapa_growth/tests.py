@@ -353,6 +353,9 @@ class SapaGrowthLogicTests(SimpleTestCase):
         ), patch(
             "etl.sapa_growth.silver.active_campaign_privacy_allowlist",
             return_value=set(),
+        ), patch(
+            "etl.sapa_growth.silver.active_person_privacy_rules",
+            return_value=[],
         ):
             sapa_silver.build_silver("run-1")
 
