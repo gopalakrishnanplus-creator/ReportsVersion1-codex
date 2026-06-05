@@ -266,6 +266,7 @@ def cumulative_summary(campaign_summary_row: dict[str, Any], enrollment_rows: li
     viewed_100 = len([row for row in share_rows if clean_text(row.get("is_viewed_100")) == "true"])
     video_shares = len([row for row in share_rows if clean_text(row.get("shared_item_type")) == "video"])
     bundle_shares = len([row for row in share_rows if clean_text(row.get("shared_item_type")) == "cluster"])
+    banner_clicks = as_int(campaign_summary_row.get("banner_clicks_cumulative"))
     health = compute_health_components(
         enrolled_doctors_current=enrolled,
         doctors_sharing_unique=sharing,
@@ -286,6 +287,7 @@ def cumulative_summary(campaign_summary_row: dict[str, Any], enrollment_rows: li
         "shares_viewed_100_cumulative": viewed_100,
         "video_shares_cumulative": video_shares,
         "bundle_shares_cumulative": bundle_shares,
+        "banner_clicks_cumulative": banner_clicks,
         "activation_pct": health["activation_pct"],
         "play_rate_pct": health["play_rate_pct"],
         "engagement_50_pct": health["engagement_50_pct"],
@@ -427,6 +429,9 @@ def metric_dataset(metric: str, payload: dict[str, Any]) -> tuple[str, list[str]
     if metric == "bundle_shares":
         rows = [row for row in share_rows if clean_text(row.get("shared_item_type")) == "cluster"]
         return ("Bundle Shares", ["share_public_id", "doctor_id", "doctor_display_name", "video_cluster_display_label", "language_code", "shared_at_ts"], rows)
+    if metric == "banner_clicks":
+        summary = payload["campaign_summary"]
+        return ("Banner Clicks", ["banner_clicks_cumulative"], [{"banner_clicks_cumulative": summary.get("banner_clicks_cumulative", 0)}])
     if metric == "state_attention":
         rows = sorted(state_rows, key=lambda row: (as_float(row.get("weekly_state_health_score")), row.get("state") or ""))
         return ("States Requiring Attention", ["state", "enrolled_doctors_state", "doctors_sharing_unique_state", "shares_total_state", "activation_pct_state", "engagement_50_pct_state", "weekly_state_health_score"], rows)

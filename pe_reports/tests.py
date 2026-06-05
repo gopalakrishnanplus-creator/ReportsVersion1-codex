@@ -11,7 +11,7 @@ from etl.pe_reports import pipeline as pe_pipeline
 from etl.pe_reports import raw as pe_raw
 from etl.pe_reports import storage as pe_storage
 from etl.pe_reports.gold import _latest_business_date, build_benchmark_row, compute_health_components
-from etl.pe_reports.silver import attribute_banner_click_row, attribute_share_row, match_campaign_doctors, resolve_playback_share, rollup_share_funnel
+from etl.pe_reports.silver import _selection_json_references, attribute_banner_click_row, attribute_share_row, match_campaign_doctors, resolve_playback_share, rollup_share_funnel
 from etl.pe_reports.specs import RAW_AUDIT_COLUMNS, SourceTableSpec
 from etl.pe_reports.utils import clean_text, week_end_saturday
 from pe_reports.reporting import build_dashboard_payload
@@ -349,6 +349,14 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(result["campaign_id_normalized"], "camp-a")
         self.assertEqual(result["is_campaign_attributed_flag"], "true")
 
+    def test_selection_json_references_include_selected_content_names(self):
+        refs = _selection_json_references(
+            '{"selected_clusters": [{"name": "Acute wheeze / asthma attack (basic pack)", "code": "acute-wheeze-basic"}], "language": "en"}'
+        )
+        self.assertIn("Acute wheeze / asthma attack (basic pack)", refs)
+        self.assertIn("acute-wheeze-basic", refs)
+        self.assertNotIn("en", refs)
+
     def test_banner_click_prefers_matching_banner_target_url(self):
         result = attribute_banner_click_row(
             {
@@ -545,6 +553,19 @@ class PeReportsLogicTests(SimpleTestCase):
         )
         self.assertEqual(payload["selected_month"], "2026-03")
         self.assertEqual(clean_text(payload["current_week_row"].get("week_end_date")), "2026-03-28")
+
+    def test_dashboard_payload_preserves_banner_click_summary(self):
+        payload = build_dashboard_payload(
+            {"campaign_id_original": "camp-1", "start_date": "2026-06-01", "end_date": "2026-06-30", "local_video_cluster_name": "Bundle"},
+            {},
+            [{"week_index": 1, "week_start_date": "2026-06-01", "week_end_date": "2026-06-06"}],
+            {"campaign_id_original": "camp-1", "as_of_date": "2026-06-05", "banner_clicks_cumulative": "1"},
+            [],
+            [],
+            [],
+            {"activation_pct": 40.0, "play_rate_pct": 40.0, "engagement_50_pct": 40.0, "completion_pct": 40.0},
+        )
+        self.assertEqual(payload["campaign_summary"]["banner_clicks_cumulative"], 1)
 
     def test_dashboard_payload_keeps_current_saturday_week_for_midweek_publish(self):
         payload = build_dashboard_payload(
