@@ -506,7 +506,7 @@ class DashboardAccessViewTests(SimpleTestCase):
     def test_state_attention_uses_rep_aliases_and_effective_reach(self):
         latest_week = {"week_start_date": "2026-04-10", "week_end_date": "2026-04-16"}
         with patch("dashboard.views._optional_table_exists", return_value=True), patch(
-            "dashboard.views._fetch_dicts",
+            "dashboard.views._fetch_dicts_with_timeout",
             return_value=[],
         ) as fetch_mock:
             dashboard.views._state_attention_source_rows(
@@ -541,7 +541,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertNotIn("THEN 'Aligarh'", sql)
         self.assertNotIn("state_normalized <> 'UNKNOWN'", sql)
         self.assertNotIn("total_state,0)/4.0", sql)
-        self.assertEqual(fetch_mock.call_args.kwargs.get("query_timeout_ms"), 12000)
+        self.assertEqual(fetch_mock.call_args.kwargs.get("timeout_ms"), 12000)
 
     def test_inclinic_silver_uses_strict_rep_mapping_and_backfilled_transaction_ids(self):
         with patch("etl.pipelines.silver_transform.execute") as execute_mock:
