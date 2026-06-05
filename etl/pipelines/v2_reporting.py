@@ -596,6 +596,14 @@ def _state_for_rep(rep: dict[str, Any] | None) -> str:
     return _state_for_value((rep or {}).get("state"))
 
 
+def _first_state(row: dict[str, Any], *fields: str) -> str:
+    for field in fields:
+        state = _clean_state(row.get(field))
+        if state:
+            return state
+    return ""
+
+
 def _identity_state_by_campaign_fieldrep(source: dict[str, list[dict[str, Any]]]) -> dict[str, str]:
     state_by_rep: dict[str, tuple[tuple[str, str, str], str]] = {}
     state_fields = (
@@ -610,11 +618,7 @@ def _identity_state_by_campaign_fieldrep(source: dict[str, list[dict[str, Any]]]
         if not _row_is_current(identity):
             continue
         rep_id = _field(identity, "campaign_fieldrep_id", "field_rep_uuid")
-        state = ""
-        for field in state_fields:
-            state = _clean_state(identity.get(field))
-            if state:
-                break
+        state = _first_state(identity, *state_fields)
         if not rep_id or not state:
             continue
         key = normalize_key(rep_id)
@@ -627,6 +631,26 @@ def _identity_state_by_campaign_fieldrep(source: dict[str, list[dict[str, Any]]]
         if current is None or freshness >= current[0]:
             state_by_rep[key] = (freshness, state)
     return {key: state for key, (_, state) in state_by_rep.items()}
+
+
+def _field_rep_state_fallback_by_id() -> dict[str, str]:
+    fallback: dict[str, str] = {}
+    source_tables = (
+        ("raw_server1", "campaign_fieldrep", "id", ("state",)),
+        ("silver", "dim_field_rep", "id", ("state", "state_normalized")),
+    )
+    for schema, table, id_column, state_fields in source_tables:
+        try:
+            if not table_exists(schema, table):
+                continue
+            for row in fetch_table(schema, table):
+                rep_id = _field(row, id_column)
+                state = _first_state(row, *state_fields)
+                if rep_id and state:
+                    fallback.setdefault(normalize_key(rep_id), state)
+        except Exception:
+            continue
+    return fallback
 
 
 RAW_V2_SOURCE_TABLES = {
@@ -965,16 +989,26 @@ def _campaign_rows(source: dict[str, list[dict[str, Any]]]) -> list[dict[str, An
     return rows
 
 
-def _field_rep_rows(source: dict[str, list[dict[str, Any]]], now: str) -> list[dict[str, Any]]:
+def _field_rep_rows(
+    source: dict[str, list[dict[str, Any]]],
+    now: str,
+    state_fallback_by_rep: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     identity_state_by_rep = _identity_state_by_campaign_fieldrep(source)
+    state_fallback_by_rep = state_fallback_by_rep or {}
     for rep in source["field_rep_v2"]:
         if not _row_is_current(rep):
             continue
         rep_id = _field(rep, "current_campaign_fieldrep_id", "id")
         if not rep_id:
             continue
-        state = _clean_state(rep.get("state")) or identity_state_by_rep.get(normalize_key(rep_id), "")
+        rep_key = normalize_key(rep_id)
+        state = (
+            _first_state(rep, "state", "state_normalized", "current_state", "field_rep_state", "campaign_fieldrep_state")
+            or identity_state_by_rep.get(rep_key, "")
+            or state_fallback_by_rep.get(rep_key, "")
+        )
         rows.append(
             {
                 "id": rep_id,
@@ -1875,7 +1909,7 @@ def build_v2_reporting(run_id: str) -> dict[str, Any]:
     correction_rules = active_reporting_correction_rules()
     brand_by_rep_id = _rep_brand_id_by_campaign_fieldrep(source)
     campaign_rows = _campaign_rows(source)
-    field_rep_rows = _field_rep_rows(source, now)
+    field_rep_rows = _field_rep_rows(source, now, _field_rep_state_fallback_by_id())
     field_rep_by_id = {row["id"]: row for row in field_rep_rows}
     assignment_rows = _assignment_rows(source)
     collateral_rows = _collateral_rows(source, now)

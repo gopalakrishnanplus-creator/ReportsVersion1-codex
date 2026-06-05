@@ -257,6 +257,12 @@ def _valid_state_sql(column_sql: str) -> str:
     return f"CASE WHEN {state_key_sql} IN ({unknown_values}) THEN NULL {state_cases} ELSE NULL END"
 
 
+def _display_state_sql(column_sql: str) -> str:
+    state_key_sql = f"lower(regexp_replace(COALESCE(btrim({column_sql}), ''), '[^a-zA-Z0-9]', '', 'g'))"
+    unknown_values = ", ".join(f"'{key}'" for key in sorted(UNKNOWN_STATE_KEYS))
+    return f"CASE WHEN {state_key_sql} IN ({unknown_values}) THEN NULL ELSE NULLIF(btrim({column_sql}), '') END"
+
+
 def _canonical_state_name(value: Any) -> str | None:
     state_key = re.sub(r"[^a-zA-Z0-9]", "", str(value or "").strip().lower())
     return INDIAN_STATE_DISPLAY_BY_KEY.get(state_key)
@@ -1192,7 +1198,11 @@ def _field_rep_insight_rows(
                 ) AS field_rep_name,
                 {_normalized_sql('ccf.field_rep_id::text')} AS internal_rep_key,
                 {_normalized_sql('cfr.brand_supplied_field_rep_id')} AS external_rep_key,
-                COALESCE({_valid_state_sql('cfr.state')}, 'UNKNOWN') AS state_normalized
+                COALESCE(
+                    {_valid_state_sql('cfr.state')},
+                    {_display_state_sql('cfr.state')},
+                    'UNKNOWN'
+                ) AS state_normalized
                 {alias_selects}
             FROM bronze.campaign_campaignfieldrep ccf
             JOIN candidate_campaign_ids ci
@@ -1220,7 +1230,7 @@ def _field_rep_insight_rows(
                     field_rep_id
                 ) AS field_rep_brand_supplied_id,
                 COALESCE(
-                    MAX(NULLIF(state_normalized, '')),
+                    MAX(NULLIF(state_normalized, '')) FILTER (WHERE state_normalized <> 'UNKNOWN'),
                     'UNKNOWN'
                 ) AS state_normalized
             FROM raw_assigned_reps
