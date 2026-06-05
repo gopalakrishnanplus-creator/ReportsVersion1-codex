@@ -10,6 +10,7 @@
     <p class="ida-muted">Tables are grouped by reporting system so cleanup starts in the right place. You usually do not delete from every table; clean source/RAW rows first, then rerun the relevant ETL so derived layers rebuild.</p>
     <p class="ida-toolbar ida-inline-toolbar">
       <a class="ida-button" href="{% url 'internal-data-admin-cleanup' %}?system={{ selected_system }}">Open Hierarchy Cleanup Planner</a>
+      <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-privacy' %}">Campaign Privacy Allowlist</a>
       <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-corrections' %}">Reporting Corrections</a>
       <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-raw-downloads' %}{% if selected_system != 'all' %}?system={{ selected_system }}{% endif %}">RAW Data Downloads</a>
       <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-raw-dedupe' %}{% if selected_system != 'all' %}?system={{ selected_system }}{% endif %}">RAW Dedupe Workflow</a>

@@ -10,6 +10,11 @@ from django.urls import resolve
 import dashboard.views
 from etl import inclinic_pipeline
 from etl.pipelines import bronze_transform, raw_ingestion, silver_transform, v2_reporting
+from etl.reporting_privacy import (
+    campaign_allowed_by_allowlist,
+    filter_rows_by_campaign_fields,
+    normalize_campaign_id,
+)
 from dashboard.internal_data_admin import (
     ColumnInfo,
     RAW_AUDIT_COLUMN_NAMES,
@@ -57,6 +62,7 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/_internal/data-admin/cleanup/").view_name, "internal-data-admin-cleanup")
         self.assertEqual(resolve("/_internal/data-admin/raw-downloads/").view_name, "internal-data-admin-raw-downloads")
         self.assertEqual(resolve("/_internal/data-admin/raw-dedupe/").view_name, "internal-data-admin-raw-dedupe")
+        self.assertEqual(resolve("/_internal/data-admin/privacy/").view_name, "internal-data-admin-privacy")
         self.assertEqual(
             resolve("/_internal/data-admin/raw-downloads/raw_server1/campaign_fieldrep/download/").view_name,
             "internal-data-admin-raw-download",
@@ -269,6 +275,24 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(result["counts"]["raw_server1.campaign_fieldrep"], 1)
         self.assertEqual(result["skipped_counts"]["raw_server1.campaign_fieldrep"], 1)
         self.assertEqual(result["extracted_counts"]["raw_server1.campaign_fieldrep"], 2)
+
+    def test_campaign_privacy_helpers_normalize_and_filter_campaign_rows(self):
+        allowlist = {normalize_campaign_id("83ce-7fc7 c965")}
+
+        self.assertEqual(normalize_campaign_id(" 83CE-7fc7 c965 "), "83ce7fc7c965")
+        self.assertTrue(campaign_allowed_by_allowlist("83ce7fc7c965", allowlist))
+        self.assertTrue(campaign_allowed_by_allowlist("83CE-7FC7-C965", allowlist))
+        self.assertFalse(campaign_allowed_by_allowlist("other-campaign", allowlist))
+
+        rows = [
+            {"row_id": "keep", "campaign_id": "83CE-7FC7-C965"},
+            {"row_id": "drop", "campaign_id": "other-campaign"},
+            {"row_id": "blank", "campaign_id": ""},
+        ]
+
+        filtered = filter_rows_by_campaign_fields(rows, allowlist, ("campaign_id",))
+
+        self.assertEqual([row["row_id"] for row in filtered], ["keep"])
 
 
 class DashboardAccessViewTests(SimpleTestCase):
@@ -684,6 +708,70 @@ class DashboardAccessViewTests(SimpleTestCase):
         response = self.client.get("/_internal/data-admin/")
         self.assertEqual(response.status_code, 302)
         self.assertIn("/_internal/data-admin/login/", response["Location"])
+
+    def test_internal_data_admin_privacy_page_renders_allowlist(self):
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin.ensure_campaign_privacy_table",
+        ), patch(
+            "dashboard.internal_data_admin.list_campaign_privacy_allowlist_rules",
+            return_value=[
+                {
+                    "rule_id": "rule-1",
+                    "campaign_id": "83ce7fc7c965433ab2b9717394abe3c1",
+                    "campaign_id_normalized": "83ce7fc7c965433ab2b9717394abe3c1",
+                    "reason": "Approved campaign for restricted PII visibility",
+                    "is_active": True,
+                    "created_by": "internal_admin",
+                    "created_at": "2026-06-05 10:00:00+00",
+                }
+            ],
+        ):
+            response = self.client.get("/_internal/data-admin/privacy/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Campaign Privacy Allowlist")
+        self.assertContains(response, "1 active campaign allowed")
+        self.assertContains(response, "83ce7fc7c965433ab2b9717394abe3c1")
+
+    def test_internal_data_admin_privacy_post_adds_campaign_rule(self):
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin.ensure_campaign_privacy_table",
+        ), patch(
+            "dashboard.internal_data_admin.create_campaign_privacy_allowlist_rule",
+            return_value="rule-1",
+        ) as create_rule:
+            response = self.client.post(
+                "/_internal/data-admin/privacy/",
+                {
+                    "privacy_action": "add",
+                    "campaign_id": "83ce7fc7c965433ab2b9717394abe3c1",
+                    "reason": "Approved campaign for restricted PII visibility",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/_internal/data-admin/privacy/")
+        create_rule.assert_called_once_with(
+            campaign_id="83ce7fc7c965433ab2b9717394abe3c1",
+            reason="Approved campaign for restricted PII visibility",
+            created_by="internal_admin",
+        )
+
+    def test_internal_data_admin_privacy_post_deactivates_campaign_rule(self):
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin.ensure_campaign_privacy_table",
+        ), patch(
+            "dashboard.internal_data_admin.deactivate_campaign_privacy_allowlist_rule",
+            return_value=True,
+        ) as deactivate_rule:
+            response = self.client.post(
+                "/_internal/data-admin/privacy/",
+                {"privacy_action": "deactivate", "rule_id": "rule-1"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/_internal/data-admin/privacy/")
+        deactivate_rule.assert_called_once_with("rule-1")
 
     def test_internal_data_admin_raw_downloads_render_read_only_summary(self):
         with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
@@ -1340,6 +1428,36 @@ class V2ReportingPreservationTests(SimpleTestCase):
         source = {key: [{"id": "1"}] for key in v2_reporting.REQUIRED_V2_SOURCE_KEYS}
 
         v2_reporting._validate_required_v2_source_counts(source)
+
+    def test_campaign_privacy_filter_keeps_only_allowed_inclinic_source_rows(self):
+        source = {
+            "campaign_v2": [
+                {"legacy_campaign_id": "Keep Campaign", "name": "Allowed"},
+                {"legacy_campaign_id": "Other Campaign", "name": "Blocked"},
+            ],
+            "campaign_field_rep_assignment_v2": [
+                {"legacy_campaign_id": "Keep Campaign", "field_rep_id": "rep-1"},
+                {"legacy_campaign_id": "Other Campaign", "field_rep_id": "rep-2"},
+            ],
+            "inclinic_campaign_field_rep_assignment_v2": [],
+            "doctor_field_rep_roster_bridge_v2": [],
+            "inclinic_assigned_doctor_roster_v2": [],
+            "field_rep_v2": [
+                {"current_campaign_fieldrep_id": "rep-1", "display_name": "Allowed Rep"},
+                {"current_campaign_fieldrep_id": "rep-2", "display_name": "Blocked Rep"},
+            ],
+            "inclinic_field_rep_identity_v2": [
+                {"campaign_fieldrep_id": "rep-1", "email_normalized": "allowed@example.com"},
+                {"campaign_fieldrep_id": "rep-2", "email_normalized": "blocked@example.com"},
+            ],
+        }
+
+        filtered = v2_reporting._apply_campaign_privacy_to_source(source, {normalize_campaign_id("Keep Campaign")})
+
+        self.assertEqual([row["name"] for row in filtered["campaign_v2"]], ["Allowed"])
+        self.assertEqual([row["field_rep_id"] for row in filtered["campaign_field_rep_assignment_v2"]], ["rep-1"])
+        self.assertEqual([row["display_name"] for row in filtered["field_rep_v2"]], ["Allowed Rep"])
+        self.assertEqual([row["email_normalized"] for row in filtered["inclinic_field_rep_identity_v2"]], ["allowed@example.com"])
 
     def test_field_rep_state_falls_back_to_inclinic_identity_v2_state(self):
         source = {

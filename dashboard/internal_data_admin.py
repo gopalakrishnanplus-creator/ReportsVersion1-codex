@@ -29,6 +29,12 @@ from etl.reporting_corrections import (
     ensure_reporting_correction_table,
     list_reporting_correction_rules,
 )
+from etl.reporting_privacy import (
+    create_campaign_privacy_allowlist_rule,
+    deactivate_campaign_privacy_allowlist_rule,
+    ensure_campaign_privacy_table,
+    list_campaign_privacy_allowlist_rules,
+)
 
 
 SESSION_KEY = "internal_data_admin_authenticated"
@@ -2354,6 +2360,51 @@ def internal_data_admin_corrections(request: HttpRequest) -> HttpResponse:
                 f"{RULE_KEEP_DOCTOR_WITH_REP},83ce7fc7c965433ab2b9717394abe3c1,7086179396,SUMEET KR BAKALI,,1451,\"2731\",\"Brand confirmed doctor should stay with ASM 1451\"\n"
                 f"{RULE_EXCLUDE_INVALID_PHONE},83ce7fc7c965433ab2b9717394abe3c1,964512884,Dr.J Prakash,10340,,,\"Brand confirmed invalid doctor phone\"\n"
             ),
+        },
+    )
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
+def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
+    auth_redirect = _require_auth(request)
+    if auth_redirect:
+        return auth_redirect
+
+    ensure_campaign_privacy_table()
+    actor = request.session.get(SESSION_USER_KEY, "internal_admin")
+
+    if request.method == "POST":
+        action = request.POST.get("privacy_action") or "add"
+        if action == "deactivate":
+            rule_id = (request.POST.get("rule_id") or "").strip()
+            if deactivate_campaign_privacy_allowlist_rule(rule_id):
+                messages.success(request, "Campaign privacy allowlist entry deactivated. Rerun ETL to refresh derived dashboards.")
+            else:
+                messages.error(request, "Campaign privacy allowlist entry was not found.")
+            return redirect("internal-data-admin-privacy")
+
+        if action == "add":
+            try:
+                create_campaign_privacy_allowlist_rule(
+                    campaign_id=request.POST.get("campaign_id", ""),
+                    reason=request.POST.get("reason", ""),
+                    created_by=actor,
+                )
+                messages.success(request, "Campaign privacy allowlist entry created. Rerun ETL to refresh derived dashboards.")
+                return redirect("internal-data-admin-privacy")
+            except Exception as exc:
+                messages.error(request, f"Campaign privacy entry could not be created: {exc}")
+
+    rules = list_campaign_privacy_allowlist_rules(include_inactive=True)
+    active_rules = [rule for rule in rules if rule.get("is_active")]
+    return render(
+        request,
+        "dashboard/internal_data_admin/privacy.html",
+        {
+            "rules": rules,
+            "active_rules": active_rules,
+            "is_allowlist_active": bool(active_rules),
         },
     )
 
