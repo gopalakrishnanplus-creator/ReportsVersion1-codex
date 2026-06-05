@@ -1619,3 +1619,6 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertIn("FROM activity_key_candidates akc", sql)
         self.assertIn("JOIN assigned_reps ar_rule", sql)
         self.assertIn("FROM rule_corrected_activity", sql)
+        self.assertIn("transaction_doctor_lookup AS", sql)
+        self.assertIn("rep_evidence_latest AS", sql)
+        self.assertNotIn("FROM silver.fact_collateral_transaction tx\n                    WHERE", sql)
