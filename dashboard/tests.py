@@ -1368,6 +1368,36 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertEqual(rows[0]["state"], "uttar pradesh")
         self.assertEqual(rows[0]["state_normalized"], "Uttar Pradesh")
 
+    def test_field_rep_state_uses_preserved_fallback_when_v2_sources_are_blank(self):
+        source = {
+            "field_rep_v2": [
+                {
+                    "id": "2282",
+                    "current_campaign_fieldrep_id": "2282",
+                    "current_brand_supplied_field_rep_id": "5014",
+                    "display_name": "Deen Bandhu",
+                    "state": "",
+                    "is_active": "1",
+                }
+            ],
+            "inclinic_field_rep_identity_v2": [
+                {
+                    "campaign_fieldrep_id": "2282",
+                    "campaign_fieldrep_state": "",
+                    "is_current": "1",
+                }
+            ],
+        }
+
+        rows = v2_reporting._field_rep_rows(
+            source,
+            "2026-06-05T00:00:00+00:00",
+            {"2282": "Maharashtra"},
+        )
+
+        self.assertEqual(rows[0]["state"], "Maharashtra")
+        self.assertEqual(rows[0]["state_normalized"], "Maharashtra")
+
     def test_field_rep_state_keeps_master_state_before_identity_fallback(self):
         source = {
             "field_rep_v2": [
@@ -1702,3 +1732,25 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertIn("transaction_doctor_lookup AS", sql)
         self.assertIn("rep_evidence_latest AS", sql)
         self.assertNotIn("FROM silver.fact_collateral_transaction tx\n                    WHERE", sql)
+
+    def test_field_rep_insights_state_preserves_display_value_and_prefers_known_over_unknown(self):
+        captured: dict[str, str] = {}
+
+        def fake_fetch(sql: str, params: list[object] | None = None) -> list[dict[str, object]]:
+            captured["sql"] = sql
+            return []
+
+        with patch("dashboard.views._table_exists", return_value=True), patch(
+            "dashboard.views._optional_table_exists",
+            return_value=False,
+        ), patch("dashboard.views._fetch_dicts", side_effect=fake_fetch):
+            dashboard.views._field_rep_insight_rows(
+                "83ce7fc7c965433ab2b9717394abe3c1",
+                ["83ce7fc7c965433ab2b9717394abe3c1"],
+                [],
+                include_doctor_details=False,
+            )
+
+        sql = captured["sql"]
+        self.assertIn("NULLIF(btrim(cfr.state), '')", sql)
+        self.assertIn("FILTER (WHERE state_normalized <> 'UNKNOWN')", sql)
