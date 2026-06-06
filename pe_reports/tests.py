@@ -115,6 +115,29 @@ class PeReportsLogicTests(SimpleTestCase):
             [{"campaign_id": "legacy-campaign", "_source_table": "publisher_campaign"}],
         )
 
+    def test_bronze_merges_fallback_rows_missing_from_v2_snapshot(self):
+        spec = SourceTableSpec(
+            source_table="pe_campaign_v2",
+            fallback_source_table="publisher_campaign",
+            raw_table="publisher_campaign_raw",
+            bronze_table="publisher_campaign",
+            columns=["campaign_id"],
+            key_columns=["campaign_id"],
+        )
+        rows = [
+            {"campaign_id": "camp-v2", "_source_table": "pe_campaign_v2"},
+            {"campaign_id": "camp-v2", "_source_table": "publisher_campaign"},
+            {"campaign_id": "camp-fallback-only", "_source_table": "publisher_campaign"},
+        ]
+
+        self.assertEqual(
+            pe_bronze._active_source_rows(rows, spec, {"camp-v2"}),
+            [
+                {"campaign_id": "camp-v2", "_source_table": "pe_campaign_v2"},
+                {"campaign_id": "camp-fallback-only", "_source_table": "publisher_campaign"},
+            ],
+        )
+
     def test_pipeline_refuses_empty_required_v2_source_counts(self):
         raw_portal = {
             "extracted_counts": {
@@ -268,6 +291,49 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(prepared_rows[0]["code"], "legacy-video")
         self.assertEqual(prepared_rows[0]["_source_table"], "catalog_video")
         snapshot_mock.assert_not_called()
+
+    def test_raw_v2_spec_loads_fallback_backfill_alongside_primary_source(self):
+        spec = SourceTableSpec(
+            source_table="pe_campaign_v2",
+            fallback_source_table="publisher_campaign",
+            raw_table="publisher_campaign_raw",
+            bronze_table="publisher_campaign",
+            columns=["campaign_id", "updated_at"],
+            key_columns=["campaign_id"],
+            watermark_field="updated_at",
+        )
+
+        def fake_extract(table, columns, watermark_field, watermark_start):
+            if table == "pe_campaign_v2":
+                return [{"campaign_id": "camp-v2", "updated_at": "2026-06-03 10:00:00"}]
+            if table == "publisher_campaign":
+                return [{"campaign_id": "camp-fallback", "updated_at": "2026-06-04 10:00:00"}]
+            return []
+
+        with patch("etl.pe_reports.raw.insert_new_source_rows", return_value=2) as insert_mock, patch(
+            "etl.pe_reports.raw.record_v2_current_snapshot"
+        ) as snapshot_mock, patch("etl.pe_reports.raw.get_watermark", return_value=None), patch(
+            "etl.pe_reports.raw.upsert_watermark"
+        ), patch("etl.pe_reports.raw.log_step"):
+            result = pe_raw._ingest_specs(
+                run_id="run-1",
+                extracted_at="2026-06-04T00:00:00+00:00",
+                schema="raw_pe_portal",
+                specs={"publisher_campaign": spec},
+                source_name="portal",
+                source_system_label="pe_portal",
+                extractor=fake_extract,
+                error_type=Exception,
+            )
+
+        self.assertEqual(result["extracted_counts"]["publisher_campaign"], 2)
+        prepared_rows = insert_mock.call_args.args[4]
+        self.assertEqual(
+            [(row["campaign_id"], row["_source_table"]) for row in prepared_rows],
+            [("camp-v2", "pe_campaign_v2"), ("camp-fallback", "publisher_campaign")],
+        )
+        snapshot_rows = snapshot_mock.call_args.kwargs["rows"]
+        self.assertEqual([(row["campaign_id"], row["_source_table"]) for row in snapshot_rows], [("camp-v2", "pe_campaign_v2")])
 
     def test_campaign_doctor_mapping_prefers_logical_id_then_email_then_phone(self):
         mapped = match_campaign_doctors(

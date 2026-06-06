@@ -48,20 +48,40 @@ def _dedup_rows(rows: list[dict[str, Any]], spec: SourceTableSpec) -> list[dict[
     return list(latest_by_key.values())
 
 
+def _logical_key(row: dict[str, Any], key_columns: list[str]) -> tuple[Any, ...]:
+    return tuple(clean_text(row.get(column)) for column in key_columns)
+
+
+def _has_logical_key(row: dict[str, Any], key_columns: list[str]) -> bool:
+    return any(clean_text(row.get(column)) for column in key_columns)
+
+
 def _active_source_rows(rows: list[dict[str, Any]], spec: SourceTableSpec, current_keys: set[str] | None = None) -> list[dict[str, Any]]:
     if spec.source_table.lower().endswith("_v2"):
         v2_rows = [row for row in rows if clean_text(row.get("_source_table")) == spec.source_table]
         active_v2_rows = v2_rows if current_keys is None else [row for row in v2_rows if snapshot_row_key(row, spec.key_columns) in current_keys]
-        if active_v2_rows or not spec.fallback_source_table:
+        if not spec.fallback_source_table:
             return active_v2_rows
-        return [row for row in rows if clean_text(row.get("_source_table")) == spec.fallback_source_table]
+        fallback_rows = [row for row in rows if clean_text(row.get("_source_table")) == spec.fallback_source_table]
+        active_v2_keys = {
+            _logical_key(row, spec.key_columns)
+            for row in active_v2_rows
+            if _has_logical_key(row, spec.key_columns)
+        }
+        fallback_backfill_rows = [
+            row
+            for row in fallback_rows
+            if _has_logical_key(row, spec.key_columns)
+            and _logical_key(row, spec.key_columns) not in active_v2_keys
+        ]
+        return active_v2_rows + fallback_backfill_rows
     return rows
 
 
 def _build_table(raw_schema: str, spec: SourceTableSpec, rules: list[dict[str, Any]]) -> int:
     current_keys = (
         current_v2_snapshot_keys(raw_schema, spec.raw_table, spec.source_table)
-        if spec.source_table.lower().endswith("_v2")
+        if spec.source_table.lower().endswith("_v2") and spec.use_current_snapshot
         else None
     )
     raw_rows = _active_source_rows(fetch_table(raw_schema, spec.raw_table), spec, current_keys)
