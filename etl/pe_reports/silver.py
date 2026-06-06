@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
+from datetime import timezone
 from typing import Any
 
 from etl.pe_reports.specs import BRONZE_SCHEMA, SILVER_SCHEMA
@@ -456,6 +457,96 @@ def _single_active_campaign(
     return None, "none"
 
 
+def _comparable_datetime(value: Any):
+    parsed = parse_datetime(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _campaign_from_exact_banner_id(
+    banner_id: Any,
+    *,
+    campaign_by_id: dict[str, dict[str, Any]],
+    campaigns_by_banner_id: dict[str, list[str]] | None = None,
+) -> tuple[dict[str, Any] | None, str]:
+    banner_key = normalize_campaign_id(banner_id)
+    if not banner_key:
+        return None, "none"
+    candidate_campaigns = unique_preserving_order(
+        [
+            campaign_id_normalized
+            for campaign_id_normalized in [
+                *(campaigns_by_banner_id or {}).get(banner_key, []),
+                *([banner_key] if banner_key in campaign_by_id else []),
+            ]
+            if campaign_id_normalized in campaign_by_id
+        ]
+    )
+    if len(candidate_campaigns) == 1:
+        return campaign_by_id.get(candidate_campaigns[0], {}), ""
+    if len(candidate_campaigns) > 1:
+        return None, "ambiguous"
+    return None, "none"
+
+
+def _direct_campaign_banner_events(
+    banner_click_rows: list[dict[str, Any]],
+    *,
+    campaign_by_id: dict[str, dict[str, Any]],
+    campaigns_by_banner_id: dict[str, list[str]] | None = None,
+) -> list[dict[str, str | None]]:
+    events: list[dict[str, str | None]] = []
+    for row in banner_click_rows:
+        campaign, status = _campaign_from_exact_banner_id(
+            row.get("banner_id"),
+            campaign_by_id=campaign_by_id,
+            campaigns_by_banner_id=campaigns_by_banner_id,
+        )
+        if not campaign or status:
+            continue
+        clicked_at = iso_datetime(row.get("clicked_at_ts") or row.get("clicked_at"))
+        if not clicked_at:
+            continue
+        events.append(
+            {
+                "campaign_id_original": clean_text(campaign.get("campaign_id_original")),
+                "campaign_id_normalized": clean_text(campaign.get("campaign_id_normalized")),
+                "clicked_at_ts": clicked_at,
+            }
+        )
+    return events
+
+
+def _single_campaign_from_banner_click_window(
+    campaign_banner_click_events: list[dict[str, Any]] | None,
+    campaign_by_id: dict[str, dict[str, Any]],
+    event_date: Any,
+    *,
+    window_minutes: int = 120,
+) -> tuple[dict[str, Any] | None, str]:
+    event_dt = _comparable_datetime(event_date)
+    if event_dt is None:
+        return None, "none"
+    candidate_campaigns: list[str] = []
+    for event in campaign_banner_click_events or []:
+        campaign_id_normalized = clean_text(event.get("campaign_id_normalized"))
+        clicked_dt = _comparable_datetime(event.get("clicked_at_ts"))
+        if not campaign_id_normalized or campaign_id_normalized not in campaign_by_id or clicked_dt is None:
+            continue
+        seconds_after_click = (event_dt - clicked_dt).total_seconds()
+        if 0 <= seconds_after_click <= window_minutes * 60:
+            candidate_campaigns.append(campaign_id_normalized)
+    candidate_campaigns = unique_preserving_order(candidate_campaigns)
+    if len(candidate_campaigns) == 1:
+        return campaign_by_id.get(candidate_campaigns[0], {}), ""
+    if len(candidate_campaigns) > 1:
+        return None, "ambiguous"
+    return None, "none"
+
+
 def _campaign_attribution_payload(
     campaign: dict[str, Any],
     method: str,
@@ -624,6 +715,7 @@ def attribute_share_row(
     campaign_by_cluster_reference: dict[str, list[str]] | None = None,
     campaign_by_video_reference: dict[str, list[str]] | None = None,
     single_active_fallback_campaigns: list[str] | None = None,
+    campaign_banner_click_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, str | None]:
     shared_item_type = clean_text(share_row.get("shared_item_type"))
     shared_item_code = clean_text(share_row.get("shared_item_code"))
@@ -640,6 +732,10 @@ def attribute_share_row(
             "dq_error": "missing_share_content",
         }
 
+    banner_campaign, banner_status = _single_campaign_from_banner_click_window(campaign_banner_click_events, campaign_by_id, shared_at)
+    if banner_campaign:
+        return _campaign_attribution_payload(banner_campaign, "campaign_banner_click_window")
+
     if shared_item_type == "cluster":
         candidate_campaigns = unique_preserving_order(
             [
@@ -651,6 +747,8 @@ def attribute_share_row(
         if campaign:
             method = "direct_cluster" if len(candidate_campaigns) == 1 else "direct_cluster_active_window"
             return _campaign_attribution_payload(campaign, method)
+        if banner_status == "ambiguous":
+            active_status = "ambiguous"
         if active_status != "ambiguous":
             fallback_campaign, fallback_status = _single_active_campaign(single_active_fallback_campaigns or [], campaign_by_id, shared_at)
             if fallback_campaign:
@@ -697,6 +795,8 @@ def attribute_share_row(
         campaign, active_status = _single_active_campaign(content_campaigns, campaign_by_id, shared_at)
         if campaign:
             return _campaign_attribution_payload(campaign, "direct_video_active_content")
+        if banner_status == "ambiguous":
+            active_status = "ambiguous"
         if active_status != "ambiguous":
             fallback_campaign, fallback_status = _single_active_campaign(single_active_fallback_campaigns or [], campaign_by_id, shared_at)
             if fallback_campaign:
@@ -748,13 +848,11 @@ def attribute_banner_click_row(
     banner_target_url = _normalized_banner_url(banner_click_row.get("banner_target_url"))
 
     if banner_id:
-        candidate_campaigns = unique_preserving_order(
-            [
-                *(campaigns_by_banner_id or {}).get(banner_id, []),
-                *([banner_id] if banner_id in campaign_by_id else []),
-            ]
+        campaign, active_status = _campaign_from_exact_banner_id(
+            banner_id,
+            campaign_by_id=campaign_by_id,
+            campaigns_by_banner_id=campaigns_by_banner_id,
         )
-        campaign, active_status = _single_active_campaign(candidate_campaigns, campaign_by_id, clicked_at)
         if campaign:
             return _campaign_attribution_payload(campaign, "banner_id")
         if active_status == "ambiguous":
@@ -1288,6 +1386,11 @@ def build_silver(run_id: str) -> dict[str, Any]:
                 campaigns_by_banner_id[banner_id_key].append(campaign_id_normalized)
         if banner_target_url and campaign_id_normalized:
             campaigns_by_banner_target_url[banner_target_url].append(campaign_id_normalized)
+    campaign_banner_click_events = _direct_campaign_banner_events(
+        banner_click_rows,
+        campaign_by_id=campaign_by_id,
+        campaigns_by_banner_id=campaigns_by_banner_id,
+    )
     campaign_by_cluster_code: dict[str, list[str]] = defaultdict(list)
     campaign_by_cluster_reference: dict[str, list[str]] = defaultdict(list)
     campaign_by_video_reference: dict[str, list[str]] = defaultdict(list)
@@ -1593,6 +1696,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             campaign_by_cluster_reference=campaign_by_cluster_reference,
             campaign_by_video_reference=campaign_by_video_reference,
             single_active_fallback_campaigns=single_active_fallback_campaigns,
+            campaign_banner_click_events=campaign_banner_click_events,
         )
         if privacy_allowlist and not _pe_campaign_allowed(attribution, privacy_allowlist):
             continue

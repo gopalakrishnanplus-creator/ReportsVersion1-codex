@@ -371,6 +371,98 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(result["campaign_attribution_method"], "single_active_pe_campaign")
         self.assertEqual(result["is_campaign_attributed_flag"], "true")
 
+    def test_share_uses_exact_campaign_banner_click_window_when_metadata_dates_are_stale(self):
+        result = attribute_share_row(
+            {
+                "shared_item_type": "cluster",
+                "shared_item_code": "source-only-cluster",
+                "shared_item_name": "Acute wheeze / asthma attack (basic pack)",
+                "doctor_key": "DR602719",
+                "shared_at_ts": "2026-06-04 19:58:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "84eb443406464fb4b61a04721919db3f": {
+                    "campaign_id_original": "84eb4434-0646-4fb4-b61a-04721919db3f",
+                    "campaign_id_normalized": "84eb443406464fb4b61a04721919db3f",
+                    "start_date": "2026-05-01",
+                    "end_date": "2026-06-03",
+                },
+            },
+            campaign_by_cluster_code={},
+            campaign_videos_by_campaign={},
+            campaign_banner_click_events=[
+                {
+                    "campaign_id_normalized": "84eb443406464fb4b61a04721919db3f",
+                    "clicked_at_ts": "2026-06-04 19:57:00",
+                }
+            ],
+        )
+        self.assertEqual(result["campaign_id_normalized"], "84eb443406464fb4b61a04721919db3f")
+        self.assertEqual(result["campaign_attribution_method"], "campaign_banner_click_window")
+        self.assertEqual(result["is_campaign_attributed_flag"], "true")
+
+    def test_exact_campaign_banner_click_window_overrides_reused_content_mapping(self):
+        result = attribute_share_row(
+            {
+                "shared_item_type": "cluster",
+                "shared_item_code": "acute-wheeze-basic",
+                "shared_item_name": "Acute wheeze / asthma attack (basic pack)",
+                "doctor_key": "DR602719",
+                "shared_at_ts": "2026-06-04 19:58:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "84eb443406464fb4b61a04721919db3f": {
+                    "campaign_id_original": "84eb4434-0646-4fb4-b61a-04721919db3f",
+                    "campaign_id_normalized": "84eb443406464fb4b61a04721919db3f",
+                    "start_date": "2026-05-01",
+                    "end_date": "2026-06-03",
+                },
+                "other-active-campaign": {
+                    "campaign_id_original": "other-active-campaign",
+                    "campaign_id_normalized": "other-active-campaign",
+                    "start_date": "2026-06-01",
+                    "end_date": "2026-06-30",
+                },
+            },
+            campaign_by_cluster_code={"acute-wheeze-basic": ["other-active-campaign"]},
+            campaign_videos_by_campaign={},
+            campaign_banner_click_events=[
+                {
+                    "campaign_id_normalized": "84eb443406464fb4b61a04721919db3f",
+                    "clicked_at_ts": "2026-06-04 19:57:00",
+                }
+            ],
+        )
+        self.assertEqual(result["campaign_id_normalized"], "84eb443406464fb4b61a04721919db3f")
+        self.assertEqual(result["campaign_attribution_method"], "campaign_banner_click_window")
+        self.assertEqual(result["is_campaign_attributed_flag"], "true")
+
+    def test_share_banner_click_window_stays_unattributed_when_ambiguous(self):
+        result = attribute_share_row(
+            {
+                "shared_item_type": "cluster",
+                "shared_item_code": "source-only-cluster",
+                "shared_item_name": "Acute wheeze / asthma attack (basic pack)",
+                "doctor_key": "DR602719",
+                "shared_at_ts": "2026-06-04 19:58:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "camp-a": {"campaign_id_original": "camp-a", "campaign_id_normalized": "camp-a"},
+                "camp-b": {"campaign_id_original": "camp-b", "campaign_id_normalized": "camp-b"},
+            },
+            campaign_by_cluster_code={},
+            campaign_videos_by_campaign={},
+            campaign_banner_click_events=[
+                {"campaign_id_normalized": "camp-a", "clicked_at_ts": "2026-06-04 19:57:00"},
+                {"campaign_id_normalized": "camp-b", "clicked_at_ts": "2026-06-04 19:57:30"},
+            ],
+        )
+        self.assertEqual(result["campaign_attribution_method"], "ambiguous_cluster")
+        self.assertEqual(result["is_campaign_attributed_flag"], "false")
+
     def test_share_stays_unattributed_when_active_campaign_fallback_is_ambiguous(self):
         result = attribute_share_row(
             {
@@ -437,7 +529,7 @@ class PeReportsLogicTests(SimpleTestCase):
                     "campaign_id_original": "84eb4434-0646-4fb4-b61a-04721919db3f",
                     "campaign_id_normalized": "84eb443406464fb4b61a04721919db3f",
                     "start_date": "2026-06-01",
-                    "end_date": "2026-06-30",
+                    "end_date": "2026-06-03",
                 },
             },
             campaigns_by_banner_target_url={"https://www.inditech.co.in": ["other-campaign"]},
