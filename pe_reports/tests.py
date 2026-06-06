@@ -374,6 +374,28 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(result["campaign_attribution_method"], "ambiguous_video")
         self.assertEqual(result["is_campaign_attributed_flag"], "false")
 
+    def test_share_prefers_source_campaign_uuid_when_present(self):
+        result = attribute_share_row(
+            {
+                "shared_item_type": "cluster",
+                "shared_item_code": "reused-cluster",
+                "shared_item_name": "Reused Cluster",
+                "doctor_key": "DOC-1",
+                "campaign_uuid": "source-campaign-uuid",
+                "shared_at_ts": "2026-06-04 19:58:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "camp-a": {"campaign_id_original": "camp-a", "campaign_id_normalized": "camp-a"},
+            },
+            campaign_by_cluster_code={"reused-cluster": ["other-campaign"]},
+            campaign_videos_by_campaign={},
+            campaign_id_by_source_uuid={"sourcecampaignuuid": "camp-a"},
+        )
+        self.assertEqual(result["campaign_id_normalized"], "camp-a")
+        self.assertEqual(result["campaign_attribution_method"], "source_campaign_uuid")
+        self.assertEqual(result["is_campaign_attributed_flag"], "true")
+
     def test_cluster_share_uses_single_active_campaign_when_content_is_reused(self):
         result = attribute_share_row(
             {
@@ -605,6 +627,28 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(result["campaign_attribution_method"], "banner_id")
         self.assertEqual(result["is_campaign_attributed_flag"], "true")
 
+    def test_banner_click_prefers_source_campaign_uuid_when_present(self):
+        result = attribute_banner_click_row(
+            {
+                "doctor_key": "",
+                "doctor_id": "0",
+                "campaign_uuid": "source-campaign-uuid",
+                "banner_id": "other-campaign",
+                "clicked_at_ts": "2026-06-04 19:57:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "camp-a": {"campaign_id_original": "camp-a", "campaign_id_normalized": "camp-a"},
+                "other-campaign": {"campaign_id_original": "other-campaign", "campaign_id_normalized": "other-campaign"},
+            },
+            campaigns_by_banner_target_url={},
+            campaigns_by_banner_id={"othercampaign": ["other-campaign"]},
+            campaign_id_by_source_uuid={"sourcecampaignuuid": "camp-a"},
+        )
+        self.assertEqual(result["campaign_id_normalized"], "camp-a")
+        self.assertEqual(result["campaign_attribution_method"], "source_campaign_uuid")
+        self.assertEqual(result["is_campaign_attributed_flag"], "true")
+
     def test_banner_click_falls_back_to_single_active_doctor_campaign(self):
         result = attribute_banner_click_row(
             {
@@ -644,6 +688,34 @@ class PeReportsLogicTests(SimpleTestCase):
             share_by_public_id={"SHARE-1": share},
             share_by_source_id={"101": share},
             share_rows=[share],
+            bundle_videos_by_code={},
+        )
+        self.assertEqual(resolved, share)
+
+    def test_playback_matches_share_event_uuid_before_heuristics(self):
+        share = {
+            "share_public_id": "SHARE-1",
+            "source_share_uuid": "share-event-uuid",
+            "source_share_id": "101",
+            "doctor_id": "DOC001",
+            "shared_item_type": "video",
+            "shared_item_code": "acute-wheeze-video",
+            "video_code": "acute-wheeze-video",
+            "shared_at_ts": "2026-04-27 17:30:00",
+        }
+        resolved = resolve_playback_share(
+            {
+                "share_event_uuid": "share-event-uuid",
+                "share_public_id": "",
+                "share_id": "",
+                "doctor_id": "OTHER",
+                "video_code": "other-video",
+                "occurred_at": "2026-04-27 17:31:00",
+            },
+            share_by_public_id={},
+            share_by_source_id={},
+            share_by_source_uuid={"shareeventuuid": share},
+            share_rows=[],
             bundle_videos_by_code={},
         )
         self.assertEqual(resolved, share)
