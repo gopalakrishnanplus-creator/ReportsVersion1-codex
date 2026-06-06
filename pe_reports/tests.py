@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from unittest.mock import MagicMock, patch
 
 from django.http import HttpResponse
@@ -11,7 +12,16 @@ from etl.pe_reports import pipeline as pe_pipeline
 from etl.pe_reports import raw as pe_raw
 from etl.pe_reports import storage as pe_storage
 from etl.pe_reports.gold import _latest_business_date, build_benchmark_row, compute_health_components
-from etl.pe_reports.silver import _selection_json_references, attribute_banner_click_row, attribute_share_row, match_campaign_doctors, resolve_playback_share, rollup_share_funnel
+from etl.pe_reports.silver import (
+    _append_activity_derived_base_rows,
+    _campaign_doctor_dimension_key,
+    _selection_json_references,
+    attribute_banner_click_row,
+    attribute_share_row,
+    match_campaign_doctors,
+    resolve_playback_share,
+    rollup_share_funnel,
+)
 from etl.pe_reports.specs import RAW_AUDIT_COLUMNS, SourceTableSpec
 from etl.pe_reports.utils import clean_text, week_end_saturday
 from pe_reports.reporting import build_dashboard_payload
@@ -425,6 +435,24 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(mapped[2]["doctor_key"], "DOC-3")
         self.assertEqual(mapped[2]["match_method"], "phone")
 
+    def test_campaign_doctor_dimension_key_falls_back_to_campaign_doctor_source(self):
+        self.assertEqual(
+            _campaign_doctor_dimension_key(
+                "campaign-doctor-1",
+                {"doctor_key": ""},
+                {"campaign-doctor-1": {"id": "campaign-doctor-1"}},
+            ),
+            "campaign-doctor:campaign-doctor-1",
+        )
+        self.assertEqual(
+            _campaign_doctor_dimension_key(
+                "campaign-doctor-1",
+                {"doctor_key": "MASTER-DOC-1"},
+                {"campaign-doctor-1": {"id": "campaign-doctor-1"}},
+            ),
+            "MASTER-DOC-1",
+        )
+
     def test_ambiguous_standalone_video_share_stays_unattributed(self):
         result = attribute_share_row(
             {
@@ -789,6 +817,50 @@ class PeReportsLogicTests(SimpleTestCase):
             bundle_videos_by_code={},
         )
         self.assertEqual(resolved, share)
+
+    def test_activity_derived_base_uses_attributed_share_when_enrollment_is_missing(self):
+        fact_rows: list[dict] = []
+        base_rows: list[dict] = []
+        base_seen: set[tuple[str, str]] = set()
+        campaigns_by_doctor: dict[str, list[str]] = defaultdict(list)
+        issues: dict[str, int] = defaultdict(int)
+
+        _append_activity_derived_base_rows(
+            share_rows=[
+                {
+                    "is_campaign_attributed_flag": "true",
+                    "campaign_id_original": "84eb443406464fb4b61a04721919db3f",
+                    "campaign_id_normalized": "84eb443406464fb4b61a04721919db3f",
+                    "doctor_key": "DR602719",
+                    "doctor_id": "DR602719",
+                    "doctor_name_snapshot": "Darshan Patel",
+                    "clinic_name_snapshot": "DPClinic",
+                    "shared_at_ts": "2026-06-04 19:58:00",
+                    "state": "Gujarat",
+                }
+            ],
+            campaign_by_id={
+                "84eb443406464fb4b61a04721919db3f": {
+                    "campaign_id_original": "84eb443406464fb4b61a04721919db3f",
+                    "campaign_id_normalized": "84eb443406464fb4b61a04721919db3f",
+                    "campaign_name": "Testing brand System Enables",
+                }
+            },
+            fact_campaign_enrollment_rows=fact_rows,
+            bridge_campaign_doctor_base_rows=base_rows,
+            base_seen=base_seen,
+            campaigns_by_doctor=campaigns_by_doctor,
+            issues=issues,
+        )
+
+        self.assertEqual(len(base_rows), 1)
+        self.assertEqual(base_rows[0]["doctor_key"], "DR602719")
+        self.assertEqual(base_rows[0]["enrolled_at_ts"], "2026-06-04 19:58:00")
+        self.assertEqual(base_rows[0]["state"], "Gujarat")
+        self.assertEqual(len(fact_rows), 1)
+        self.assertEqual(fact_rows[0]["campaign_doctor_id"], "activity:DR602719")
+        self.assertEqual(issues["activity_derived_campaign_doctor_base"], 1)
+        self.assertEqual(campaigns_by_doctor["DR602719"], ["84eb443406464fb4b61a04721919db3f"])
 
     def test_rollup_keeps_orphan_playback_outside_share_funnel_and_counts_any_video_threshold_once(self):
         rolled = rollup_share_funnel(
