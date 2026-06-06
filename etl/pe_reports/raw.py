@@ -41,6 +41,16 @@ def _watermark_start(source_name: str, entity_name: str, watermark_field: str | 
     return (parsed - timedelta(days=lookback_days)).isoformat(sep=" ")
 
 
+def _filter_source_rows(rows: list[dict[str, Any]], spec: SourceTableSpec, source_table: str) -> list[dict[str, Any]]:
+    if not spec.source_filters or source_table != spec.source_table:
+        return rows
+    return [
+        row
+        for row in rows
+        if all(clean_text(row.get(column)) == expected for column, expected in spec.source_filters.items())
+    ]
+
+
 def ensure_raw_tables() -> None:
     for spec in PORTAL_TABLE_SPECS.values():
         ensure_text_table(RAW_PORTAL_SCHEMA, spec.raw_table, spec.columns + RAW_AUDIT_COLUMNS)
@@ -70,33 +80,34 @@ def _ingest_specs(
         lookback_days = spec.lookback_days or int(settings.PE_REPORTS["LOOKBACK_DAYS"])
         watermark_start = None if is_v2_source else _watermark_start(source_name, name, spec.watermark_field, lookback_days)
         try:
-            effective_source_table = spec.source_table
+            source_batches: list[tuple[str, list[dict[str, Any]]]] = []
             try:
-                rows = extractor(spec.source_table, spec.columns, spec.watermark_field, watermark_start)
+                primary_rows = extractor(spec.source_table, spec.columns, spec.watermark_field, watermark_start)
+                source_batches.append((spec.source_table, _filter_source_rows(primary_rows, spec, spec.source_table)))
             except error_type:
                 if not spec.fallback_source_table:
                     raise
-                effective_source_table = spec.fallback_source_table
-                rows = extractor(effective_source_table, spec.columns, spec.watermark_field, None)
-            if spec.source_filters and effective_source_table == spec.source_table:
-                rows = [
-                    row
-                    for row in rows
-                    if all(clean_text(row.get(column)) == expected for column, expected in spec.source_filters.items())
-                ]
-            if not rows and spec.fallback_source_table:
-                effective_source_table = spec.fallback_source_table
-                rows = extractor(effective_source_table, spec.columns, spec.watermark_field, None)
+            if spec.fallback_source_table:
+                try:
+                    fallback_rows = extractor(spec.fallback_source_table, spec.columns, spec.watermark_field, None)
+                    source_batches.append((spec.fallback_source_table, fallback_rows))
+                except error_type:
+                    if not any(rows for _, rows in source_batches):
+                        raise
             prepared_rows: list[dict[str, Any]] = []
+            primary_prepared_rows: list[dict[str, Any]] = []
             max_watermark_value: str | None = None
-            for row in rows:
-                payload = {column: row.get(column) for column in spec.columns}
-                payload.update(_audit_payload(run_id, source_system_label, effective_source_table, extracted_at, [row.get(column) for column in spec.columns]))
-                prepared_rows.append(payload)
-                if spec.watermark_field:
-                    candidate = clean_text(row.get(spec.watermark_field))
-                    if candidate and (max_watermark_value is None or candidate > max_watermark_value):
-                        max_watermark_value = candidate
+            for effective_source_table, rows in source_batches:
+                for row in rows:
+                    payload = {column: row.get(column) for column in spec.columns}
+                    payload.update(_audit_payload(run_id, source_system_label, effective_source_table, extracted_at, [row.get(column) for column in spec.columns]))
+                    prepared_rows.append(payload)
+                    if effective_source_table == spec.source_table:
+                        primary_prepared_rows.append(payload)
+                    if spec.watermark_field:
+                        candidate = clean_text(row.get(spec.watermark_field))
+                        if candidate and (max_watermark_value is None or candidate > max_watermark_value):
+                            max_watermark_value = candidate
 
             fingerprint_columns = spec.columns + ["_source_table"] if is_v2_source or spec.fallback_source_table else spec.columns
             inserted_count = insert_new_source_rows(
@@ -107,19 +118,19 @@ def _ingest_specs(
                 prepared_rows,
                 fingerprint_columns=fingerprint_columns,
             )
-            if is_v2_source and effective_source_table == spec.source_table and prepared_rows:
+            if is_v2_source and primary_prepared_rows:
                 record_v2_current_snapshot(
                     raw_schema=schema,
                     raw_table=spec.raw_table,
                     source_table=spec.source_table,
                     key_columns=spec.key_columns,
-                    rows=prepared_rows,
+                    rows=primary_prepared_rows,
                     run_id=run_id,
                     extracted_at=extracted_at,
                 )
             counts[name] = inserted_count
             skipped_counts[name] = len(prepared_rows) - inserted_count
-            extracted_counts[name] = len(rows)
+            extracted_counts[name] = len(prepared_rows)
             if max_watermark_value:
                 max_watermarks[name] = max_watermark_value
             current_watermark = get_watermark(source_name, name)

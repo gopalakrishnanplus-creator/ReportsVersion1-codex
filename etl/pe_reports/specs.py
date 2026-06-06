@@ -53,6 +53,7 @@ class SourceTableSpec:
     lookback_days: int = 30
     source_filters: dict[str, str] | None = None
     fallback_source_table: str | None = None
+    use_current_snapshot: bool = False
 
 
 PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
