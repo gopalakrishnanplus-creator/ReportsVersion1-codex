@@ -742,6 +742,20 @@ def match_campaign_doctors(
     return output
 
 
+def _campaign_doctor_dimension_key(
+    campaign_doctor_id: Any,
+    mapped: dict[str, Any] | None,
+    campaign_doctor_by_id: dict[str, dict[str, Any]],
+) -> str:
+    mapped_key = clean_text((mapped or {}).get("doctor_key"))
+    if mapped_key:
+        return mapped_key
+    source_id = clean_text(campaign_doctor_id)
+    if source_id and source_id in campaign_doctor_by_id:
+        return f"campaign-doctor:{source_id}"
+    return ""
+
+
 def attribute_share_row(
     share_row: dict[str, Any],
     *,
@@ -1058,6 +1072,79 @@ def resolve_playback_share(
     return max(candidates, key=lambda item: clean_text(item.get("shared_at_ts")) or "")
 
 
+def _append_activity_derived_base_rows(
+    *,
+    share_rows: list[dict[str, Any]],
+    campaign_by_id: dict[str, dict[str, Any]],
+    fact_campaign_enrollment_rows: list[dict[str, Any]],
+    bridge_campaign_doctor_base_rows: list[dict[str, Any]],
+    base_seen: set[tuple[str, str]],
+    campaigns_by_doctor: dict[str, list[str]],
+    issues: dict[str, int],
+) -> None:
+    for share in share_rows:
+        if clean_text(share.get("is_campaign_attributed_flag")) != "true":
+            continue
+        campaign_id_normalized = clean_text(share.get("campaign_id_normalized"))
+        doctor_key = clean_text(share.get("doctor_key")) or clean_text(share.get("doctor_id"))
+        if not campaign_id_normalized or not doctor_key:
+            continue
+        key = (campaign_id_normalized, doctor_key)
+        if key in base_seen:
+            continue
+        campaign = campaign_by_id.get(campaign_id_normalized, {})
+        if not campaign:
+            continue
+        enrolled_at = clean_text(share.get("shared_at_ts"))
+        doctor_id = clean_text(share.get("doctor_id")) or doctor_key
+        full_name = clean_text(share.get("doctor_name_snapshot")) or doctor_id
+        clinic_name = clean_text(share.get("clinic_name_snapshot"))
+        fact_campaign_enrollment_rows.append(
+            {
+                "campaign_id_original": clean_text(campaign.get("campaign_id_original")) or clean_text(share.get("campaign_id_original")),
+                "campaign_id_normalized": campaign_id_normalized,
+                "campaign_doctor_id": f"activity:{doctor_key}",
+                "doctor_key": doctor_key,
+                "registered_at_ts": enrolled_at,
+                "registered_by_field_rep_id": clean_text(share.get("field_rep_id_resolved")),
+                "registered_by_field_rep_external_id": clean_text(share.get("field_rep_external_id")),
+                "whitelabel_enabled": "false",
+                "whitelabel_subdomain": None,
+                "doctor_id": doctor_id,
+                "full_name": full_name,
+                "clinic_name": clinic_name,
+                "city": clean_text(share.get("city")),
+                "district": clean_text(share.get("district")),
+                "state": clean_text(share.get("state")),
+                "field_rep_id_resolved": clean_text(share.get("field_rep_id_resolved")),
+                "field_rep_external_id": clean_text(share.get("field_rep_external_id")),
+                "campaign_name": clean_text(campaign.get("campaign_name")),
+                "brand_name": clean_text(campaign.get("brand_name")),
+                "enrollment_unresolved_flag": "true",
+            }
+        )
+        base_seen.add(key)
+        bridge_campaign_doctor_base_rows.append(
+            {
+                "campaign_id_original": clean_text(campaign.get("campaign_id_original")) or clean_text(share.get("campaign_id_original")),
+                "campaign_id_normalized": campaign_id_normalized,
+                "doctor_key": doctor_key,
+                "doctor_id": doctor_id,
+                "full_name": full_name,
+                "clinic_name": clinic_name,
+                "city": clean_text(share.get("city")),
+                "district": clean_text(share.get("district")),
+                "state": clean_text(share.get("state")),
+                "field_rep_id_resolved": clean_text(share.get("field_rep_id_resolved")),
+                "field_rep_external_id": clean_text(share.get("field_rep_external_id")),
+                "enrolled_at_ts": enrolled_at,
+                "is_enrolled_flag": "true",
+            }
+        )
+        campaigns_by_doctor[doctor_key].append(campaign_id_normalized)
+        issues["activity_derived_campaign_doctor_base"] += 1
+
+
 def rollup_share_funnel(
     share_rows: list[dict[str, Any]],
     playback_rows: list[dict[str, Any]],
@@ -1250,7 +1337,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
         dim_doctor_rows.append(
             {
                 "doctor_key": f"campaign-doctor:{campaign_doctor_id}",
-                "doctor_id": None,
+                "doctor_id": clean_text(row.get("doctor_id")) or campaign_doctor_id,
                 "campaign_doctor_id": campaign_doctor_id,
                 "full_name": clean_text(row.get("full_name")) or clean_text(row.get("email")) or clean_text(row.get("phone")) or campaign_doctor_id,
                 "first_name": None,
@@ -1604,9 +1691,9 @@ def build_silver(run_id: str) -> dict[str, Any]:
             continue
         if privacy_allowlist and not campaign_allowed_by_allowlist(campaign_id_normalized, privacy_allowlist):
             continue
-        mapped = map_by_campaign_doctor_id.get(campaign_doctor_id, {})
-        mapped_doctor_key = clean_text(mapped.get("doctor_key"))
         campaign_doctor = campaign_doctor_by_id.get(campaign_doctor_id, {})
+        mapped = map_by_campaign_doctor_id.get(campaign_doctor_id, {})
+        mapped_doctor_key = _campaign_doctor_dimension_key(campaign_doctor_id, mapped, campaign_doctor_by_id)
         doctor_dim = doctor_by_key.get(mapped_doctor_key or "")
         credit = rep_credit_by_campaign_doctor.get((campaign_id_normalized, campaign_doctor_id))
         rep_resolution = (
@@ -1615,7 +1702,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             else resolve_field_rep_identity(row.get("registered_by_id"), field_rep_by_id, field_rep_by_external, campaign_link_by_id)
         )
         campaign = campaign_by_id.get(campaign_id_normalized, {})
-        resolved_doctor_id = clean_text((doctor_dim or {}).get("doctor_id"))
+        resolved_doctor_id = clean_text((doctor_dim or {}).get("doctor_id")) or clean_text(campaign_doctor.get("doctor_id")) or campaign_doctor_id
         state = first_non_empty(clean_text((doctor_dim or {}).get("state")), clean_text(campaign_doctor.get("state")))
         city = first_non_empty(clean_text((doctor_dim or {}).get("city")), clean_text(campaign_doctor.get("city")))
         full_name = first_non_empty(clean_text((doctor_dim or {}).get("full_name")), clean_text(campaign_doctor.get("full_name")))
@@ -1654,15 +1741,17 @@ def build_silver(run_id: str) -> dict[str, Any]:
                 "field_rep_external_id": clean_text((doctor_dim or {}).get("field_rep_external_id")),
                 "campaign_name": clean_text((campaign or {}).get("campaign_name")),
                 "brand_name": clean_text((campaign or {}).get("brand_name")),
-                "enrollment_unresolved_flag": "false" if mapped_doctor_key and resolved_doctor_id else "true",
+                "enrollment_unresolved_flag": "false" if clean_text(mapped.get("doctor_key")) and resolved_doctor_id else "true",
             }
         )
 
         if rep_resolution["field_rep_id"] is None and clean_text(row.get("registered_by_id")):
             issues["field_rep_resolution_failures"] += 1
-        if not mapped_doctor_key or not resolved_doctor_id:
+        if not mapped_doctor_key or not doctor_dim:
             issues["unmapped_enrollments"] += 1
             continue
+        if not clean_text(mapped.get("doctor_key")):
+            issues["campaign_doctor_only_enrollments"] += 1
         key = (campaign_id_normalized, mapped_doctor_key)
         if key in base_seen:
             continue
@@ -1693,8 +1782,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         if privacy_allowlist and not campaign_allowed_by_allowlist(campaign_id_normalized, privacy_allowlist):
             continue
         mapped = map_by_campaign_doctor_id.get(campaign_doctor_id, {})
-        mapped_doctor_key = clean_text(mapped.get("doctor_key"))
-        if not mapped_doctor_key or not clean_text((doctor_by_key.get(mapped_doctor_key or "") or {}).get("doctor_id")):
+        mapped_doctor_key = _campaign_doctor_dimension_key(campaign_doctor_id, mapped, campaign_doctor_by_id)
+        if not mapped_doctor_key or not doctor_by_key.get(mapped_doctor_key or ""):
             issues["rep_credit_unmapped_doctor"] += 1
             continue
         key = (campaign_id_normalized, mapped_doctor_key)
@@ -1707,7 +1796,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
         campaign_doctor = campaign_doctor_by_id.get(campaign_doctor_id, {})
         doctor_dim = doctor_by_key.get(mapped_doctor_key or "")
         rep_resolution = credit["rep_resolution"]
-        resolved_doctor_id = clean_text((doctor_dim or {}).get("doctor_id"))
+        resolved_doctor_id = clean_text((doctor_dim or {}).get("doctor_id")) or clean_text(campaign_doctor.get("doctor_id")) or campaign_doctor_id
         state = first_non_empty(clean_text((doctor_dim or {}).get("state")), clean_text(campaign_doctor.get("state")))
         city = first_non_empty(clean_text((doctor_dim or {}).get("city")), clean_text(campaign_doctor.get("city")))
         full_name = first_non_empty(clean_text((doctor_dim or {}).get("full_name")), clean_text(campaign_doctor.get("full_name")))
@@ -1875,6 +1964,16 @@ def build_silver(run_id: str) -> dict[str, Any]:
         source_share_uuid = normalize_campaign_id(row.get("share_event_uuid"))
         if source_share_uuid:
             share_by_source_uuid[source_share_uuid] = share_payload
+
+    _append_activity_derived_base_rows(
+        share_rows=share_rows_enriched,
+        campaign_by_id=campaign_by_id,
+        fact_campaign_enrollment_rows=fact_campaign_enrollment_rows,
+        bridge_campaign_doctor_base_rows=bridge_campaign_doctor_base_rows,
+        base_seen=base_seen,
+        campaigns_by_doctor=campaigns_by_doctor,
+        issues=issues,
+    )
 
     playback_rows_enriched: list[dict[str, Any]] = []
     for row in playback_rows:
