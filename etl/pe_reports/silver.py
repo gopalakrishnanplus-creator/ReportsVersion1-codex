@@ -185,6 +185,7 @@ SILVER_DEFAULT_COLUMNS: dict[str, list[str]] = {
     "fact_share_activity": [
         "share_public_id",
         "source_share_id",
+        "source_share_uuid",
         "doctor_summary_id",
         "doctor_id",
         "doctor_key",
@@ -221,6 +222,7 @@ SILVER_DEFAULT_COLUMNS: dict[str, list[str]] = {
     ],
     "fact_share_playback_event": [
         "source_playback_id",
+        "source_share_uuid",
         "share_id",
         "share_public_id",
         "doctor_summary_id",
@@ -250,6 +252,7 @@ SILVER_DEFAULT_COLUMNS: dict[str, list[str]] = {
     ],
     "fact_share_banner_click": [
         "source_banner_click_id",
+        "source_banner_click_uuid",
         "doctor_summary_id",
         "doctor_id",
         "doctor_key",
@@ -492,19 +495,53 @@ def _campaign_from_exact_banner_id(
     return None, "none"
 
 
+def _campaign_from_source_uuid(
+    row: dict[str, Any],
+    *,
+    campaign_by_id: dict[str, dict[str, Any]],
+    campaign_id_by_source_uuid: dict[str, str] | None = None,
+) -> tuple[dict[str, Any] | None, str]:
+    candidate_campaigns: list[str] = []
+    for field in ("campaign_uuid", "pe_campaign_uuid", "campaign_id", "campaign_id_normalized"):
+        value = clean_text(row.get(field))
+        normalized_value = normalize_campaign_id(value)
+        if not normalized_value:
+            continue
+        if normalized_value in campaign_by_id:
+            candidate_campaigns.append(normalized_value)
+        mapped_campaign_id = (campaign_id_by_source_uuid or {}).get(normalized_value)
+        if mapped_campaign_id:
+            candidate_campaigns.append(mapped_campaign_id)
+    candidate_campaigns = unique_preserving_order(
+        [campaign_id_normalized for campaign_id_normalized in candidate_campaigns if campaign_id_normalized in campaign_by_id]
+    )
+    if len(candidate_campaigns) == 1:
+        return campaign_by_id.get(candidate_campaigns[0], {}), ""
+    if len(candidate_campaigns) > 1:
+        return None, "ambiguous"
+    return None, "none"
+
+
 def _direct_campaign_banner_events(
     banner_click_rows: list[dict[str, Any]],
     *,
     campaign_by_id: dict[str, dict[str, Any]],
     campaigns_by_banner_id: dict[str, list[str]] | None = None,
+    campaign_id_by_source_uuid: dict[str, str] | None = None,
 ) -> list[dict[str, str | None]]:
     events: list[dict[str, str | None]] = []
     for row in banner_click_rows:
-        campaign, status = _campaign_from_exact_banner_id(
-            row.get("banner_id"),
+        campaign, status = _campaign_from_source_uuid(
+            row,
             campaign_by_id=campaign_by_id,
-            campaigns_by_banner_id=campaigns_by_banner_id,
+            campaign_id_by_source_uuid=campaign_id_by_source_uuid,
         )
+        if not campaign and status != "ambiguous":
+            campaign, status = _campaign_from_exact_banner_id(
+                row.get("banner_id"),
+                campaign_by_id=campaign_by_id,
+                campaigns_by_banner_id=campaigns_by_banner_id,
+            )
         if not campaign or status:
             continue
         clicked_at = iso_datetime(row.get("clicked_at_ts") or row.get("clicked_at"))
@@ -716,6 +753,7 @@ def attribute_share_row(
     campaign_by_video_reference: dict[str, list[str]] | None = None,
     single_active_fallback_campaigns: list[str] | None = None,
     campaign_banner_click_events: list[dict[str, Any]] | None = None,
+    campaign_id_by_source_uuid: dict[str, str] | None = None,
 ) -> dict[str, str | None]:
     shared_item_type = clean_text(share_row.get("shared_item_type"))
     shared_item_code = clean_text(share_row.get("shared_item_code"))
@@ -732,9 +770,19 @@ def attribute_share_row(
             "dq_error": "missing_share_content",
         }
 
+    source_campaign, source_status = _campaign_from_source_uuid(
+        share_row,
+        campaign_by_id=campaign_by_id,
+        campaign_id_by_source_uuid=campaign_id_by_source_uuid,
+    )
+    if source_campaign:
+        return _campaign_attribution_payload(source_campaign, "source_campaign_uuid")
+
     banner_campaign, banner_status = _single_campaign_from_banner_click_window(campaign_banner_click_events, campaign_by_id, shared_at)
     if banner_campaign:
         return _campaign_attribution_payload(banner_campaign, "campaign_banner_click_window")
+    if source_status == "ambiguous":
+        banner_status = "ambiguous"
 
     if shared_item_type == "cluster":
         candidate_campaigns = unique_preserving_order(
@@ -841,11 +889,28 @@ def attribute_banner_click_row(
     campaign_by_id: dict[str, dict[str, Any]],
     campaigns_by_banner_target_url: dict[str, list[str]],
     campaigns_by_banner_id: dict[str, list[str]] | None = None,
+    campaign_id_by_source_uuid: dict[str, str] | None = None,
 ) -> dict[str, str | None]:
     doctor_key = clean_text(banner_click_row.get("doctor_key")) or clean_text(banner_click_row.get("doctor_id"))
     clicked_at = clean_text(banner_click_row.get("clicked_at_ts")) or clean_text(banner_click_row.get("clicked_at"))
     banner_id = normalize_campaign_id(banner_click_row.get("banner_id"))
     banner_target_url = _normalized_banner_url(banner_click_row.get("banner_target_url"))
+
+    source_campaign, source_status = _campaign_from_source_uuid(
+        banner_click_row,
+        campaign_by_id=campaign_by_id,
+        campaign_id_by_source_uuid=campaign_id_by_source_uuid,
+    )
+    if source_campaign:
+        return _campaign_attribution_payload(source_campaign, "source_campaign_uuid")
+    if source_status == "ambiguous":
+        return {
+            "campaign_id_original": None,
+            "campaign_id_normalized": None,
+            "campaign_attribution_method": "ambiguous_source_campaign_uuid",
+            "is_campaign_attributed_flag": "false",
+            "dq_error": "ambiguous_source_campaign_uuid",
+        }
 
     if banner_id:
         campaign, active_status = _campaign_from_exact_banner_id(
@@ -949,9 +1014,14 @@ def resolve_playback_share(
     *,
     share_by_public_id: dict[str, dict[str, Any]],
     share_by_source_id: dict[str, dict[str, Any]],
+    share_by_source_uuid: dict[str, dict[str, Any]] | None = None,
     share_rows: list[dict[str, Any]],
     bundle_videos_by_code: dict[str, list[str]],
 ) -> dict[str, Any] | None:
+    share_event_uuid = normalize_campaign_id(playback_row.get("share_event_uuid"))
+    if share_event_uuid and share_by_source_uuid and share_event_uuid in share_by_source_uuid:
+        return share_by_source_uuid[share_event_uuid]
+
     share_public_id = clean_text(playback_row.get("share_public_id"))
     if share_public_id and share_public_id in share_by_public_id:
         return share_by_public_id[share_public_id]
@@ -1371,6 +1441,29 @@ def build_silver(run_id: str) -> dict[str, Any]:
 
     dim_campaign_rows = _filter_pe_campaign_rows(dim_campaign_rows, privacy_allowlist)
     campaign_by_id = {clean_text(row.get("campaign_id_normalized")): row for row in dim_campaign_rows if clean_text(row.get("campaign_id_normalized"))}
+    campaign_id_by_source_uuid: dict[str, str] = {}
+    for row in campaign_rows:
+        campaign_id_normalized = normalize_campaign_id(row.get("id"))
+        if not campaign_id_normalized:
+            continue
+        for value in (row.get("campaign_uuid"), row.get("id")):
+            source_key = normalize_campaign_id(value)
+            if source_key:
+                campaign_id_by_source_uuid[source_key] = campaign_id_normalized
+    for row in publisher_campaign_rows:
+        campaign_id_normalized = normalize_campaign_id(row.get("campaign_id"))
+        if not campaign_id_normalized:
+            continue
+        for value in (
+            row.get("campaign_id"),
+            row.get("campaign_uuid"),
+            row.get("pe_campaign_uuid"),
+            row.get("pe_campaign_id_normalized"),
+            row.get("master_campaign_id_normalized"),
+        ):
+            source_key = normalize_campaign_id(value)
+            if source_key:
+                campaign_id_by_source_uuid[source_key] = campaign_id_normalized
     campaigns_by_banner_id: dict[str, list[str]] = defaultdict(list)
     campaigns_by_banner_target_url: dict[str, list[str]] = defaultdict(list)
     for campaign in dim_campaign_rows:
@@ -1390,6 +1483,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
         banner_click_rows,
         campaign_by_id=campaign_by_id,
         campaigns_by_banner_id=campaigns_by_banner_id,
+        campaign_id_by_source_uuid=campaign_id_by_source_uuid,
     )
     campaign_by_cluster_code: dict[str, list[str]] = defaultdict(list)
     campaign_by_cluster_reference: dict[str, list[str]] = defaultdict(list)
@@ -1676,6 +1770,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
     share_rows_enriched: list[dict[str, Any]] = []
     share_by_public_id: dict[str, dict[str, Any]] = {}
     share_by_source_id: dict[str, dict[str, Any]] = {}
+    share_by_source_uuid: dict[str, dict[str, Any]] = {}
     for row in share_rows:
         share_public_id = clean_text(row.get("public_id"))
         shared_item_type = clean_text(row.get("shared_item_type"))
@@ -1687,6 +1782,8 @@ def build_silver(run_id: str) -> dict[str, Any]:
         attribution_input = dict(row)
         attribution_input["doctor_key"] = clean_text((doctor or {}).get("doctor_key")) or doctor_id
         attribution_input["shared_at_ts"] = iso_datetime(row.get("shared_at"))
+        attribution_input["campaign_uuid"] = row.get("campaign_uuid")
+        attribution_input["pe_campaign_uuid"] = row.get("pe_campaign_uuid")
         attribution = attribute_share_row(
             attribution_input,
             campaigns_by_doctor=campaigns_by_doctor,
@@ -1697,6 +1794,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             campaign_by_video_reference=campaign_by_video_reference,
             single_active_fallback_campaigns=single_active_fallback_campaigns,
             campaign_banner_click_events=campaign_banner_click_events,
+            campaign_id_by_source_uuid=campaign_id_by_source_uuid,
         )
         if privacy_allowlist and not _pe_campaign_allowed(attribution, privacy_allowlist):
             continue
@@ -1729,6 +1827,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
         share_payload = {
             "share_public_id": share_public_id,
             "source_share_id": clean_text(row.get("id")),
+            "source_share_uuid": clean_text(row.get("share_event_uuid")),
             "doctor_summary_id": clean_text(row.get("doctor_summary_id")),
             "doctor_id": doctor_id,
             "doctor_key": clean_text((doctor or {}).get("doctor_key")) or doctor_id,
@@ -1773,6 +1872,9 @@ def build_silver(run_id: str) -> dict[str, Any]:
         source_share_id = clean_text(row.get("id"))
         if source_share_id:
             share_by_source_id[source_share_id] = share_payload
+        source_share_uuid = normalize_campaign_id(row.get("share_event_uuid"))
+        if source_share_uuid:
+            share_by_source_uuid[source_share_uuid] = share_payload
 
     playback_rows_enriched: list[dict[str, Any]] = []
     for row in playback_rows:
@@ -1780,6 +1882,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             row,
             share_by_public_id=share_by_public_id,
             share_by_source_id=share_by_source_id,
+            share_by_source_uuid=share_by_source_uuid,
             share_rows=share_rows_enriched,
             bundle_videos_by_code=bundle_videos_by_code,
         )
@@ -1802,6 +1905,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
         playback_rows_enriched.append(
             {
                 "source_playback_id": clean_text(row.get("id")),
+                "source_share_uuid": clean_text(row.get("share_event_uuid")),
                 "share_id": clean_text(row.get("share_id")),
                 "share_public_id": share_public_id,
                 "doctor_summary_id": clean_text(row.get("doctor_summary_id")),
@@ -1849,12 +1953,14 @@ def build_silver(run_id: str) -> dict[str, Any]:
                 "doctor_id": doctor_id,
                 "banner_target_url": row.get("banner_target_url"),
                 "banner_id": row.get("banner_id"),
+                "campaign_uuid": row.get("campaign_uuid"),
                 "clicked_at_ts": iso_datetime(row.get("clicked_at")),
             },
             campaigns_by_doctor=campaigns_by_doctor,
             campaign_by_id=campaign_by_id,
             campaigns_by_banner_target_url=campaigns_by_banner_target_url,
             campaigns_by_banner_id=campaigns_by_banner_id,
+            campaign_id_by_source_uuid=campaign_id_by_source_uuid,
         )
         if privacy_allowlist and not _pe_campaign_allowed(attribution, privacy_allowlist):
             continue
@@ -1876,6 +1982,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
         banner_click_rows_enriched.append(
             {
                 "source_banner_click_id": clean_text(row.get("id")),
+                "source_banner_click_uuid": clean_text(row.get("source_banner_click_id")),
                 "doctor_summary_id": doctor_summary_id,
                 "doctor_id": doctor_id,
                 "doctor_key": clean_text((doctor or {}).get("doctor_key")) or doctor_id,

@@ -138,6 +138,30 @@ class PeReportsLogicTests(SimpleTestCase):
             ],
         )
 
+    def test_bronze_merges_legacy_share_events_missing_from_v2(self):
+        spec = SourceTableSpec(
+            source_table="pe_share_event_v2",
+            fallback_source_table="sharing_shareactivity",
+            raw_table="sharing_shareactivity_raw",
+            bronze_table="sharing_shareactivity",
+            columns=["public_id", "shared_at"],
+            key_columns=["public_id"],
+            watermark_field="shared_at",
+        )
+        rows = [
+            {"public_id": "v2-share", "shared_at": "2026-06-03 10:00:00", "_source_table": "pe_share_event_v2"},
+            {"public_id": "v2-share", "shared_at": "2026-06-03 10:00:00", "_source_table": "sharing_shareactivity"},
+            {"public_id": "legacy-live-share", "shared_at": "2026-06-04 19:58:00", "_source_table": "sharing_shareactivity"},
+        ]
+
+        self.assertEqual(
+            pe_bronze._active_source_rows(rows, spec, {"v2-share"}),
+            [
+                {"public_id": "v2-share", "shared_at": "2026-06-03 10:00:00", "_source_table": "pe_share_event_v2"},
+                {"public_id": "legacy-live-share", "shared_at": "2026-06-04 19:58:00", "_source_table": "sharing_shareactivity"},
+            ],
+        )
+
     def test_pipeline_refuses_empty_required_v2_source_counts(self):
         raw_portal = {
             "extracted_counts": {
@@ -335,6 +359,52 @@ class PeReportsLogicTests(SimpleTestCase):
         snapshot_rows = snapshot_mock.call_args.kwargs["rows"]
         self.assertEqual([(row["campaign_id"], row["_source_table"]) for row in snapshot_rows], [("camp-v2", "pe_campaign_v2")])
 
+    def test_raw_pe_share_spec_loads_legacy_tracking_fallback(self):
+        spec = SourceTableSpec(
+            source_table="pe_share_event_v2",
+            fallback_source_table="sharing_shareactivity",
+            raw_table="sharing_shareactivity_raw",
+            bronze_table="sharing_shareactivity",
+            columns=["public_id", "shared_at", "campaign_uuid"],
+            key_columns=["public_id"],
+            watermark_field="shared_at",
+        )
+
+        def fake_extract(table, columns, watermark_field, watermark_start):
+            if table == "pe_share_event_v2":
+                return [{"public_id": "v2-share", "shared_at": "2026-06-03 10:00:00", "campaign_uuid": "camp-v2"}]
+            if table == "sharing_shareactivity":
+                return [{"public_id": "legacy-live-share", "shared_at": "2026-06-04 19:58:00"}]
+            return []
+
+        with patch("etl.pe_reports.raw.insert_new_source_rows", return_value=2) as insert_mock, patch(
+            "etl.pe_reports.raw.record_v2_current_snapshot"
+        ) as snapshot_mock, patch("etl.pe_reports.raw.get_watermark", return_value=None), patch(
+            "etl.pe_reports.raw.upsert_watermark"
+        ), patch("etl.pe_reports.raw.log_step"):
+            result = pe_raw._ingest_specs(
+                run_id="run-1",
+                extracted_at="2026-06-04T00:00:00+00:00",
+                schema="raw_pe_portal",
+                specs={"sharing_shareactivity": spec},
+                source_name="portal",
+                source_system_label="pe_portal",
+                extractor=fake_extract,
+                error_type=Exception,
+            )
+
+        self.assertEqual(result["extracted_counts"]["sharing_shareactivity"], 2)
+        prepared_rows = insert_mock.call_args.args[4]
+        self.assertEqual(
+            [(row["public_id"], row["shared_at"], row["_source_table"], row.get("campaign_uuid")) for row in prepared_rows],
+            [
+                ("v2-share", "2026-06-03 10:00:00", "pe_share_event_v2", "camp-v2"),
+                ("legacy-live-share", "2026-06-04 19:58:00", "sharing_shareactivity", None),
+            ],
+        )
+        snapshot_rows = snapshot_mock.call_args.kwargs["rows"]
+        self.assertEqual([(row["public_id"], row["_source_table"]) for row in snapshot_rows], [("v2-share", "pe_share_event_v2")])
+
     def test_campaign_doctor_mapping_prefers_logical_id_then_email_then_phone(self):
         mapped = match_campaign_doctors(
             [
@@ -373,6 +443,28 @@ class PeReportsLogicTests(SimpleTestCase):
         )
         self.assertEqual(result["campaign_attribution_method"], "ambiguous_video")
         self.assertEqual(result["is_campaign_attributed_flag"], "false")
+
+    def test_share_prefers_source_campaign_uuid_when_present(self):
+        result = attribute_share_row(
+            {
+                "shared_item_type": "cluster",
+                "shared_item_code": "reused-cluster",
+                "shared_item_name": "Reused Cluster",
+                "doctor_key": "DOC-1",
+                "campaign_uuid": "source-campaign-uuid",
+                "shared_at_ts": "2026-06-04 19:58:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "camp-a": {"campaign_id_original": "camp-a", "campaign_id_normalized": "camp-a"},
+            },
+            campaign_by_cluster_code={"reused-cluster": ["other-campaign"]},
+            campaign_videos_by_campaign={},
+            campaign_id_by_source_uuid={"sourcecampaignuuid": "camp-a"},
+        )
+        self.assertEqual(result["campaign_id_normalized"], "camp-a")
+        self.assertEqual(result["campaign_attribution_method"], "source_campaign_uuid")
+        self.assertEqual(result["is_campaign_attributed_flag"], "true")
 
     def test_cluster_share_uses_single_active_campaign_when_content_is_reused(self):
         result = attribute_share_row(
@@ -605,6 +697,28 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(result["campaign_attribution_method"], "banner_id")
         self.assertEqual(result["is_campaign_attributed_flag"], "true")
 
+    def test_banner_click_prefers_source_campaign_uuid_when_present(self):
+        result = attribute_banner_click_row(
+            {
+                "doctor_key": "",
+                "doctor_id": "0",
+                "campaign_uuid": "source-campaign-uuid",
+                "banner_id": "other-campaign",
+                "clicked_at_ts": "2026-06-04 19:57:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "camp-a": {"campaign_id_original": "camp-a", "campaign_id_normalized": "camp-a"},
+                "other-campaign": {"campaign_id_original": "other-campaign", "campaign_id_normalized": "other-campaign"},
+            },
+            campaigns_by_banner_target_url={},
+            campaigns_by_banner_id={"othercampaign": ["other-campaign"]},
+            campaign_id_by_source_uuid={"sourcecampaignuuid": "camp-a"},
+        )
+        self.assertEqual(result["campaign_id_normalized"], "camp-a")
+        self.assertEqual(result["campaign_attribution_method"], "source_campaign_uuid")
+        self.assertEqual(result["is_campaign_attributed_flag"], "true")
+
     def test_banner_click_falls_back_to_single_active_doctor_campaign(self):
         result = attribute_banner_click_row(
             {
@@ -644,6 +758,34 @@ class PeReportsLogicTests(SimpleTestCase):
             share_by_public_id={"SHARE-1": share},
             share_by_source_id={"101": share},
             share_rows=[share],
+            bundle_videos_by_code={},
+        )
+        self.assertEqual(resolved, share)
+
+    def test_playback_matches_share_event_uuid_before_heuristics(self):
+        share = {
+            "share_public_id": "SHARE-1",
+            "source_share_uuid": "share-event-uuid",
+            "source_share_id": "101",
+            "doctor_id": "DOC001",
+            "shared_item_type": "video",
+            "shared_item_code": "acute-wheeze-video",
+            "video_code": "acute-wheeze-video",
+            "shared_at_ts": "2026-04-27 17:30:00",
+        }
+        resolved = resolve_playback_share(
+            {
+                "share_event_uuid": "share-event-uuid",
+                "share_public_id": "",
+                "share_id": "",
+                "doctor_id": "OTHER",
+                "video_code": "other-video",
+                "occurred_at": "2026-04-27 17:31:00",
+            },
+            share_by_public_id={},
+            share_by_source_id={},
+            share_by_source_uuid={"shareeventuuid": share},
+            share_rows=[],
             bundle_videos_by_code={},
         )
         self.assertEqual(resolved, share)
