@@ -623,6 +623,7 @@ def attribute_share_row(
     campaign_videos_by_campaign: dict[str, set[str]],
     campaign_by_cluster_reference: dict[str, list[str]] | None = None,
     campaign_by_video_reference: dict[str, list[str]] | None = None,
+    single_active_fallback_campaigns: list[str] | None = None,
 ) -> dict[str, str | None]:
     shared_item_type = clean_text(share_row.get("shared_item_type"))
     shared_item_code = clean_text(share_row.get("shared_item_code"))
@@ -650,6 +651,12 @@ def attribute_share_row(
         if campaign:
             method = "direct_cluster" if len(candidate_campaigns) == 1 else "direct_cluster_active_window"
             return _campaign_attribution_payload(campaign, method)
+        if active_status != "ambiguous":
+            fallback_campaign, fallback_status = _single_active_campaign(single_active_fallback_campaigns or [], campaign_by_id, shared_at)
+            if fallback_campaign:
+                return _campaign_attribution_payload(fallback_campaign, "single_active_pe_campaign")
+            if fallback_status == "ambiguous":
+                active_status = "ambiguous"
         return {
             "campaign_id_original": None,
             "campaign_id_normalized": None,
@@ -690,6 +697,12 @@ def attribute_share_row(
         campaign, active_status = _single_active_campaign(content_campaigns, campaign_by_id, shared_at)
         if campaign:
             return _campaign_attribution_payload(campaign, "direct_video_active_content")
+        if active_status != "ambiguous":
+            fallback_campaign, fallback_status = _single_active_campaign(single_active_fallback_campaigns or [], campaign_by_id, shared_at)
+            if fallback_campaign:
+                return _campaign_attribution_payload(fallback_campaign, "single_active_pe_campaign")
+            if fallback_status == "ambiguous":
+                active_status = "ambiguous"
         return {
             "campaign_id_original": None,
             "campaign_id_normalized": None,
@@ -1278,10 +1291,13 @@ def build_silver(run_id: str) -> dict[str, Any]:
     campaign_by_cluster_code: dict[str, list[str]] = defaultdict(list)
     campaign_by_cluster_reference: dict[str, list[str]] = defaultdict(list)
     campaign_by_video_reference: dict[str, list[str]] = defaultdict(list)
+    single_active_fallback_campaigns: list[str] = []
     bridge_campaign_content_rows: list[dict[str, Any]] = []
     campaign_videos_by_campaign: dict[str, set[str]] = defaultdict(set)
     for campaign in dim_campaign_rows:
         campaign_id_normalized = clean_text(campaign.get("campaign_id_normalized"))
+        if campaign_id_normalized and clean_text(campaign.get("publisher_campaign_present_flag")) == "true":
+            single_active_fallback_campaigns.append(campaign_id_normalized)
         cluster_code = clean_text(campaign.get("local_video_cluster_code"))
         if not campaign_id_normalized:
             continue
@@ -1576,6 +1592,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             campaign_videos_by_campaign=campaign_videos_by_campaign,
             campaign_by_cluster_reference=campaign_by_cluster_reference,
             campaign_by_video_reference=campaign_by_video_reference,
+            single_active_fallback_campaigns=single_active_fallback_campaigns,
         )
         if privacy_allowlist and not _pe_campaign_allowed(attribution, privacy_allowlist):
             continue

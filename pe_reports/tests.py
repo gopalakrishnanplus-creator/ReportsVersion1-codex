@@ -349,6 +349,49 @@ class PeReportsLogicTests(SimpleTestCase):
         self.assertEqual(result["campaign_id_normalized"], "camp-a")
         self.assertEqual(result["is_campaign_attributed_flag"], "true")
 
+    def test_share_uses_single_active_campaign_fallback_when_content_has_no_mapping(self):
+        result = attribute_share_row(
+            {
+                "shared_item_type": "cluster",
+                "shared_item_code": "source-only-cluster",
+                "shared_item_name": "Source-only cluster",
+                "doctor_key": "DOC-1",
+                "shared_at_ts": "2026-06-04 19:58:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "camp-current": {"campaign_id_original": "camp-current", "campaign_id_normalized": "camp-current", "start_date": "2026-06-01", "end_date": "2026-06-30"},
+                "camp-old": {"campaign_id_original": "camp-old", "campaign_id_normalized": "camp-old", "start_date": "2026-03-01", "end_date": "2026-03-31"},
+            },
+            campaign_by_cluster_code={},
+            campaign_videos_by_campaign={},
+            single_active_fallback_campaigns=["camp-current", "camp-old"],
+        )
+        self.assertEqual(result["campaign_id_normalized"], "camp-current")
+        self.assertEqual(result["campaign_attribution_method"], "single_active_pe_campaign")
+        self.assertEqual(result["is_campaign_attributed_flag"], "true")
+
+    def test_share_stays_unattributed_when_active_campaign_fallback_is_ambiguous(self):
+        result = attribute_share_row(
+            {
+                "shared_item_type": "cluster",
+                "shared_item_code": "source-only-cluster",
+                "shared_item_name": "Source-only cluster",
+                "doctor_key": "DOC-1",
+                "shared_at_ts": "2026-06-04 19:58:00",
+            },
+            campaigns_by_doctor={},
+            campaign_by_id={
+                "camp-a": {"campaign_id_original": "camp-a", "campaign_id_normalized": "camp-a", "start_date": "2026-06-01", "end_date": "2026-06-30"},
+                "camp-b": {"campaign_id_original": "camp-b", "campaign_id_normalized": "camp-b", "start_date": "2026-06-01", "end_date": "2026-06-30"},
+            },
+            campaign_by_cluster_code={},
+            campaign_videos_by_campaign={},
+            single_active_fallback_campaigns=["camp-a", "camp-b"],
+        )
+        self.assertEqual(result["campaign_attribution_method"], "ambiguous_cluster")
+        self.assertEqual(result["is_campaign_attributed_flag"], "false")
+
     def test_selection_json_references_include_selected_content_names(self):
         refs = _selection_json_references(
             '{"selected_clusters": [{"name": "Acute wheeze / asthma attack (basic pack)", "code": "acute-wheeze-basic"}], "language": "en"}'
