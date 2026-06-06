@@ -73,6 +73,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         watermark_field="updated_at",
+        fallback_source_table="sharing_doctorsharesummary",
     ),
     "sharing_shareactivity": SourceTableSpec(
         source_table="pe_share_event_v2",
@@ -100,6 +101,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["public_id"],
         watermark_field="shared_at",
+        fallback_source_table="sharing_shareactivity",
     ),
     "sharing_shareplaybackevent": SourceTableSpec(
         source_table="pe_playback_event_v2",
@@ -122,6 +124,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         watermark_field="occurred_at",
+        fallback_source_table="sharing_shareplaybackevent",
     ),
     "sharing_sharebannerclickevent": SourceTableSpec(
         source_table="pe_banner_click_event_v2",
@@ -141,6 +144,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         watermark_field="clicked_at",
+        fallback_source_table="sharing_sharebannerclickevent",
     ),
     "publisher_campaign": SourceTableSpec(
         source_table="pe_campaign_v2",

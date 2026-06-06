@@ -138,6 +138,30 @@ class PeReportsLogicTests(SimpleTestCase):
             ],
         )
 
+    def test_bronze_merges_legacy_share_events_missing_from_v2(self):
+        spec = SourceTableSpec(
+            source_table="pe_share_event_v2",
+            fallback_source_table="sharing_shareactivity",
+            raw_table="sharing_shareactivity_raw",
+            bronze_table="sharing_shareactivity",
+            columns=["public_id", "shared_at"],
+            key_columns=["public_id"],
+            watermark_field="shared_at",
+        )
+        rows = [
+            {"public_id": "v2-share", "shared_at": "2026-06-03 10:00:00", "_source_table": "pe_share_event_v2"},
+            {"public_id": "v2-share", "shared_at": "2026-06-03 10:00:00", "_source_table": "sharing_shareactivity"},
+            {"public_id": "legacy-live-share", "shared_at": "2026-06-04 19:58:00", "_source_table": "sharing_shareactivity"},
+        ]
+
+        self.assertEqual(
+            pe_bronze._active_source_rows(rows, spec, {"v2-share"}),
+            [
+                {"public_id": "v2-share", "shared_at": "2026-06-03 10:00:00", "_source_table": "pe_share_event_v2"},
+                {"public_id": "legacy-live-share", "shared_at": "2026-06-04 19:58:00", "_source_table": "sharing_shareactivity"},
+            ],
+        )
+
     def test_pipeline_refuses_empty_required_v2_source_counts(self):
         raw_portal = {
             "extracted_counts": {
@@ -334,6 +358,52 @@ class PeReportsLogicTests(SimpleTestCase):
         )
         snapshot_rows = snapshot_mock.call_args.kwargs["rows"]
         self.assertEqual([(row["campaign_id"], row["_source_table"]) for row in snapshot_rows], [("camp-v2", "pe_campaign_v2")])
+
+    def test_raw_pe_share_spec_loads_legacy_tracking_fallback(self):
+        spec = SourceTableSpec(
+            source_table="pe_share_event_v2",
+            fallback_source_table="sharing_shareactivity",
+            raw_table="sharing_shareactivity_raw",
+            bronze_table="sharing_shareactivity",
+            columns=["public_id", "shared_at", "campaign_uuid"],
+            key_columns=["public_id"],
+            watermark_field="shared_at",
+        )
+
+        def fake_extract(table, columns, watermark_field, watermark_start):
+            if table == "pe_share_event_v2":
+                return [{"public_id": "v2-share", "shared_at": "2026-06-03 10:00:00", "campaign_uuid": "camp-v2"}]
+            if table == "sharing_shareactivity":
+                return [{"public_id": "legacy-live-share", "shared_at": "2026-06-04 19:58:00"}]
+            return []
+
+        with patch("etl.pe_reports.raw.insert_new_source_rows", return_value=2) as insert_mock, patch(
+            "etl.pe_reports.raw.record_v2_current_snapshot"
+        ) as snapshot_mock, patch("etl.pe_reports.raw.get_watermark", return_value=None), patch(
+            "etl.pe_reports.raw.upsert_watermark"
+        ), patch("etl.pe_reports.raw.log_step"):
+            result = pe_raw._ingest_specs(
+                run_id="run-1",
+                extracted_at="2026-06-04T00:00:00+00:00",
+                schema="raw_pe_portal",
+                specs={"sharing_shareactivity": spec},
+                source_name="portal",
+                source_system_label="pe_portal",
+                extractor=fake_extract,
+                error_type=Exception,
+            )
+
+        self.assertEqual(result["extracted_counts"]["sharing_shareactivity"], 2)
+        prepared_rows = insert_mock.call_args.args[4]
+        self.assertEqual(
+            [(row["public_id"], row["shared_at"], row["_source_table"], row.get("campaign_uuid")) for row in prepared_rows],
+            [
+                ("v2-share", "2026-06-03 10:00:00", "pe_share_event_v2", "camp-v2"),
+                ("legacy-live-share", "2026-06-04 19:58:00", "sharing_shareactivity", None),
+            ],
+        )
+        snapshot_rows = snapshot_mock.call_args.kwargs["rows"]
+        self.assertEqual([(row["public_id"], row["_source_table"]) for row in snapshot_rows], [("v2-share", "pe_share_event_v2")])
 
     def test_campaign_doctor_mapping_prefers_logical_id_then_email_then_phone(self):
         mapped = match_campaign_doctors(
