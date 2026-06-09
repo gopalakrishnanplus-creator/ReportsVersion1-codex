@@ -452,6 +452,30 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual([card["selected"] for card in context["summary_cards"]], [False, True, False, False])
         self.assertIn("window=last_week", context["export_href"])
 
+    def test_onboarded_doctors_detail_uses_business_columns(self):
+        columns = sapa_services.DETAIL_SPECS["onboarded_doctors"]["columns"]
+
+        self.assertEqual(sapa_services.DETAIL_SPECS["onboarded_doctors"]["title"], "Onboarded Doctors")
+        self.assertNotIn("doctor_key", columns)
+        self.assertNotIn("first_seen_at", columns)
+        for column in [
+            "campaign_label",
+            "doctor_display_name",
+            "city",
+            "state",
+            "field_rep_id",
+            "doctor_has_logged_in",
+            "doctor_has_updated_special_instructions",
+            "doctor_has_added_clinic_staff",
+            "clinic_staff_has_logged_in",
+            "clinic_staff_forms_shared_count",
+            "forms_filled_count",
+            "red_tagged_patients_count",
+            "yellow_tagged_patients_count",
+            "registered_at",
+        ]:
+            self.assertIn(column, columns)
+
     def test_campaign_rows_are_read_from_registered_campaign_schema(self):
         with patch(
             "sapa_growth.services._global_rows",
@@ -593,6 +617,78 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual([row["campaign_key"] for row in registry_call[3]], ["camp-a", "camp-b"])
         camp_a_doctor_call = next(call for call in replace_calls if call[0] == "gold_sapa_campaign_campa" and call[1] == "rpt_doctor_status_current")
         self.assertEqual([row["doctor_key"] for row in camp_a_doctor_call[3]], ["doc-a"])
+
+    def test_gold_current_doctor_status_includes_onboarded_detail_metrics(self):
+        today = date.today().isoformat()
+        rows_by_table = {
+            "dim_doctor_clinic": [
+                {
+                    "doctor_key": "doc-a",
+                    "campaign_key": "camp-a",
+                    "campaign_label": "Campaign A",
+                    "canonical_display_name": "Doctor A",
+                    "city": "Mumbai",
+                    "district": "",
+                    "state": "Maharashtra",
+                    "field_rep_id": "rep-a",
+                    "field_rep_name": "Rep A",
+                    "is_user_created_doctor": "true",
+                    "campaign_registered_at": "2026-06-01 10:00:00",
+                    "clinic_password_set_at": "2026-06-01 11:00:00",
+                    "special_instructions_uploaded_at": "",
+                    "special_instructions_removed_at": "2026-06-02 10:00:00",
+                    "clinic_user1_email": "staff@example.com",
+                    "clinic_user2_email": "",
+                    "first_seen_at": "2026-06-01 10:00:00",
+                    "latest_seen_at": "2026-06-02 10:00:00",
+                }
+            ],
+            "fact_doctor_status_daily": [
+                {
+                    "doctor_key": "doc-a",
+                    "campaign_key": "camp-a",
+                    "as_of_date": today,
+                    "screenings_last_15d": "0",
+                    "is_active": "false",
+                    "is_inactive": "true",
+                    "last_screening_at": "",
+                }
+            ],
+            "fact_metric_event": [
+                {"doctor_key": "doc-a", "event_type": "clinic_login", "action_key": "doctor"},
+                {"doctor_key": "doc-a", "event_type": "clinic_staff", "action_key": "added"},
+                {"doctor_key": "doc-a", "event_type": "clinic_login", "action_key": "clinic_staff"},
+                {"doctor_key": "doc-a", "event_type": "clinic_form_share", "action_key": "clinic_staff"},
+                {"doctor_key": "doc-a", "event_type": "clinic_form_share", "action_key": "clinic_staff"},
+            ],
+            "fact_screening_submission": [
+                {"doctor_key": "doc-a", "source_table": "redflags_patientsubmission", "overall_flag_code": "RED"},
+                {"doctor_key": "doc-a", "source_table": "redflags_patientsubmission", "overall_flag_code": "YELLOW"},
+                {"doctor_key": "doc-a", "source_table": "gnd_gndpatientsubmission", "overall_flag_code": "RED"},
+            ],
+        }
+        replace_calls = []
+
+        with patch("etl.sapa_growth.gold.fetch_table", side_effect=lambda _schema, table: rows_by_table.get(table, [])), patch(
+            "etl.sapa_growth.gold.replace_table",
+            side_effect=lambda schema, table, columns, rows: replace_calls.append((schema, table, columns, list(rows))),
+        ), patch("etl.sapa_growth.gold._publish_stage_tables"), patch(
+            "etl.sapa_growth.gold._publish_campaign_schemas",
+            return_value=[],
+        ):
+            sapa_gold.build_gold("run-1")
+
+        status_call = next(call for call in replace_calls if call[1] == "rpt_doctor_status_current")
+        row = status_call[3][0]
+        self.assertEqual(row["doctor_has_logged_in"], "Yes")
+        self.assertEqual(row["doctor_has_updated_special_instructions"], "Yes")
+        self.assertEqual(row["doctor_has_added_clinic_staff"], "Yes")
+        self.assertEqual(row["clinic_staff_has_logged_in"], "Yes")
+        self.assertEqual(row["clinic_staff_forms_shared_count"], "2")
+        self.assertEqual(row["forms_filled_count"], "2")
+        self.assertEqual(row["red_tagged_patients_count"], "1")
+        self.assertEqual(row["yellow_tagged_patients_count"], "1")
+        self.assertEqual(row["registered_at"], "2026-06-01 10:00:00")
 
 
 class SapaGrowthRoutingTests(SimpleTestCase):
