@@ -173,6 +173,8 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
             "recruited_via",
             "clinic_password_hash",
             "clinic_password_set_at",
+            "special_instructions_uploaded_at",
+            "special_instructions_removed_at",
             "clinic_user1_name",
             "clinic_user1_email",
             "clinic_user1_password_hash",

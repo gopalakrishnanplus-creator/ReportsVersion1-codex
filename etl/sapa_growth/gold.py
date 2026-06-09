@@ -20,6 +20,10 @@ def _stringify_row(row: dict[str, Any]) -> dict[str, str]:
     return {key: "" if value is None else str(value) for key, value in row.items()}
 
 
+def _yes_no(value: bool) -> str:
+    return "Yes" if value else "No"
+
+
 def _campaign_token(value: Any) -> str:
     token = "".join(ch.lower() for ch in clean_text(value) if ch.isalnum())
     return token or "unknown"
@@ -436,6 +440,7 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
     certification_rows = fetch_table(SILVER_SCHEMA, "certification_status_prepared")
     screening_rows = fetch_table(SILVER_SCHEMA, "fact_screening_submission")
     redflag_rows = fetch_table(SILVER_SCHEMA, "fact_submission_redflag")
+    metric_rows = fetch_table(SILVER_SCHEMA, "fact_metric_event")
     followup_rows = fetch_table(SILVER_SCHEMA, "fact_followup_schedule_instance")
     reminder_rows = fetch_table(SILVER_SCHEMA, "fact_reminder_sent")
     webinar_rows = fetch_table(SILVER_SCHEMA, "fact_webinar_registration")
@@ -448,6 +453,44 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
     for row in redflag_rows:
         submission_key = row.get("submission_key") or ""
         redflag_count_by_submission[submission_key] = redflag_count_by_submission.get(submission_key, 0) + 1
+
+    doctor_login_keys: set[str] = set()
+    special_instruction_keys: set[str] = set()
+    added_staff_keys: set[str] = set()
+    staff_login_keys: set[str] = set()
+    staff_forms_shared_by_doctor: dict[str, int] = {}
+    for row in metric_rows:
+        doctor_key = clean_text(row.get("doctor_key"))
+        if not doctor_key:
+            continue
+        event_type = (clean_text(row.get("event_type")) or "").lower()
+        action_key = (clean_text(row.get("action_key")) or "").lower()
+        if event_type == "clinic_login" and action_key == "doctor":
+            doctor_login_keys.add(doctor_key)
+        if event_type == "clinic_special_instruction":
+            special_instruction_keys.add(doctor_key)
+        if event_type == "clinic_staff" and action_key == "added":
+            added_staff_keys.add(doctor_key)
+        if event_type == "clinic_login" and action_key == "clinic_staff":
+            staff_login_keys.add(doctor_key)
+        if event_type == "clinic_form_share" and action_key == "clinic_staff":
+            staff_forms_shared_by_doctor[doctor_key] = staff_forms_shared_by_doctor.get(doctor_key, 0) + 1
+
+    forms_filled_by_doctor: dict[str, int] = {}
+    red_tagged_by_doctor: dict[str, int] = {}
+    yellow_tagged_by_doctor: dict[str, int] = {}
+    for row in screening_rows:
+        if clean_text(row.get("source_table")) != "redflags_patientsubmission":
+            continue
+        doctor_key = clean_text(row.get("doctor_key"))
+        if not doctor_key:
+            continue
+        forms_filled_by_doctor[doctor_key] = forms_filled_by_doctor.get(doctor_key, 0) + 1
+        overall_flag = (clean_text(row.get("overall_flag_code")) or "").lower()
+        if overall_flag == "red":
+            red_tagged_by_doctor[doctor_key] = red_tagged_by_doctor.get(doctor_key, 0) + 1
+        if overall_flag == "yellow":
+            yellow_tagged_by_doctor[doctor_key] = yellow_tagged_by_doctor.get(doctor_key, 0) + 1
 
     refresh_rows = [
         _stringify_row(
@@ -524,10 +567,12 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
     for doctor in doctor_rows:
         status_row = next((row for row in doctor_status_current_rows if row.get("doctor_key") == doctor.get("doctor_key")), None)
         certification = certification_by_doctor.get(doctor.get("doctor_key"), {})
+        doctor_key = clean_text(doctor.get("doctor_key"))
+        has_clinic_staff = bool(clean_text(doctor.get("clinic_user1_email")) or clean_text(doctor.get("clinic_user2_email")))
         current_status_rows.append(
             _stringify_row(
                 {
-                    "doctor_key": doctor.get("doctor_key"),
+                    "doctor_key": doctor_key,
                     "campaign_key": doctor.get("campaign_key"),
                     "campaign_label": doctor.get("campaign_label"),
                     "doctor_display_name": doctor.get("canonical_display_name"),
@@ -541,6 +586,19 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
                     "inactive_flag": (status_row or {}).get("is_inactive", "false"),
                     "last_screening_at": (status_row or {}).get("last_screening_at", ""),
                     "onboarding_flag": doctor.get("is_user_created_doctor"),
+                    "doctor_has_logged_in": _yes_no(doctor_key in doctor_login_keys or bool(clean_text(doctor.get("clinic_password_set_at")))),
+                    "doctor_has_updated_special_instructions": _yes_no(
+                        doctor_key in special_instruction_keys
+                        or bool(clean_text(doctor.get("special_instructions_uploaded_at")))
+                        or bool(clean_text(doctor.get("special_instructions_removed_at")))
+                    ),
+                    "doctor_has_added_clinic_staff": _yes_no(doctor_key in added_staff_keys or has_clinic_staff),
+                    "clinic_staff_has_logged_in": _yes_no(doctor_key in staff_login_keys),
+                    "clinic_staff_forms_shared_count": staff_forms_shared_by_doctor.get(doctor_key, 0),
+                    "forms_filled_count": forms_filled_by_doctor.get(doctor_key, 0),
+                    "red_tagged_patients_count": red_tagged_by_doctor.get(doctor_key, 0),
+                    "yellow_tagged_patients_count": yellow_tagged_by_doctor.get(doctor_key, 0),
+                    "registered_at": doctor.get("campaign_registered_at", ""),
                     "first_seen_at": doctor.get("first_seen_at", ""),
                     "latest_seen_at": doctor.get("latest_seen_at", ""),
                     "certification_status": certification.get("certification_status", ""),
@@ -567,6 +625,15 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
             "inactive_flag",
             "last_screening_at",
             "onboarding_flag",
+            "doctor_has_logged_in",
+            "doctor_has_updated_special_instructions",
+            "doctor_has_added_clinic_staff",
+            "clinic_staff_has_logged_in",
+            "clinic_staff_forms_shared_count",
+            "forms_filled_count",
+            "red_tagged_patients_count",
+            "yellow_tagged_patients_count",
+            "registered_at",
             "first_seen_at",
             "latest_seen_at",
             "certification_status",

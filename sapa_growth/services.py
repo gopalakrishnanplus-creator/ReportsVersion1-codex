@@ -75,10 +75,25 @@ DETAIL_SPECS = {
         "date_field": "first_seen_at",
         "summary_date_field": "first_seen_at",
         "summary_unique_field": "doctor_key",
-        "title": "Enrolled Doctors",
+        "title": "Onboarded Doctors",
         "weekly": True,
         "predicate": lambda row: row.get("onboarding_flag") == "true",
-        "columns": ["doctor_display_name", "doctor_key", "city", "state", "field_rep_id", "first_seen_at"],
+        "columns": [
+            "campaign_label",
+            "doctor_display_name",
+            "city",
+            "state",
+            "field_rep_id",
+            "doctor_has_logged_in",
+            "doctor_has_updated_special_instructions",
+            "doctor_has_added_clinic_staff",
+            "clinic_staff_has_logged_in",
+            "clinic_staff_forms_shared_count",
+            "forms_filled_count",
+            "red_tagged_patients_count",
+            "yellow_tagged_patients_count",
+            "registered_at",
+        ],
     },
     "active_clinics": {
         "table": "rpt_doctor_status_current",
@@ -507,7 +522,7 @@ def _dashboard_tiles(summary: dict[str, Any], filters: dict[str, str | None]) ->
         "field_rep": [
             # Webinar registrations are temporarily hidden until campaign attribution is finalized.
             {
-                "title": "Enrolled Doctors",
+                "title": "Onboarded Doctors",
                 "value": summary["onboarded_doctors_weekly"],
                 "cumulative": summary["onboarded_doctors_cumulative"],
                 "delta": summary["onboarded_doctors_weekly"] - summary["onboarded_doctors_previous"],
@@ -1162,7 +1177,7 @@ def export_dashboard_xlsx(filters: dict[str, str | None], request: HttpRequest) 
     summary = context["summary"]
     for label, field in (
         ("Webinar Registrations (Weekly)", "webinar_registrations_weekly"),
-        ("Enrolled Doctors (Weekly)", "onboarded_doctors_weekly"),
+        ("Onboarded Doctors (Weekly)", "onboarded_doctors_weekly"),
         ("Active Clinics", "active_clinics_current"),
         ("Inactive Clinics", "inactive_clinics_current"),
         ("Total Screenings (Weekly)", "total_screenings_weekly"),
