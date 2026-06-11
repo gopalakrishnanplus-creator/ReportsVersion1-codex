@@ -419,7 +419,7 @@
     });
   });
 
-  const oldCollateralsBtn = document.getElementById('old-collaterals-btn');
+  const oldCollateralsBtns = document.querySelectorAll('[data-collateral-switch-trigger]');
   const oldCollateralsPanel = document.getElementById('old_collaterals_panel');
   const oldCollateralsClose = document.getElementById('old-collaterals-close');
 
@@ -432,12 +432,12 @@
     }
   }
 
-  if (oldCollateralsBtn) {
-    oldCollateralsBtn.addEventListener('click', (event) => {
+  oldCollateralsBtns.forEach((button) => {
+    button.addEventListener('click', (event) => {
       event.stopPropagation();
       setOldCollateralsPanel(true);
     });
-  }
+  });
   if (oldCollateralsClose) {
     oldCollateralsClose.addEventListener('click', (event) => {
       event.stopPropagation();

@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>In-Clinic Sharing Dashboard</title>
-  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260603v3">
+  <link rel="stylesheet" href="{% static 'dashboard/css/overview.css' %}?v=20260611v1">
 </head>
 <body>
   <div id="page-loading" class="page-loading hidden" aria-live="polite" aria-label="Loading page">
@@ -33,6 +33,9 @@
         <p class="label">Schedule Date</p>
         <p class="schedule">{{ schedule_text }}</p>
         <p class="footnote">Week 1 starts on the collateral schedule start date; each week is 7 days.</p>
+        {% if old_collaterals|length > 1 %}
+        <button type="button" class="ghost-btn collateral-switch-btn" data-collateral-switch-trigger>Switch Collateral</button>
+        {% endif %}
       </div>
       <button
         type="button"
@@ -44,6 +47,9 @@
     <section class="card controls-card">
       <form id="week-filter-form" method="get" class="week-filter-form">
         <label for="week-select">Week Filter</label>
+        {% if selected_collateral_id %}
+        <input type="hidden" name="collateral_id" value="{{ selected_collateral_id }}">
+        {% endif %}
         <div class="week-filter-row">
           <select id="week-select" name="week">
             <option value="" {% if not selected_week %}selected{% endif %}>All Weeks</option>
@@ -91,7 +97,7 @@
         <div class="panel-title-row">
           <h3>States Requiring Attention</h3>
           {% if state_attention|length > 3 %}
-          <a href="{% url 'campaign-state-list' selected_campaign %}{% if selected_week %}?week={{ selected_week }}{% endif %}" class="link-button">View All</a>
+          <a href="{% url 'campaign-state-list' selected_campaign %}{% if selected_week or selected_collateral_id %}?{% if selected_week %}week={{ selected_week }}{% endif %}{% if selected_week and selected_collateral_id %}&{% endif %}{% if selected_collateral_id %}collateral_id={{ selected_collateral_id }}{% endif %}{% endif %}" class="link-button">View All</a>
           {% endif %}
         </div>
         <div id="state-list" class="state-list">
@@ -174,7 +180,7 @@
             <a
               id="field-rep-excel-btn"
               class="ghost-btn"
-              href="{% url 'campaign-field-rep-insights-export' selected_campaign %}{% if selected_week %}?week={{ selected_week }}{% endif %}"
+              href="{% url 'campaign-field-rep-insights-export' selected_campaign %}{% if selected_week or selected_collateral_id %}?{% if selected_week %}week={{ selected_week }}{% endif %}{% if selected_week and selected_collateral_id %}&{% endif %}{% if selected_collateral_id %}collateral_id={{ selected_collateral_id }}{% endif %}{% endif %}"
               download
               data-server-download="true"
             >Download Excel</a>
@@ -185,7 +191,9 @@
               download
               data-server-download="true"
             >Download Unmapped Doctors</a>
-            <button type="button" id="old-collaterals-btn" class="ghost-btn">Old Collaterals</button>
+            {% if old_collaterals|length > 1 %}
+            <button type="button" class="ghost-btn" data-collateral-switch-trigger>Switch Collateral</button>
+            {% endif %}
             <button type="button" id="field-rep-close" class="ghost-btn">Hide Insights</button>
           </div>
         </div>
@@ -319,19 +327,20 @@
       <div class="card field-rep-dialog old-collateral-dialog">
         <div class="panel-title-row">
           <div>
-            <h3 id="old-collaterals-title">Old Collaterals</h3>
-            <p class="subtext">Select a previous collateral to open Field Representative Insights for that collateral only.</p>
+            <h3 id="old-collaterals-title">Switch Collateral</h3>
+            <p class="subtext">Select a current or previous collateral to refresh the full dashboard for that collateral.</p>
           </div>
           <button type="button" id="old-collaterals-close" class="ghost-btn">Close</button>
         </div>
         <div class="old-collateral-list">
           {% for collateral in old_collaterals %}
-            <a class="old-collateral-row" href="{{ collateral.url }}">
+            <a class="old-collateral-row{% if collateral.is_selected == 'true' %} is-selected{% endif %}" href="{{ collateral.url }}">
               <strong>{{ collateral.name }}</strong>
               <span>{{ collateral.schedule_text }}</span>
+              <em>{{ collateral.status_label }}</em>
             </a>
           {% empty %}
-            <p class="subtext">No previous collaterals are available for this campaign.</p>
+            <p class="subtext">No other collaterals are available for this campaign.</p>
           {% endfor %}
         </div>
       </div>

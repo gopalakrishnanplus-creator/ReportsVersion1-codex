@@ -23,6 +23,7 @@ h1{margin:0;font-size:40px;line-height:1}
 .schedule{margin:4px 0;font-weight:700}
 .footnote{margin:0;color:var(--muted);font-size:12px}
 .download-btn{display:inline-flex;align-items:center;justify-content:center;background:#111827;color:#fff;border:none;border-radius:8px;padding:10px 14px;font-weight:700;cursor:pointer;text-decoration:none}
+.collateral-switch-btn{margin-top:8px;width:100%}
 .controls-card{display:flex;justify-content:space-between;align-items:center}
 label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;font-weight:700}
 select{min-width:360px;padding:8px;border:1px solid var(--line);border-radius:6px}
@@ -74,9 +75,12 @@ body.modal-open{overflow:hidden}
 .link-button{border:0;background:transparent;color:#2563eb;font-size:13px;text-decoration:none;font-weight:700;cursor:pointer;padding:4px 0}
 .field-rep-panel-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 .old-collateral-list{display:grid;gap:10px;margin-top:4px}
-.old-collateral-row{display:flex;justify-content:space-between;gap:16px;align-items:center;padding:13px 14px;border:1px solid var(--line);border-radius:10px;background:#f8fbff;color:var(--text);text-decoration:none}
+.old-collateral-row{display:grid;grid-template-columns:minmax(180px,1fr) auto auto;gap:16px;align-items:center;padding:13px 14px;border:1px solid var(--line);border-radius:10px;background:#f8fbff;color:var(--text);text-decoration:none}
 .old-collateral-row:hover{border-color:#9bb9e8;background:#eef6ff}
 .old-collateral-row span{color:var(--muted);font-size:13px;text-align:right}
+.old-collateral-row em{justify-self:end;min-width:76px;padding:4px 9px;border-radius:999px;background:#eaf2ff;color:#1f3e74;font-style:normal;font-size:12px;font-weight:800;text-align:center}
+.old-collateral-row.is-selected{border-color:#6fa0e8;background:#eef6ff}
+.old-collateral-row.is-selected em{background:#1f3e74;color:#fff}
 .state-list{display:grid;gap:8px;margin-top:8px}
 .state-row{display:flex;justify-content:space-between;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:8px;background:#fafbfd}
 .state-list .state-row{margin-top:0}

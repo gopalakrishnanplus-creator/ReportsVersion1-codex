@@ -170,6 +170,20 @@ def _format_schedule_date(value: Any) -> str | None:
     return txt
 
 
+def _parse_schedule_date(value: Any):
+    if value is None:
+        return None
+    txt = str(value).strip()
+    if not txt:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(txt[:19], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def _normalize_campaign_id(value: Any) -> str:
     return str(value or "").strip()
 
@@ -2982,34 +2996,58 @@ def _collateral_display_name(row: dict[str, Any], fallback: str = "Collateral") 
     return _clean_display_text(row.get("collateral_title")) or _clean_display_text(row.get("campaign_name")) or fallback
 
 
+def _collateral_display_start(row: dict[str, Any]) -> Any:
+    return row.get("campaign_start_date") or row.get("schedule_start_date")
+
+
+def _collateral_display_end(row: dict[str, Any]) -> Any:
+    return row.get("campaign_end_date") or row.get("schedule_end_date")
+
+
+def _collateral_status_label(row: dict[str, Any]) -> str:
+    start = _parse_schedule_date(_collateral_display_start(row))
+    end = _parse_schedule_date(_collateral_display_end(row))
+    today = datetime.now().date()
+    if start and start > today:
+        return "Upcoming"
+    if end and end < today:
+        return "Past"
+    return "Current"
+
+
 def _format_collateral_options(
     schedule_rows: list[dict[str, Any]],
     selected_campaign: str,
     current_collateral_id: str | None,
+    selected_week: int | None = None,
 ) -> list[dict[str, str]]:
     options: list[dict[str, str]] = []
     seen: set[str] = set()
     for row in schedule_rows:
         collateral_id = str(row.get("collateral_id") or "").strip()
-        if not collateral_id or collateral_id in seen or collateral_id == str(current_collateral_id or ""):
+        if not collateral_id or collateral_id in seen:
             continue
-        if _to_int(row.get("schedule_rank"), 3) == 2:
+        status_label = _collateral_status_label(row)
+        if status_label == "Upcoming":
             continue
         seen.add(collateral_id)
-        start = _format_schedule_date(row.get("schedule_start_date"))
-        end = _format_schedule_date(row.get("schedule_end_date"))
+        start = _format_schedule_date(_collateral_display_start(row))
+        end = _format_schedule_date(_collateral_display_end(row))
+        params = {"collateral_id": collateral_id}
+        if selected_week:
+            params["week"] = str(selected_week)
         options.append(
             {
                 "collateral_id": collateral_id,
                 "name": _collateral_display_name(row, f"Collateral {collateral_id}"),
                 "schedule_text": f"{start} - {end}" if start and end else "Schedule unavailable",
-                "url": reverse(
-                    "campaign-field-rep-insights-collateral",
-                    kwargs={"brand_campaign_id": selected_campaign, "collateral_id": collateral_id},
-                ),
+                "url": f"{reverse('campaign-overview-specific', kwargs={'brand_campaign_id': selected_campaign})}?{urlencode(params)}",
+                "status_label": "Selected" if collateral_id == str(current_collateral_id or "") else status_label,
+                "is_selected": "true" if collateral_id == str(current_collateral_id or "") else "false",
             }
         )
-    return sorted(options, key=lambda item: item["name"].lower())
+    status_order = {"Selected": -1, "Current": 0, "Past": 1}
+    return sorted(options, key=lambda item: (status_order.get(item["status_label"], 9), item["name"].lower()))
 
 
 def _has_inclinic_campaign_access(request: HttpRequest, normalized_campaign_id: str) -> bool:
@@ -3584,6 +3622,7 @@ def send_access_email_view(request: HttpRequest, brand_campaign_id: str) -> Http
 def _build_report_context(
     selected_campaign: str,
     week_filter: int | None = None,
+    selected_collateral_id: str | None = None,
     include_field_rep_doctor_details: bool = True,
     include_state_attention: bool = True,
 ) -> dict[str, Any]:
@@ -3621,6 +3660,7 @@ def _build_report_context(
     collateral_cards = {"current": {}, "best": {}, "benchmark": {}}
     collateral_comparison_ids: set[str] = set()
     show_collateral_comparison_extras = False
+    requested_collateral_id = str(selected_collateral_id or "").strip()
 
     context_metrics = {
         "campaign_health": 0.0,
@@ -3676,24 +3716,30 @@ def _build_report_context(
         schedule_start_raw = None
         schedule_end_raw = None
         if schedule_rows:
-            primary_schedule = schedule_rows[0]
+            primary_schedule = next(
+                (row for row in schedule_rows if str(row.get("collateral_id") or "").strip() == requested_collateral_id),
+                schedule_rows[0],
+            )
             current_collateral_id = str(primary_schedule.get("collateral_id") or "").strip() or None
             primary_rank = primary_schedule.get("schedule_rank")
-            schedule_start_raw = primary_schedule.get("schedule_start_date")
-            schedule_end_raw = primary_schedule.get("schedule_end_date")
-            current_collateral_ids = _unique_non_empty(
-                [
-                    row.get("collateral_id")
-                    for row in schedule_rows
-                    if row.get("schedule_rank") == primary_rank
-                    and row.get("schedule_start_date") == schedule_start_raw
-                    and row.get("schedule_end_date") == schedule_end_raw
-                ]
-            )
-            current_field_rep_collateral_ids = current_collateral_ids
-            old_collaterals = _format_collateral_options(schedule_rows, requested_campaign, current_collateral_id)
             display_start_raw = primary_schedule.get("campaign_start_date") or primary_schedule.get("schedule_start_date")
             display_end_raw = primary_schedule.get("campaign_end_date") or primary_schedule.get("schedule_end_date")
+            schedule_start_raw = display_start_raw
+            schedule_end_raw = display_end_raw
+            if requested_collateral_id and current_collateral_id:
+                current_collateral_ids = [current_collateral_id]
+            else:
+                current_collateral_ids = _unique_non_empty(
+                    [
+                        row.get("collateral_id")
+                        for row in schedule_rows
+                        if row.get("schedule_rank") == primary_rank
+                        and row.get("schedule_start_date") == primary_schedule.get("schedule_start_date")
+                        and row.get("schedule_end_date") == primary_schedule.get("schedule_end_date")
+                    ]
+                )
+            current_field_rep_collateral_ids = current_collateral_ids
+            old_collaterals = _format_collateral_options(schedule_rows, requested_campaign, current_collateral_id, week_filter)
             start = _format_schedule_date(display_start_raw)
             end = _format_schedule_date(display_end_raw)
             if start and end:
@@ -4203,7 +4249,12 @@ def _build_report_context(
         "field_rep_summary": field_rep_summary,
         "old_collaterals": old_collaterals,
         "current_field_rep_collateral_id": current_field_rep_collateral_ids[0] if current_field_rep_collateral_ids else "",
-        "field_rep_detail_url": _field_rep_detail_url(selected_campaign, week_filter),
+        "selected_collateral_id": current_field_rep_collateral_ids[0] if requested_collateral_id and current_field_rep_collateral_ids else "",
+        "field_rep_detail_url": _field_rep_detail_url(
+            selected_campaign,
+            week_filter,
+            current_field_rep_collateral_ids[0] if requested_collateral_id and current_field_rep_collateral_ids else None,
+        ),
         "collateral_cards": collateral_cards,
         "show_collateral_comparison_extras": show_collateral_comparison_extras,
         "trend_labels": trend_labels,
@@ -4263,8 +4314,8 @@ def _build_collateral_field_rep_context(
         selected_row = next((row for row in schedule_rows if str(row.get("collateral_id") or "").strip() == selected_collateral_id), {})
         if selected_row:
             context["collateral_name"] = _collateral_display_name(selected_row, context["collateral_name"])
-            start = _format_schedule_date(selected_row.get("schedule_start_date"))
-            end = _format_schedule_date(selected_row.get("schedule_end_date"))
+            start = _format_schedule_date(_collateral_display_start(selected_row))
+            end = _format_schedule_date(_collateral_display_end(selected_row))
             if start and end:
                 context["schedule_text"] = f"{start} - {end}"
             context["brand_name"] = (
@@ -4304,8 +4355,14 @@ def campaign_overview(request: HttpRequest, brand_campaign_id: str | None = None
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
+    collateral_id = str(request.GET.get("collateral_id") or "").strip() or None
 
-    context = _build_report_context(normalized_campaign_id, week_filter, include_field_rep_doctor_details=False)
+    context = _build_report_context(
+        normalized_campaign_id,
+        week_filter,
+        selected_collateral_id=collateral_id,
+        include_field_rep_doctor_details=False,
+    )
     return render(request, "dashboard/overview.html", context)
 
 
@@ -4318,7 +4375,7 @@ def field_rep_doctor_details(request: HttpRequest, brand_campaign_id: str):
     week_filter = _to_int(week) if week else None
     rep_id = request.GET.get("rep_id", "")
     metric_key = request.GET.get("metric", "assigned")
-    collateral_id = str(request.GET.get("collateral_id") or "").strip()
+    collateral_id = str(request.GET.get("collateral_id") or "").strip() or None
     if collateral_id:
         context = _build_collateral_field_rep_context(
             normalized_campaign_id,
@@ -4326,12 +4383,13 @@ def field_rep_doctor_details(request: HttpRequest, brand_campaign_id: str):
             include_field_rep_doctor_details=True,
         )
     else:
-        context = _build_report_context(
-            normalized_campaign_id,
-            week_filter,
-            include_field_rep_doctor_details=True,
-            include_state_attention=False,
-        )
+        context_kwargs = {
+            "include_field_rep_doctor_details": True,
+            "include_state_attention": False,
+        }
+        if collateral_id:
+            context_kwargs["selected_collateral_id"] = collateral_id
+        context = _build_report_context(normalized_campaign_id, week_filter, **context_kwargs)
     payload, status = _field_rep_doctor_detail_payload(context, rep_id, metric_key)
     return JsonResponse(payload, status=status)
 
@@ -4343,9 +4401,11 @@ def export_report(request: HttpRequest, brand_campaign_id: str):
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
+    collateral_id = str(request.GET.get("collateral_id") or "").strip() or None
     context = _build_report_context(
         normalized_campaign_id,
         week_filter,
+        selected_collateral_id=collateral_id,
         include_field_rep_doctor_details=False,
         include_state_attention=False,
     )
@@ -4361,9 +4421,11 @@ def export_field_rep_insights(request: HttpRequest, brand_campaign_id: str):
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
+    collateral_id = str(request.GET.get("collateral_id") or "").strip() or None
     context = _build_report_context(
         normalized_campaign_id,
         week_filter,
+        selected_collateral_id=collateral_id,
         include_state_attention=False,
     )
     return _field_rep_insights_excel_response(context)
@@ -4376,9 +4438,11 @@ def export_unmapped_doctors(request: HttpRequest, brand_campaign_id: str):
 
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
+    collateral_id = str(request.GET.get("collateral_id") or "").strip() or None
     context = _build_report_context(
         normalized_campaign_id,
         week_filter,
+        selected_collateral_id=collateral_id,
         include_state_attention=False,
     )
     return _manual_mapping_excel_response(context)
@@ -4415,5 +4479,11 @@ def campaign_state_list(request: HttpRequest, brand_campaign_id: str):
         return redirect("campaign-login", brand_campaign_id=normalized_campaign_id)
     week = request.GET.get("week")
     week_filter = _to_int(week) if week else None
-    context = _build_report_context(normalized_campaign_id, week_filter, include_field_rep_doctor_details=False)
+    collateral_id = str(request.GET.get("collateral_id") or "").strip() or None
+    context = _build_report_context(
+        normalized_campaign_id,
+        week_filter,
+        selected_collateral_id=collateral_id,
+        include_field_rep_doctor_details=False,
+    )
     return render(request, "dashboard/state_list.html", context)
