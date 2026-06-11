@@ -341,6 +341,8 @@ def _publish_campaign_schemas(
             if rows:
                 columns = list(rows[0].keys())
                 replace_table(schema, table, columns, rows)
+            elif columns:
+                replace_table(schema, table, columns, [])
             else:
                 with connection.cursor() as cursor:
                     cursor.execute(f"DROP TABLE IF EXISTS {qident(schema)}.{qident(table)}")

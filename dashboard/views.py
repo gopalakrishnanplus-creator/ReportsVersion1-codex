@@ -197,6 +197,7 @@ INDIAN_STATE_DISPLAY_BY_KEY = {
     "damananddiu": "Dadra and Nagar Haveli and Daman and Diu",
     "delhi": "Delhi",
     "delhincr": "Delhi",
+    "newdelhi": "Delhi",
     "nctdelhi": "Delhi",
     "nationalcapitalterritoryofdelhi": "Delhi",
     "goa": "Goa",
@@ -596,6 +597,8 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
                     END,
                     cs.campaign_end_date
                 ) AS schedule_end_date,
+                cs.campaign_start_date,
+                cs.campaign_end_date,
                 sc.collateral_title,
                 COALESCE(
                     NULLIF(btrim(cs.brand_name), ''),
@@ -3689,8 +3692,10 @@ def _build_report_context(
             )
             current_field_rep_collateral_ids = current_collateral_ids
             old_collaterals = _format_collateral_options(schedule_rows, requested_campaign, current_collateral_id)
-            start = _format_schedule_date(primary_schedule.get("schedule_start_date"))
-            end = _format_schedule_date(primary_schedule.get("schedule_end_date"))
+            display_start_raw = primary_schedule.get("campaign_start_date") or primary_schedule.get("schedule_start_date")
+            display_end_raw = primary_schedule.get("campaign_end_date") or primary_schedule.get("schedule_end_date")
+            start = _format_schedule_date(display_start_raw)
+            end = _format_schedule_date(display_end_raw)
             if start and end:
                 schedule_text = f"{start} - {end}"
             collateral_name = primary_schedule.get("collateral_title") or collateral_name

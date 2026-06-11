@@ -111,6 +111,14 @@ DETAIL_SPECS = {
         "predicate": lambda row: row.get("inactive_flag") == "true",
         "columns": ["doctor_display_name", "city", "state", "field_rep_id", "screenings_last_15d", "last_screening_at"],
     },
+    "doctor_logins": {
+        "table": "rpt_doctor_status_current",
+        "title": "Doctor Logins",
+        "weekly": False,
+        "summary_mode": "current_doctor_login",
+        "predicate": lambda row: clean_text(row.get("doctor_has_logged_in")).lower() == "yes",
+        "columns": ["doctor_display_name", "city", "state", "field_rep_id", "doctor_has_logged_in"],
+    },
     "certified_clinics": {
         "table": "rpt_certified_clinics",
         "title": "Certified Clinics",
@@ -327,9 +335,12 @@ def _campaign_route_base(filters: dict[str, str | None]) -> str:
     return "/sapa-growth/"
 
 
-def _metric_href(metric: str, filters: dict[str, str | None]) -> str:
+def _metric_href(metric: str, filters: dict[str, str | None], extra_query: dict[str, str] | None = None) -> str:
     base = _campaign_route_base(filters)
-    query_string = current_filters_query(filters, include_campaign=not clean_text(filters.get("campaign_key")))
+    query_parts = [current_filters_query(filters, include_campaign=not clean_text(filters.get("campaign_key")))]
+    if extra_query:
+        query_parts.append(urlencode({key: value for key, value in extra_query.items() if value}))
+    query_string = "&".join(part for part in query_parts if part)
     return f"{base}details/{metric}/" + (f"?{query_string}" if query_string else "")
 
 
@@ -560,6 +571,15 @@ def _dashboard_tiles(summary: dict[str, Any], filters: dict[str, str | None]) ->
                 "supported": True,
             },
             {
+                "title": "Doctor Logins",
+                "value": summary.get("doctor_logins_current", 0),
+                "cumulative": summary.get("doctor_logins_current", 0),
+                "delta": 0,
+                "href": _metric_href("doctor_logins", filters, {"window": "cumulative"}),
+                "theme": "teal",
+                "supported": True,
+            },
+            {
                 "title": "Total Screenings",
                 "value": summary["total_screenings_weekly"],
                 "cumulative": summary["total_screenings_cumulative"],
@@ -624,11 +644,59 @@ def _course_cards(course_rows: list[dict[str, Any]], filters: dict[str, str | No
                     "label": status,
                     "count": summary[status],
                     "ratio": round((summary[status] / total) * 100, 2) if total else 0,
-                    "href": _metric_href(metric_key, filters),
+                    "href": _metric_href(metric_key, filters, {"window": "cumulative"}),
                 }
             )
         cards.append({"title": title, "rows": rows, "total": total})
     return cards
+
+
+def _doctor_login_count(doctor_rows: list[dict[str, Any]]) -> int:
+    return len(
+        {
+            clean_text(row.get("doctor_key"))
+            for row in doctor_rows
+            if clean_text(row.get("doctor_key")) and clean_text(row.get("doctor_has_logged_in")).lower() == "yes"
+        }
+    )
+
+
+def _state_label(row: dict[str, Any]) -> str:
+    return clean_text(row.get("state")) or "Unknown"
+
+
+def _state_performance_rows(
+    doctor_rows: list[dict[str, Any]],
+    screening_rows: list[dict[str, Any]],
+    filters: dict[str, str | None],
+) -> list[dict[str, Any]]:
+    filtered_doctors = filter_rows(doctor_rows, filters)
+    filtered_screenings = filter_rows(screening_rows, filters)
+    onboarded_by_state: dict[str, set[str]] = {}
+    screenings_by_state: dict[str, int] = {}
+    for row in filtered_doctors:
+        if clean_text(row.get("onboarding_flag")) != "true":
+            continue
+        state = _state_label(row)
+        doctor_key = clean_text(row.get("doctor_key"))
+        if doctor_key:
+            onboarded_by_state.setdefault(state, set()).add(doctor_key)
+    for row in filtered_screenings:
+        state = _state_label(row)
+        screenings_by_state[state] = screenings_by_state.get(state, 0) + 1
+    states = sorted(set(onboarded_by_state) | set(screenings_by_state), key=lambda value: (value == "Unknown", value.lower()))
+    max_onboarded = max((len(onboarded_by_state.get(state, set())) for state in states), default=0) or 1
+    max_screenings = max((screenings_by_state.get(state, 0) for state in states), default=0) or 1
+    return [
+        {
+            "state": state,
+            "onboarded_doctors": len(onboarded_by_state.get(state, set())),
+            "screenings": screenings_by_state.get(state, 0),
+            "onboarded_pct": round((len(onboarded_by_state.get(state, set())) / max_onboarded) * 100, 2),
+            "screenings_pct": round((screenings_by_state.get(state, 0) / max_screenings) * 100, 2),
+        }
+        for state in states
+    ]
 
 
 def filter_options(scope: Any = None) -> dict[str, list[dict[str, Any]]]:
@@ -741,7 +809,6 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
     reminder_rows = _gold_rows("rpt_reminder_sent_detail", campaign_key)
     webinar_rows = _gold_rows("rpt_webinar_registration_detail", campaign_key)
     course_rows = _gold_rows("rpt_course_detail", campaign_key)
-    video_rows = _gold_rows("rpt_video_view_detail", campaign_key)
     certified_rows = _derived_certified_rows(filters, doctor_rows, course_rows)
 
     if summary is None:
@@ -766,9 +833,8 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
 
     filtered_course_rows = filter_rows(course_rows, filters)
     filtered_redflag_rows = _enrich_red_flag_rows(filter_rows(raw_redflag_rows, filters))
-    filtered_video_rows = _enrich_video_rows(filter_rows(video_rows, filters))
-    patient_videos = [row for row in build_video_rankings(filtered_video_rows) if clean_text(row.get("audience")) == "patient"]
-    doctor_videos = [row for row in build_video_rankings(filtered_video_rows) if clean_text(row.get("audience")) == "doctor"]
+    filtered_doctor_rows = filter_rows(doctor_rows, filters)
+    summary["doctor_logins_current"] = _doctor_login_count(filtered_doctor_rows)
     certified_supported = True
     filters_query = current_filters_query(filters, include_campaign=not clean_text(filters.get("campaign_key")))
     campaign = selected_campaign or _default_campaign()
@@ -783,8 +849,7 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
         "dashboard_export_href": f"{_campaign_route_base(filters)}export/dashboard.pdf" + (f"?{filters_query}" if filters_query else ""),
         "tiles": _dashboard_tiles(summary, filters),
         "course_cards": _course_cards(filtered_course_rows, filters),
-        "patient_videos": patient_videos[:5],
-        "doctor_videos": doctor_videos[:5],
+        "state_performance": _state_performance_rows(doctor_rows, screening_rows, filters),
         "red_flag_rankings": build_red_flag_rankings(filtered_redflag_rows),
         "filters": filters,
         "filters_query": filters_query,
@@ -827,8 +892,10 @@ def _count_window(
     as_of: date,
     unique_field: str | None = None,
     predicate: Any = None,
+    include_undated_cumulative: bool = False,
 ) -> dict[str, int]:
     def _window(start: date | None = None, end: date | None = None) -> int:
+        bounded_window = start is not None or end is not None
         if unique_field:
             keys: set[str] = set()
             for row in rows:
@@ -836,7 +903,8 @@ def _count_window(
                     continue
                 row_date = parse_date(row.get(date_field))
                 if row_date is None:
-                    continue
+                    if bounded_window or not include_undated_cumulative:
+                        continue
                 if start and row_date < start:
                     continue
                 if end and row_date > end:
@@ -851,7 +919,8 @@ def _count_window(
                 continue
             row_date = parse_date(row.get(date_field))
             if row_date is None:
-                continue
+                if bounded_window or not include_undated_cumulative:
+                    continue
             if start and row_date < start:
                 continue
             if end and row_date > end:
@@ -877,15 +946,24 @@ def _window_bounds(window_key: str, as_of: date) -> tuple[date | None, date | No
     return as_of - timedelta(days=int(days)), as_of
 
 
-def _filter_rows_by_detail_window(rows: list[dict[str, Any]], date_field: str | None, as_of: date, window_key: str) -> list[dict[str, Any]]:
+def _filter_rows_by_detail_window(
+    rows: list[dict[str, Any]],
+    date_field: str | None,
+    as_of: date,
+    window_key: str,
+    *,
+    include_undated_cumulative: bool = False,
+) -> list[dict[str, Any]]:
     if not date_field:
         return rows
     start, end = _window_bounds(window_key, as_of)
+    bounded_window = start is not None or end is not None
     filtered = []
     for row in rows:
         row_date = parse_date(row.get(date_field))
         if row_date is None:
-            continue
+            if bounded_window or not include_undated_cumulative:
+                continue
         if start and row_date < start:
             continue
         if end and row_date > end:
@@ -977,13 +1055,18 @@ def _metric_summary_cards(metric: str, filters: dict[str, str | None], refresh: 
         counts = _status_history_window_counts(filters, predicate=lambda row: row.get("is_inactive") == "true", as_of=as_of)
     elif summary_mode == "status_history_certified":
         counts = _certified_window_counts(filters, as_of)
+    elif summary_mode == "current_doctor_login":
+        _, rows, _ = _base_rows_for_metric(metric, filters)
+        counts = {"Last 24 Hours": 0, "Last Week": 0, "Last Month": 0, "Cumulative": _doctor_login_count(rows)}
     else:
         _, rows, _ = _base_rows_for_metric(metric, filters)
+        is_course_metric = clean_text(metric).startswith("doctor_course_") or clean_text(metric).startswith("paramedic_course_")
         counts = _count_window(
             rows,
             date_field=str(spec.get("summary_date_field") or spec.get("date_field") or ""),
             as_of=as_of,
             unique_field=spec.get("summary_unique_field"),
+            include_undated_cumulative=is_course_metric,
         )
     return [
         {
@@ -1035,7 +1118,14 @@ def _rows_for_metric(metric: str, filters: dict[str, str | None], selected_windo
     elif summary_mode == "status_history_inactive" and selected_window:
         rows = _status_history_rows_for_window(filters, predicate=lambda row: row.get("is_inactive") == "true", as_of=as_of, window_key=selected_window)
     elif selected_window:
-        rows = _filter_rows_by_detail_window(rows, spec.get("summary_date_field") or spec.get("date_field"), as_of, selected_window)
+        is_course_metric = clean_text(metric).startswith("doctor_course_") or clean_text(metric).startswith("paramedic_course_")
+        rows = _filter_rows_by_detail_window(
+            rows,
+            spec.get("summary_date_field") or spec.get("date_field"),
+            as_of,
+            selected_window,
+            include_undated_cumulative=is_course_metric,
+        )
     elif spec.get("weekly"):
         weekly_start = as_of - timedelta(days=6)
         date_field = spec.get("date_field")

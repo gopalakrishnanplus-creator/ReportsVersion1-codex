@@ -402,6 +402,69 @@ select:focus {
   color: var(--ink);
 }
 
+.state-performance-card {
+  padding: 16px;
+  background: rgba(251, 252, 248, 0.96);
+  border: 1px solid rgba(70, 98, 87, 0.16);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+
+.state-performance-head,
+.state-performance-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.1fr) minmax(180px, 1fr) minmax(180px, 1fr);
+  gap: 14px;
+  align-items: center;
+}
+
+.state-performance-head {
+  padding-bottom: 10px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid rgba(70, 98, 87, 0.14);
+}
+
+.state-performance-row {
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(70, 98, 87, 0.1);
+}
+
+.state-performance-row:last-child {
+  border-bottom: 0;
+}
+
+.state-bar-cell {
+  display: grid;
+  grid-template-columns: 44px minmax(80px, 1fr);
+  gap: 10px;
+  align-items: center;
+  font-weight: 800;
+}
+
+.state-bar {
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(77, 115, 100, 0.12);
+}
+
+.state-bar__fill {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.state-bar__fill--doctors {
+  background: linear-gradient(90deg, var(--mint), var(--mint-dark));
+}
+
+.state-bar__fill--screenings {
+  background: linear-gradient(90deg, var(--lime), var(--lime-dark));
+}
+
 .course-card {
   padding: 16px;
 }
@@ -606,6 +669,12 @@ select:focus {
     grid-template-columns: 1fr;
   }
   .mini-list-row {
+    grid-template-columns: 1fr;
+  }
+  .state-performance-head {
+    display: none;
+  }
+  .state-performance-row {
     grid-template-columns: 1fr;
   }
 }

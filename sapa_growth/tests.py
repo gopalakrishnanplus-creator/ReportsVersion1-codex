@@ -452,6 +452,51 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual([card["selected"] for card in context["summary_cards"]], [False, True, False, False])
         self.assertIn("window=last_week", context["export_href"])
 
+    def test_course_detail_cumulative_includes_undated_snapshot_rows(self):
+        with patch("sapa_growth.services._gold_rows") as gold_rows_mock, patch(
+            "sapa_growth.services._latest_refresh",
+            return_value={"as_of_date": "2026-04-27", "published_at": "2026-04-27T10:00:00Z"},
+        ):
+            def fake_gold_rows(table: str, scope=None):
+                if table == "rpt_course_detail":
+                    return [
+                        {
+                            "campaign_key": "growth-clinic",
+                            "course_audience": "paramedic",
+                            "dashboard_status": "Pending",
+                            "doctor_key": "DOC-1",
+                            "enrolled_at": "",
+                        }
+                    ]
+                return []
+
+            gold_rows_mock.side_effect = fake_gold_rows
+            context = detail_context(
+                "paramedic_course_pending",
+                {"campaign_key": "growth-clinic", "state": None, "field_rep_id": None, "doctor_key": None},
+                selected_window="cumulative",
+            )
+
+        self.assertEqual([card["count"] for card in context["summary_cards"]], [0, 0, 0, 1])
+        self.assertEqual(context["row_count"], 1)
+        self.assertEqual(context["rows"][0]["doctor_key"], "DOC-1")
+
+    def test_course_card_links_open_cumulative_detail(self):
+        cards = sapa_services._course_cards(
+            [
+                {
+                    "campaign_key": "growth-clinic",
+                    "course_audience": "doctor",
+                    "dashboard_status": "Completed",
+                }
+            ],
+            {"campaign_key": "growth-clinic", "state": None, "field_rep_id": None, "doctor_key": None},
+        )
+
+        completed_row = next(row for row in cards[0]["rows"] if row["label"] == "Completed")
+        self.assertIn("details/doctor_course_completed/", completed_row["href"])
+        self.assertIn("window=cumulative", completed_row["href"])
+
     def test_onboarded_doctors_detail_uses_business_columns(self):
         columns = sapa_services.DETAIL_SPECS["onboarded_doctors"]["columns"]
 
@@ -475,6 +520,60 @@ class SapaGrowthLogicTests(SimpleTestCase):
             "registered_at",
         ]:
             self.assertIn(column, columns)
+
+    def test_dashboard_context_adds_doctor_login_tile_and_state_performance(self):
+        filters = {"campaign_key": "growth-clinic", "state": None, "field_rep_id": None, "doctor_key": None}
+
+        with patch(
+            "sapa_growth.services.filter_options",
+            return_value={
+                "campaigns": [{"underlying_key": "growth-clinic", "display_label": "SAPA Growth Clinic Program"}],
+                "states": [],
+                "field_reps": [],
+                "doctors": [],
+                "cities": [],
+            },
+        ), patch("sapa_growth.services._latest_refresh", return_value={"as_of_date": "2026-04-27", "published_at": "2026-04-27T10:00:00Z"}), patch(
+            "sapa_growth.services._gold_rows"
+        ) as gold_rows_mock:
+            def fake_gold_rows(table: str, scope=None):
+                if table == "dashboard_summary_snapshot":
+                    return [{"as_of_date": "2026-04-27", "published_at": "2026-04-27T10:00:00Z", "certified_clinics_supported": "true"}]
+                if table == "rpt_doctor_status_current":
+                    return [
+                        {
+                            "campaign_key": "growth-clinic",
+                            "doctor_key": "DOC-1",
+                            "state": "Delhi",
+                            "onboarding_flag": "true",
+                            "doctor_has_logged_in": "Yes",
+                        },
+                        {
+                            "campaign_key": "growth-clinic",
+                            "doctor_key": "DOC-2",
+                            "state": "Maharashtra",
+                            "onboarding_flag": "true",
+                            "doctor_has_logged_in": "No",
+                        },
+                    ]
+                if table == "rpt_screening_detail":
+                    return [
+                        {"campaign_key": "growth-clinic", "doctor_key": "DOC-1", "state": "Delhi"},
+                        {"campaign_key": "growth-clinic", "doctor_key": "DOC-1", "state": "Delhi"},
+                        {"campaign_key": "growth-clinic", "doctor_key": "DOC-2", "state": "Maharashtra"},
+                    ]
+                return []
+
+            gold_rows_mock.side_effect = fake_gold_rows
+            context = dashboard_context(filters)
+
+        doctor_login_tile = next(tile for tile in context["tiles"]["clinic"] if tile["title"] == "Doctor Logins")
+        self.assertEqual(doctor_login_tile["value"], 1)
+        self.assertIn("window=cumulative", doctor_login_tile["href"])
+        self.assertEqual(
+            [(row["state"], row["onboarded_doctors"], row["screenings"]) for row in context["state_performance"]],
+            [("Delhi", 1, 2), ("Maharashtra", 1, 1)],
+        )
 
     def test_campaign_rows_are_read_from_registered_campaign_schema(self):
         with patch(
