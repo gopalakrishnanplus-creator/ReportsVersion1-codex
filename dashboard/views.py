@@ -2997,11 +2997,11 @@ def _collateral_display_name(row: dict[str, Any], fallback: str = "Collateral") 
 
 
 def _collateral_display_start(row: dict[str, Any]) -> Any:
-    return row.get("campaign_start_date") or row.get("schedule_start_date")
+    return row.get("schedule_start_date") or row.get("campaign_start_date")
 
 
 def _collateral_display_end(row: dict[str, Any]) -> Any:
-    return row.get("campaign_end_date") or row.get("schedule_end_date")
+    return row.get("schedule_end_date") or row.get("campaign_end_date")
 
 
 def _collateral_status_label(row: dict[str, Any]) -> str:
@@ -3022,24 +3022,30 @@ def _format_collateral_options(
     selected_week: int | None = None,
 ) -> list[dict[str, str]]:
     options: list[dict[str, str]] = []
-    seen: set[str] = set()
+    seen_ids: set[str] = set()
+    seen_display_keys: set[tuple[str, str, str]] = set()
     for row in schedule_rows:
         collateral_id = str(row.get("collateral_id") or "").strip()
-        if not collateral_id or collateral_id in seen:
+        if not collateral_id or collateral_id in seen_ids:
             continue
         status_label = _collateral_status_label(row)
         if status_label == "Upcoming":
             continue
-        seen.add(collateral_id)
+        name = _collateral_display_name(row, f"Collateral {collateral_id}")
         start = _format_schedule_date(_collateral_display_start(row))
         end = _format_schedule_date(_collateral_display_end(row))
+        display_key = (name.casefold(), start, end)
+        if display_key in seen_display_keys:
+            continue
+        seen_ids.add(collateral_id)
+        seen_display_keys.add(display_key)
         params = {"collateral_id": collateral_id}
         if selected_week:
             params["week"] = str(selected_week)
         options.append(
             {
                 "collateral_id": collateral_id,
-                "name": _collateral_display_name(row, f"Collateral {collateral_id}"),
+                "name": name,
                 "schedule_text": f"{start} - {end}" if start and end else "Schedule unavailable",
                 "url": f"{reverse('campaign-overview-specific', kwargs={'brand_campaign_id': selected_campaign})}?{urlencode(params)}",
                 "status_label": "Selected" if collateral_id == str(current_collateral_id or "") else status_label,
@@ -3722,8 +3728,8 @@ def _build_report_context(
             )
             current_collateral_id = str(primary_schedule.get("collateral_id") or "").strip() or None
             primary_rank = primary_schedule.get("schedule_rank")
-            display_start_raw = primary_schedule.get("campaign_start_date") or primary_schedule.get("schedule_start_date")
-            display_end_raw = primary_schedule.get("campaign_end_date") or primary_schedule.get("schedule_end_date")
+            display_start_raw = _collateral_display_start(primary_schedule)
+            display_end_raw = _collateral_display_end(primary_schedule)
             schedule_start_raw = display_start_raw
             schedule_end_raw = display_end_raw
             if requested_collateral_id and current_collateral_id:

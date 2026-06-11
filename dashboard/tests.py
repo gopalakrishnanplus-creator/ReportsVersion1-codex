@@ -74,7 +74,7 @@ class DashboardRoutingTests(SimpleTestCase):
     def test_new_delhi_displays_as_delhi(self):
         self.assertEqual(dashboard.views._display_state_name("New Delhi"), "Delhi")
 
-    def test_collateral_options_link_to_main_dashboard_and_use_campaign_dates(self):
+    def test_collateral_options_link_to_main_dashboard_and_use_collateral_schedule_dates(self):
         rows = [
             {
                 "collateral_id": "11",
@@ -98,9 +98,39 @@ class DashboardRoutingTests(SimpleTestCase):
 
         selected = options[0]
         self.assertEqual(selected["name"], "MINI CME POST IMMUNE LAG")
-        self.assertEqual(selected["schedule_text"], "May 10, 2026 - Jun 15, 2099")
+        self.assertEqual(selected["schedule_text"], "May 10, 2026 - Jun 10, 2026")
         self.assertEqual(selected["url"], "/campaign/demo/?collateral_id=11&week=2")
         self.assertEqual(selected["status_label"], "Selected")
+
+    def test_collateral_options_dedupe_exact_duplicate_title_and_schedule(self):
+        rows = [
+            {
+                "collateral_id": "9",
+                "collateral_title": "Mini CME Post-COVID Immune Lag in Children",
+                "schedule_start_date": "2026-04-08",
+                "schedule_end_date": "2026-05-09",
+            },
+            {
+                "collateral_id": "10",
+                "collateral_title": "Mini CME Post-COVID Immune Lag in Children",
+                "schedule_start_date": "2026-04-08",
+                "schedule_end_date": "2026-05-09",
+            },
+            {
+                "collateral_id": "13",
+                "collateral_title": "Mini CME Post-COVID Immune Lag in Children",
+                "schedule_start_date": "2026-05-10",
+                "schedule_end_date": "2026-06-10",
+            },
+        ]
+
+        options = dashboard.views._format_collateral_options(rows, "demo", "13")
+
+        self.assertEqual(len(options), 2)
+        self.assertEqual(
+            [option["schedule_text"] for option in options],
+            ["May 10, 2026 - Jun 10, 2026", "Apr 08, 2026 - May 09, 2026"],
+        )
 
     def test_internal_data_admin_schema_filter(self):
         self.assertTrue(_is_relevant_schema("bronze"))
