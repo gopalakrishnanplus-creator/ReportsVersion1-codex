@@ -132,6 +132,67 @@ class DashboardRoutingTests(SimpleTestCase):
             ["May 10, 2026 - Jun 10, 2026", "Apr 08, 2026 - May 09, 2026"],
         )
 
+    def test_campaign_collateral_merge_prefers_live_operational_update(self):
+        v2_rows = [
+            {
+                "campaign_collateral_uuid": "helper-uuid",
+                "old_id": "501",
+                "legacy_campaign_id": "campaign-demo",
+                "old_campaign_id": "77",
+                "old_collateral_id": "13",
+                "old_start_date": "2026-05-10",
+                "old_end_date": "2026-06-10",
+                "old_updated_at": "2026-06-01 10:00:00",
+            }
+        ]
+        legacy_rows = [
+            {
+                "id": "501",
+                "campaign_id": "77",
+                "collateral_id": "13",
+                "start_date": "2026-05-10",
+                "end_date": "2026-06-15",
+                "created_at": "2026-05-10 00:00:00",
+                "updated_at": "2026-06-11 12:00:00",
+            }
+        ]
+        campaign_rows = [{"id": "77", "brand_campaign_id": "campaign-demo"}]
+
+        merged = v2_reporting._merge_campaign_collateral_sources(v2_rows, legacy_rows, campaign_rows)
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["old_end_date"], "2026-06-15")
+        self.assertEqual(merged[0]["source_table"], "collateral_management_campaigncollateral")
+
+    def test_schedule_rows_resolve_legacy_campaign_without_campaign_uuid(self):
+        source = {
+            "campaign_v2": [{"id": "campaign-demo", "campaign_uuid": "campaign-helper-uuid"}],
+            "campaign_management_campaign": [{"id": "77", "brand_campaign_id": "campaign-demo"}],
+            "inclinic_campaign_field_rep_assignment_v2": [],
+            "inclinic_assigned_doctor_roster_v2": [],
+            "inclinic_collateral_transaction_v2": [],
+            "inclinic_share_event_v2": [],
+            "inclinic_campaign_collateral_v2": [
+                {
+                    "old_id": "501",
+                    "legacy_campaign_id": "campaign-demo",
+                    "old_campaign_id": "77",
+                    "old_collateral_id": "13",
+                    "old_start_date": "2026-05-10",
+                    "old_end_date": "2026-06-15",
+                    "is_current": "true",
+                }
+            ],
+            "inclinic_collateral_v2": [],
+        }
+        dim_collateral = [{"id": "13", "type": "pdf", "title": "Mini CME Post-COVID Immune Lag in Children"}]
+
+        rows = v2_reporting._schedule_rows(source, dim_collateral, "2026-06-11T00:00:00+00:00")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["campaign_id_resolved"], "campaign-demo")
+        self.assertEqual(rows[0]["schedule_end_date"], "2026-06-15")
+
     def test_internal_data_admin_schema_filter(self):
         self.assertTrue(_is_relevant_schema("bronze"))
         self.assertTrue(_is_relevant_schema("bronze_pe"))
