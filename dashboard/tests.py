@@ -74,6 +74,34 @@ class DashboardRoutingTests(SimpleTestCase):
     def test_new_delhi_displays_as_delhi(self):
         self.assertEqual(dashboard.views._display_state_name("New Delhi"), "Delhi")
 
+    def test_collateral_options_link_to_main_dashboard_and_use_campaign_dates(self):
+        rows = [
+            {
+                "collateral_id": "11",
+                "collateral_title": "MINI CME POST IMMUNE LAG",
+                "schedule_start_date": "2026-05-10",
+                "schedule_end_date": "2026-06-10",
+                "campaign_start_date": "2026-05-10",
+                "campaign_end_date": "2099-06-15",
+            },
+            {
+                "collateral_id": "12",
+                "collateral_title": "Current Collateral",
+                "schedule_start_date": "2026-06-01",
+                "schedule_end_date": "2099-06-30",
+                "campaign_start_date": "2026-06-01",
+                "campaign_end_date": "2099-06-30",
+            },
+        ]
+
+        options = dashboard.views._format_collateral_options(rows, "demo", "11", selected_week=2)
+
+        selected = options[0]
+        self.assertEqual(selected["name"], "MINI CME POST IMMUNE LAG")
+        self.assertEqual(selected["schedule_text"], "May 10, 2026 - Jun 15, 2099")
+        self.assertEqual(selected["url"], "/campaign/demo/?collateral_id=11&week=2")
+        self.assertEqual(selected["status_label"], "Selected")
+
     def test_internal_data_admin_schema_filter(self):
         self.assertTrue(_is_relevant_schema("bronze"))
         self.assertTrue(_is_relevant_schema("bronze_pe"))
@@ -1278,9 +1306,20 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "collateral_id": "11",
                     "name": "Older Collateral",
                     "schedule_text": "Apr 01, 2026 - Apr 09, 2026",
-                    "url": "/campaign/demo/collateral/11/field-rep-insights/",
+                    "url": "/campaign/demo/?collateral_id=11",
+                    "status_label": "Current",
+                    "is_selected": "false",
+                },
+                {
+                    "collateral_id": "12",
+                    "name": "Current Collateral",
+                    "schedule_text": "May 01, 2026 - May 31, 2026",
+                    "url": "/campaign/demo/?collateral_id=12",
+                    "status_label": "Selected",
+                    "is_selected": "true",
                 }
             ],
+            "selected_collateral_id": "12",
             "collateral_cards": {
                 "current": {"title": "Current Collateral", "reached": 30, "opened": 20, "video": 12, "pdf": 8, "reached_pct": 25, "opened_pct": 66.7, "video_pct": 60, "pdf_pct": 40},
                 "best": {"title": "Week 1 Best", "reached": 30, "opened": 20, "video": 12, "pdf": 8, "reached_pct": 25, "opened_pct": 66.7, "video_pct": 60, "pdf_pct": 40},
@@ -1327,11 +1366,12 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, 'role="dialog"')
         self.assertContains(response, "Field Rep ID")
         self.assertContains(response, "Download Excel")
-        self.assertContains(response, "Old Collaterals")
+        self.assertContains(response, "Switch Collateral")
         self.assertContains(response, 'class="comparison-grid single"')
         self.assertNotContains(response, "<h4>Best Collateral</h4>")
         self.assertNotContains(response, "<h4>Benchmark Best</h4>")
-        self.assertContains(response, "/campaign/demo/collateral/11/field-rep-insights/")
+        self.assertContains(response, "/campaign/demo/?collateral_id=11")
+        self.assertContains(response, "Selected")
         self.assertContains(response, "/campaign/demo/states/")
         self.assertContains(response, "Asha Mehta")
         self.assertContains(response, "doctor-count-btn")
@@ -1427,6 +1467,74 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, 'class="comparison-grid single"')
         self.assertNotContains(response, "<h4>Best Collateral</h4>")
         self.assertNotContains(response, "<h4>Benchmark Best</h4>")
+
+    def test_campaign_overview_passes_selected_collateral_to_context(self):
+        session = self.client.session
+        session["auth_demo"] = True
+        session.save()
+        self.client.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
+
+        context = {
+            "selected_campaign": "demo",
+            "brand_name": "Demo Brand",
+            "brand_logo_text": "Demo",
+            "company_logo_url": None,
+            "selected_schema": "gold_demo",
+            "weekly_rows": [],
+            "error_message": None,
+            "schedule_text": "May 10, 2026 - Jun 15, 2026",
+            "collateral_name": "MINI CME POST IMMUNE LAG",
+            "state_attention": [],
+            "state_attention_card": [],
+            "action_panel": {},
+            "field_rep_insights": [],
+            "field_rep_summary": {"total_reps": 0, "total_doctors_assigned": 0},
+            "old_collaterals": [],
+            "selected_collateral_id": "11",
+            "current_field_rep_collateral_id": "11",
+            "field_rep_detail_url": "/campaign/demo/field-rep-insights/details/?collateral_id=11",
+            "collateral_cards": {"current": {}, "best": {}, "benchmark": {}},
+            "show_collateral_comparison_extras": False,
+            "trend_labels": [],
+            "reached_pct_series": [],
+            "opened_pct_series": [],
+            "pdf_pct_series": [],
+            "video_pct_series": [],
+            "week_options": [],
+            "selected_week": 2,
+            "campaign_health": 0,
+            "campaign_wow": 0,
+            "campaign_benchmark_label": "Insufficient Data",
+            "campaign_color": "red",
+            "campaign_score_available": False,
+            "weekly_health": 0,
+            "weekly_wow": 0,
+            "weekly_benchmark_label": "Insufficient Data",
+            "weekly_color": "red",
+            "weekly_score_available": False,
+            "week_of": "Week -",
+            "kpi_reached": 0,
+            "kpi_reached_pct": 0,
+            "kpi_opened": 0,
+            "kpi_opened_pct": 0,
+            "kpi_video": 0,
+            "kpi_video_pct": 0,
+            "kpi_pdf": 0,
+            "kpi_pdf_pct": 0,
+        }
+        with patch(
+            "dashboard.views.build_report_access",
+            return_value=type("Access", (), {"session_key": "auth_demo"})(),
+        ), patch("dashboard.views._build_report_context", return_value=context) as context_mock:
+            response = self.client.get("/campaign/demo/?collateral_id=11&week=2")
+
+        self.assertEqual(response.status_code, 200)
+        context_mock.assert_called_once_with(
+            "demo",
+            2,
+            selected_collateral_id="11",
+            include_field_rep_doctor_details=False,
+        )
 
     def test_state_list_page_renders_full_state_view(self):
         session = self.client.session
