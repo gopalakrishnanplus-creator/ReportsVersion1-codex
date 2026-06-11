@@ -130,6 +130,86 @@ def _fetch_optional_table(server_settings: dict[str, Any], default_db: str, tabl
         return []
 
 
+def _source_freshness_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        _field(row, "old_updated_at", "source_updated_at", "updated_at"),
+        _field(row, "old_created_at", "source_created_at", "created_at"),
+        _field(row, "_ingested_at"),
+    )
+
+
+def _merge_non_empty(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        if _clean(value):
+            merged[key] = value
+    return merged
+
+
+def _campaign_collateral_merge_key(row: dict[str, Any]) -> tuple[str, ...]:
+    old_id = _field(row, "old_id", "id", "source_pk_value")
+    if old_id:
+        return ("old_id", old_id)
+    campaign = _field(row, "legacy_campaign_id", "brand_campaign_id", "old_campaign_id", "campaign_id")
+    collateral = _field(row, "old_collateral_id", "collateral_id")
+    if campaign and collateral:
+        return ("campaign_collateral", campaign, collateral)
+    return _raw_v2_row_key("inclinic_campaign_collateral_v2", row)
+
+
+def _legacy_campaign_collateral_to_v2(row: dict[str, Any], campaign_by_local_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    local_campaign_id = _field(row, "campaign_id")
+    local_campaign = campaign_by_local_id.get(local_campaign_id, {})
+    brand_campaign_id = _field(local_campaign, "brand_campaign_id") or local_campaign_id
+    collateral_id = _field(row, "collateral_id")
+    return {
+        "source_system": "inclinic",
+        "source_database": INCLINIC_DEFAULT_DB,
+        "source_table": "collateral_management_campaigncollateral",
+        "source_pk_column": "id",
+        "source_pk_value": _field(row, "id"),
+        "campaign_collateral_uuid": "",
+        "campaign_uuid": "",
+        "legacy_campaign_id": brand_campaign_id,
+        "brand_campaign_id": brand_campaign_id,
+        "campaign_id": brand_campaign_id,
+        "old_id": _field(row, "id"),
+        "old_start_date": _field(row, "start_date"),
+        "old_end_date": _field(row, "end_date"),
+        "old_created_at": _field(row, "created_at"),
+        "old_updated_at": _field(row, "updated_at"),
+        "old_campaign_id": local_campaign_id,
+        "old_collateral_id": collateral_id,
+        "collateral_uuid": "",
+        "source_created_at": _field(row, "created_at"),
+        "source_updated_at": _field(row, "updated_at"),
+        "is_current": "true",
+    }
+
+
+def _merge_campaign_collateral_sources(
+    v2_rows: list[dict[str, Any]],
+    legacy_rows: list[dict[str, Any]],
+    campaign_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    campaign_by_local_id = {_field(row, "id"): row for row in campaign_rows if _field(row, "id")}
+    merged: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in v2_rows:
+        merged[_campaign_collateral_merge_key(row)] = row
+
+    for legacy_row in legacy_rows:
+        row = _legacy_campaign_collateral_to_v2(legacy_row, campaign_by_local_id)
+        key = _campaign_collateral_merge_key(row)
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = row
+            continue
+        if _source_freshness_key(row) >= _source_freshness_key(existing):
+            merged[key] = _merge_non_empty(existing, row)
+
+    return list(merged.values())
+
+
 def _field(row: dict[str, Any], *names: str) -> str:
     for name in names:
         value = _clean(row.get(name))
@@ -714,7 +794,7 @@ RAW_V2_KEY_CANDIDATES: dict[str, tuple[tuple[str, ...], ...]] = {
         ("source_table", "source_pk_value"),
     ),
     "inclinic_collateral_v2": (("collateral_uuid",), ("old_id",), ("source_table", "source_pk_value")),
-    "inclinic_campaign_collateral_v2": (("campaign_collateral_uuid",), ("old_id",), ("source_table", "source_pk_value")),
+    "inclinic_campaign_collateral_v2": (("old_id",), ("source_table", "source_pk_value"), ("campaign_collateral_uuid",)),
     "inclinic_campaign_field_rep_assignment_v2": (
         ("assignment_uuid",),
         ("old_id",),
@@ -785,6 +865,11 @@ def _load_source_from_mysql_v2() -> dict[str, list[dict[str, Any]]]:
         _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_v2")
         or _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "campaign_management_campaign")
     )
+    campaign_collateral_rows = _merge_campaign_collateral_sources(
+        _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_collateral_v2"),
+        _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "collateral_management_campaigncollateral"),
+        inclinic_campaign_rows,
+    )
     return {
         "campaign_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "campaign_v2"),
         "field_rep_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "field_rep_v2"),
@@ -792,7 +877,7 @@ def _load_source_from_mysql_v2() -> dict[str, list[dict[str, Any]]]:
         "doctor_field_rep_roster_bridge_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "doctor_field_rep_roster_bridge_v2"),
         "inclinic_assigned_doctor_roster_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_assigned_doctor_roster_v2"),
         "inclinic_collateral_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_collateral_v2"),
-        "inclinic_campaign_collateral_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_collateral_v2"),
+        "inclinic_campaign_collateral_v2": campaign_collateral_rows,
         "inclinic_campaign_field_rep_assignment_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_field_rep_assignment_v2"),
         "inclinic_collateral_transaction_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_collateral_transaction_v2"),
         "inclinic_share_event_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_share_event_v2"),
@@ -1328,10 +1413,23 @@ def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list
     collateral_by_uuid = _build_indexes(source["inclinic_collateral_v2"], "collateral_uuid")
     collateral_dim_by_id = {row["id"]: row for row in dim_collateral}
     rows: list[dict[str, Any]] = []
+    source_rows_by_key: dict[tuple[str, ...], dict[str, Any]] = {}
     for row in source["inclinic_campaign_collateral_v2"]:
         if not _row_is_current(row):
             continue
-        legacy_campaign_id = legacy_by_uuid.get(_clean(row.get("campaign_uuid")), "")
+        key = _campaign_collateral_merge_key(row)
+        existing = source_rows_by_key.get(key)
+        if existing is None or _source_freshness_key(row) >= _source_freshness_key(existing):
+            source_rows_by_key[key] = row
+
+    for row in source_rows_by_key.values():
+        legacy_campaign_id = legacy_by_uuid.get(_clean(row.get("campaign_uuid")), "") or _resolve_campaign_id(
+            source,
+            row.get("legacy_campaign_id"),
+            row.get("brand_campaign_id"),
+            row.get("old_campaign_id"),
+            row.get("campaign_id"),
+        )
         old_collateral_id = _field(row, "old_collateral_id")
         if not old_collateral_id:
             collateral_source = collateral_by_uuid.get(_clean(row.get("collateral_uuid")), {})
