@@ -114,6 +114,32 @@
     </section>
 
     <section class="section-block">
+      <div class="section-label">State-wise Performance</div>
+      <article class="state-performance-card">
+        <div class="state-performance-head">
+          <span>State</span>
+          <span>Onboarded Doctors</span>
+          <span>Screenings</span>
+        </div>
+        {% for row in state_performance %}
+        <div class="state-performance-row">
+          <strong>{{ row.state }}</strong>
+          <div class="state-bar-cell">
+            <span>{{ row.onboarded_doctors }}</span>
+            <div class="state-bar"><div class="state-bar__fill state-bar__fill--doctors" style="width: {{ row.onboarded_pct }}%"></div></div>
+          </div>
+          <div class="state-bar-cell">
+            <span>{{ row.screenings }}</span>
+            <div class="state-bar"><div class="state-bar__fill state-bar__fill--screenings" style="width: {{ row.screenings_pct }}%"></div></div>
+          </div>
+        </div>
+        {% empty %}
+        <p class="empty-copy">No data available for current filters</p>
+        {% endfor %}
+      </article>
+    </section>
+
+    <section class="section-block">
       <div class="cards-grid two-up">
         {% for tile in tiles.operational %}
         <a class="metric-card metric-card--{{ tile.theme }}" href="{{ tile.href }}">
@@ -147,31 +173,6 @@
           {% endfor %}
         </article>
         {% endfor %}
-      </div>
-    </section>
-
-    <section class="section-block">
-      <div class="cards-grid two-up">
-        <article class="list-card">
-          <h3><a href="{{ route_base }}details/patient_videos/{% if filters_query %}?{{ filters_query }}{% endif %}">Top 5 Patient Education Videos Viewed</a></h3>
-          <ol>
-            {% for row in patient_videos %}
-            <li><span><a href="{{ row.content_identifier }}" target="_blank" rel="noopener noreferrer">{{ row.preferred_display_label }}</a></span><strong>{{ row.view_count }}</strong></li>
-            {% empty %}
-            <li class="empty-copy">No data available for current filters</li>
-            {% endfor %}
-          </ol>
-        </article>
-        <article class="list-card">
-          <h3><a href="{{ route_base }}details/doctor_videos/{% if filters_query %}?{{ filters_query }}{% endif %}">Top 5 Doctor Education Videos Viewed</a></h3>
-          <ol>
-            {% for row in doctor_videos %}
-            <li><span><a href="{{ row.content_identifier }}" target="_blank" rel="noopener noreferrer">{{ row.preferred_display_label }}</a></span><strong>{{ row.view_count }}</strong></li>
-            {% empty %}
-            <li class="empty-copy">No data available for current filters</li>
-            {% endfor %}
-          </ol>
-        </article>
       </div>
     </section>
 
