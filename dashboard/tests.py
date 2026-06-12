@@ -1886,6 +1886,67 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertEqual(rows[0]["state"], "Delhi")
         self.assertEqual(rows[0]["state_normalized"], "Delhi")
 
+    def test_field_rep_merge_prefers_live_campaign_fieldrep_update(self):
+        v2_rows = [
+            {
+                "field_rep_uuid": "helper-uuid",
+                "id": "2282",
+                "current_campaign_fieldrep_id": "2282",
+                "current_brand_supplied_field_rep_id": "5014",
+                "display_name": "Deen Bandhu",
+                "state": "Assam",
+                "updated_at": "2026-06-01 10:00:00",
+                "is_active": "1",
+            }
+        ]
+        legacy_rows = [
+            {
+                "id": "2282",
+                "full_name": "Deen Bandhu",
+                "brand_supplied_field_rep_id": "5014",
+                "state": "North East",
+                "updated_at": "2026-06-11 12:00:00",
+                "is_active": "1",
+            }
+        ]
+
+        merged = v2_reporting._merge_field_rep_sources(v2_rows, legacy_rows, [])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["state"], "North East")
+        self.assertEqual(merged[0]["source_table"], "campaign_fieldrep")
+
+    def test_field_rep_rows_keep_freshest_duplicate_state(self):
+        source = {
+            "field_rep_v2": [
+                {
+                    "id": "2282",
+                    "current_campaign_fieldrep_id": "2282",
+                    "current_brand_supplied_field_rep_id": "5014",
+                    "display_name": "Deen Bandhu",
+                    "state": "Assam",
+                    "updated_at": "2026-06-01 10:00:00",
+                    "is_active": "1",
+                },
+                {
+                    "id": "2282",
+                    "current_campaign_fieldrep_id": "2282",
+                    "current_brand_supplied_field_rep_id": "5014",
+                    "display_name": "Deen Bandhu",
+                    "state": "North East",
+                    "updated_at": "2026-06-11 12:00:00",
+                    "is_active": "1",
+                },
+            ],
+            "inclinic_field_rep_identity_v2": [],
+        }
+
+        rows = v2_reporting._field_rep_rows(source, "2026-06-11T00:00:00+00:00")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["state"], "North East")
+        self.assertEqual(rows[0]["state_normalized"], "North East")
+
     @patch.dict(os.environ, {"INCLINIC_REPORTING_SOURCE_MODE": "v2"}, clear=False)
     @patch("etl.inclinic_pipeline.log_run")
     @patch("etl.inclinic_pipeline.build_gold")

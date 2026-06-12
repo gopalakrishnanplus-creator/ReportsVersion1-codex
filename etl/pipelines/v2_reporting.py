@@ -210,6 +210,78 @@ def _merge_campaign_collateral_sources(
     return list(merged.values())
 
 
+def _field_rep_merge_key(row: dict[str, Any]) -> tuple[str, ...]:
+    rep_id = _field(row, "current_campaign_fieldrep_id", "campaign_fieldrep_id", "id", "source_pk_value")
+    if rep_id:
+        return ("campaign_fieldrep_id", rep_id)
+    brand_id = _field(row, "current_brand_supplied_field_rep_id", "brand_supplied_field_rep_id")
+    if brand_id:
+        return ("brand_supplied_field_rep_id", brand_id)
+    return _raw_v2_row_key("field_rep_v2", row)
+
+
+def _legacy_field_rep_to_v2(row: dict[str, Any], auth_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    rep_id = _field(row, "id")
+    auth = auth_by_id.get(_field(row, "user_id"), {})
+    state = _field(row, "state")
+    return {
+        "source_system": "rfa_master",
+        "source_database": RFA_DEFAULT_DB,
+        "source_table": "campaign_fieldrep",
+        "source_pk_column": "id",
+        "source_pk_value": rep_id,
+        "field_rep_uuid": "",
+        "id": rep_id,
+        "current_campaign_fieldrep_id": rep_id,
+        "full_name": _field(row, "full_name"),
+        "display_name": _field(row, "full_name") or rep_id,
+        "phone_number": _field(row, "phone_number"),
+        "primary_phone_raw": _field(row, "phone_number"),
+        "primary_phone_normalized": _phone(row.get("phone_number")),
+        "primary_email": _field(auth, "email"),
+        "brand_supplied_field_rep_id": _field(row, "brand_supplied_field_rep_id"),
+        "current_brand_supplied_field_rep_id": _field(row, "brand_supplied_field_rep_id"),
+        "is_active": "1" if _truthy(row.get("is_active")) else "0",
+        "password_hash": _field(row, "password_hash"),
+        "created_at": _field(row, "created_at"),
+        "updated_at": _field(row, "updated_at"),
+        "source_created_at": _field(row, "created_at"),
+        "source_updated_at": _field(row, "updated_at"),
+        "brand_id": _field(row, "brand_id"),
+        "user_id": _field(row, "user_id"),
+        "state": state,
+        "state_normalized": state,
+        "campaign_fieldrep_state": state,
+        "status": "active" if _truthy(row.get("is_active")) else "inactive",
+    }
+
+
+def _merge_field_rep_sources(
+    v2_rows: list[dict[str, Any]],
+    legacy_rows: list[dict[str, Any]],
+    auth_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    auth_by_id = {_field(row, "id"): row for row in auth_rows if _field(row, "id")}
+    merged: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in v2_rows:
+        key = _field_rep_merge_key(row)
+        existing = merged.get(key)
+        if existing is None or _source_freshness_key(row) >= _source_freshness_key(existing):
+            merged[key] = row
+
+    for legacy_row in legacy_rows:
+        row = _legacy_field_rep_to_v2(legacy_row, auth_by_id)
+        key = _field_rep_merge_key(row)
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = row
+            continue
+        if _source_freshness_key(row) >= _source_freshness_key(existing):
+            merged[key] = _merge_non_empty(existing, row)
+
+    return list(merged.values())
+
+
 def _field(row: dict[str, Any], *names: str) -> str:
     for name in names:
         value = _clean(row.get(name))
@@ -776,7 +848,7 @@ REQUIRED_V2_SOURCE_KEYS = (
 
 RAW_V2_KEY_CANDIDATES: dict[str, tuple[tuple[str, ...], ...]] = {
     "campaign_v2": (("campaign_uuid",), ("id",), ("source_table", "source_pk_value")),
-    "field_rep_v2": (("field_rep_uuid",), ("id",), ("source_table", "source_pk_value")),
+    "field_rep_v2": (("current_campaign_fieldrep_id",), ("id",), ("source_table", "source_pk_value"), ("field_rep_uuid",)),
     "campaign_field_rep_assignment_v2": (
         ("campaign_field_rep_assignment_uuid",),
         ("id",),
@@ -861,6 +933,12 @@ def _load_source_from_raw_v2() -> dict[str, list[dict[str, Any]]]:
 def _load_source_from_mysql_v2() -> dict[str, list[dict[str, Any]]]:
     rfa = settings.MYSQL_SERVER_1
     inclinic = settings.MYSQL_SERVER_2
+    auth_rows = _fetch_optional_table(rfa, RFA_DEFAULT_DB, "auth_user")
+    field_rep_rows = _merge_field_rep_sources(
+        _fetch_table(rfa, RFA_DEFAULT_DB, "field_rep_v2"),
+        _fetch_optional_table(rfa, RFA_DEFAULT_DB, "campaign_fieldrep"),
+        auth_rows,
+    )
     inclinic_campaign_rows = (
         _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_v2")
         or _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "campaign_management_campaign")
@@ -872,7 +950,7 @@ def _load_source_from_mysql_v2() -> dict[str, list[dict[str, Any]]]:
     )
     return {
         "campaign_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "campaign_v2"),
-        "field_rep_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "field_rep_v2"),
+        "field_rep_v2": field_rep_rows,
         "campaign_field_rep_assignment_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "campaign_field_rep_assignment_v2"),
         "doctor_field_rep_roster_bridge_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "doctor_field_rep_roster_bridge_v2"),
         "inclinic_assigned_doctor_roster_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_assigned_doctor_roster_v2"),
@@ -1076,7 +1154,7 @@ def _validate_required_v2_source_counts(source: dict[str, list[dict[str, Any]]])
 
 def _rep_brand_id_by_campaign_fieldrep(source: dict[str, list[dict[str, Any]]]) -> dict[str, str]:
     mapping: dict[str, str] = {}
-    for rep in source.get("field_rep_v2", []):
+    for rep in _current_field_rep_source_rows(source):
         rep_id = _field(rep, "current_campaign_fieldrep_id", "id")
         brand_id = _field(rep, "current_brand_supplied_field_rep_id", "brand_supplied_field_rep_id")
         if rep_id and brand_id:
@@ -1087,6 +1165,18 @@ def _rep_brand_id_by_campaign_fieldrep(source: dict[str, list[dict[str, Any]]]) 
         if rep_id and brand_id:
             mapping.setdefault(normalize_key(rep_id), brand_id)
     return mapping
+
+
+def _current_field_rep_source_rows(source: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    rows_by_key: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in source.get("field_rep_v2", []):
+        if not _row_is_current(row):
+            continue
+        key = _field_rep_merge_key(row)
+        existing = rows_by_key.get(key)
+        if existing is None or _source_freshness_key(row) >= _source_freshness_key(existing):
+            rows_by_key[key] = row
+    return list(rows_by_key.values())
 
 
 def _rule_campaign_matches(rule: ReportingCorrectionRule, campaign_id: str) -> bool:
@@ -1240,9 +1330,7 @@ def _field_rep_rows(
     rows: list[dict[str, Any]] = []
     identity_state_by_rep = _identity_state_by_campaign_fieldrep(source)
     state_fallback_by_rep = state_fallback_by_rep or {}
-    for rep in source["field_rep_v2"]:
-        if not _row_is_current(rep):
-            continue
+    for rep in _current_field_rep_source_rows(source):
         rep_id = _field(rep, "current_campaign_fieldrep_id", "id")
         if not rep_id:
             continue
