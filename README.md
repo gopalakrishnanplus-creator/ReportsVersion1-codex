@@ -3,14 +3,12 @@
 This repository now contains a full Django + PostgreSQL medallion implementation for the In-Clinic Sharing System, SAPA Growth Dashboard , PE Reports System reporting pipeline.
 
 ## SAPA / ESAPA dashboard
-
 The SAPA dashboard is implemented as a separate app and ETL path. See [docs/ESAPA_DASHBOARD.md](docs/ESAPA_DASHBOARD.md) for:
 - runtime source boundaries
 - MySQL Server 1 configuration behavior
 - SAPA schema isolation from the legacy Inclinic report
 
 ## InClinic dashboard metric definitions
-
 For a brand-manager-friendly explanation of every InClinic dashboard calculation, denominator, and reconciliation caveat, see [docs/INCLINIC_DASHBOARD_CALCULATION_NOTES.md](docs/INCLINIC_DASHBOARD_CALCULATION_NOTES.md).
 
 ## Implemented architecture
