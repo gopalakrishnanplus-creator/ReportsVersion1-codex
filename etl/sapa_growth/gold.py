@@ -132,6 +132,7 @@ def _summary_snapshot_row(
     reminder_rows: list[dict[str, Any]],
     webinar_rows: list[dict[str, Any]],
     course_rows: list[dict[str, Any]],
+    field_rep_login_rows: list[dict[str, Any]],
 ) -> dict[str, str]:
     summary = compute_dashboard_metrics(
         as_of_date=as_of_date,
@@ -144,6 +145,7 @@ def _summary_snapshot_row(
         followup_rows=followup_rows,
         reminder_rows=reminder_rows,
         course_rows=course_rows,
+        field_rep_login_rows=field_rep_login_rows,
     )
     summary.update(
         _derived_certified_summary(
@@ -169,12 +171,12 @@ def _course_summary_rows(as_of_date: date, course_rows: list[dict[str, Any]]) ->
                     "as_of_date": as_of_date.isoformat(),
                     "course_id": course_id,
                     "course_audience": audience,
-                    "started_count": counts["Started"],
+                    "started_count": counts["In Progress"],
                     "completed_count": counts["Completed"],
-                    "pending_count": counts["Pending"],
+                    "pending_count": counts["Not Started"],
                     "total_enrolled": total,
                     "completed_rate": round((counts["Completed"] / total) * 100, 2) if total else 0,
-                    "engaged_rate": round(((counts["Started"] + counts["Completed"]) / total) * 100, 2) if total else 0,
+                    "engaged_rate": round(((counts["In Progress"] + counts["Completed"]) / total) * 100, 2) if total else 0,
                 }
             )
         )
@@ -311,6 +313,7 @@ def _publish_campaign_schemas(
         reminder_rows = campaign_tables.get("rpt_reminder_sent_detail", [])
         webinar_rows = campaign_tables.get("rpt_webinar_registration_detail", [])
         course_rows = campaign_tables.get("rpt_course_detail", [])
+        field_rep_login_rows = campaign_tables.get("rpt_field_rep_login_detail", [])
         video_rows = campaign_tables.get("rpt_video_view_detail", [])
         redflag_rows = campaign_tables.get("rpt_submission_redflag_detail", [])
 
@@ -326,6 +329,7 @@ def _publish_campaign_schemas(
                 reminder_rows=reminder_rows,
                 webinar_rows=webinar_rows,
                 course_rows=course_rows,
+                field_rep_login_rows=field_rep_login_rows,
             )
         ]
         campaign_tables["dashboard_summary_state_rep"] = _copy_campaign_rows(all_rows.get("dashboard_summary_state_rep", []), source_key, route_key)
@@ -401,6 +405,31 @@ def _with_campaign_fields(row: dict[str, Any], doctor_campaigns: dict[str, dict[
     return item
 
 
+def _latest_field_rep_login_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    counts: dict[tuple[str, str], int] = {}
+    first_login: dict[tuple[str, str], str] = {}
+    for row in sorted(rows, key=lambda item: clean_text(item.get("login_ts")) or "", reverse=True):
+        campaign_key = clean_text(row.get("campaign_key")) or ""
+        rep_key = clean_text(row.get("source_field_rep_id")) or clean_text(row.get("field_rep_id")) or ""
+        if not rep_key:
+            continue
+        key = (campaign_key, rep_key)
+        counts[key] = counts.get(key, 0) + 1
+        login_ts = clean_text(row.get("login_ts")) or ""
+        if login_ts and (not first_login.get(key) or login_ts < first_login[key]):
+            first_login[key] = login_ts
+        if key not in latest:
+            latest[key] = dict(row)
+    output = []
+    for key, row in latest.items():
+        item = dict(row)
+        item["first_login_at"] = first_login.get(key, "")
+        item["login_count"] = str(counts.get(key, 0))
+        output.append(item)
+    return output
+
+
 def _enriched_video_rows(video_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     enriched = []
     for row in video_rows:
@@ -445,6 +474,7 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
     metric_rows = fetch_table(SILVER_SCHEMA, "fact_metric_event")
     followup_rows = fetch_table(SILVER_SCHEMA, "fact_followup_schedule_instance")
     reminder_rows = fetch_table(SILVER_SCHEMA, "fact_reminder_sent")
+    field_rep_login_rows = _latest_field_rep_login_rows(fetch_table(SILVER_SCHEMA, "fact_field_rep_login"))
     webinar_rows = fetch_table(SILVER_SCHEMA, "fact_webinar_registration")
     course_rows = fetch_table(SILVER_SCHEMA, "fact_course_user_progress")
     video_rows = _enriched_video_rows(fetch_table(SILVER_SCHEMA, "fact_video_view"))
@@ -524,6 +554,7 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
         followup_rows=followup_rows,
         reminder_rows=reminder_rows,
         course_rows=course_rows,
+        field_rep_login_rows=field_rep_login_rows,
     )
     summary["published_at"] = published_at
     summary["unsupported_condition_rankings"] = "true"
@@ -555,6 +586,7 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
             followup_rows=filter_rows(followup_rows, filters),
             reminder_rows=filter_rows(reminder_rows, filters),
             course_rows=filter_rows(course_rows, filters),
+            field_rep_login_rows=filter_rows(field_rep_login_rows, filters),
         )
         metrics["campaign_key"] = campaign_key
         metrics["campaign_label"] = campaign_label
@@ -696,7 +728,7 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
 
     tag_detail_rows = []
     for row in screening_rows:
-        overall_flag = clean_text(row.get("overall_flag_code"))
+        overall_flag = (clean_text(row.get("overall_flag_code")) or "").lower()
         if overall_flag not in {"red", "yellow"}:
             continue
         tag_row = _with_campaign_fields(row, doctor_campaigns)
@@ -751,6 +783,28 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
 
     replace_table(
         GOLD_STAGE_SCHEMA,
+        "rpt_field_rep_login_detail",
+        list(field_rep_login_rows[0].keys())
+        if field_rep_login_rows
+        else [
+            "field_rep_login_id",
+            "source_metric_event_id",
+            "source_field_rep_id",
+            "campaign_key",
+            "campaign_label",
+            "field_rep_id",
+            "field_rep_name",
+            "state",
+            "login_ts",
+            "device_type",
+            "first_login_at",
+            "login_count",
+        ],
+        [_stringify_row(row) for row in field_rep_login_rows],
+    )
+
+    replace_table(
+        GOLD_STAGE_SCHEMA,
         "rpt_webinar_registration_detail",
         list(webinar_rows[0].keys()) if webinar_rows else ["registration_key", "source_registration_key", "event_id", "event_title", "start_date", "end_date", "timezone", "email", "first_name", "last_name", "phone", "registration_effective_date", "doctor_key", "campaign_key", "campaign_label", "doctor_display_name", "state", "city", "field_rep_id", "field_rep_name", "match_method", "unmapped_flag"],
         [_stringify_row(_with_campaign_fields(row, doctor_campaigns)) for row in webinar_rows],
@@ -788,12 +842,12 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
                     "as_of_date": as_of_date.isoformat(),
                     "course_id": course_id,
                     "course_audience": audience,
-                    "started_count": counts["Started"],
+                    "started_count": counts["In Progress"],
                     "completed_count": counts["Completed"],
-                    "pending_count": counts["Pending"],
+                    "pending_count": counts["Not Started"],
                     "total_enrolled": total,
                     "completed_rate": round((counts["Completed"] / total) * 100, 2) if total else 0,
-                    "engaged_rate": round(((counts["Started"] + counts["Completed"]) / total) * 100, 2) if total else 0,
+                    "engaged_rate": round(((counts["In Progress"] + counts["Completed"]) / total) * 100, 2) if total else 0,
                 }
             )
         )
@@ -916,6 +970,7 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
         "rpt_tag_detail",
         "rpt_followup_schedule_detail",
         "rpt_reminder_sent_detail",
+        "rpt_field_rep_login_detail",
         "rpt_webinar_registration_detail",
         "rpt_course_detail",
         "rpt_submission_redflag_detail",

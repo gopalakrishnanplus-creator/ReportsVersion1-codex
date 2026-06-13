@@ -116,12 +116,17 @@ def display_name_from_sources(campaign_row: dict[str, Any] | None, doctor_row: d
     return "Unknown Doctor"
 
 
+COURSE_STATUS_LABELS = ("Not Started", "In Progress", "Completed")
+
+
 def map_course_status(progress_status: Any) -> str | None:
     status = clean_text(progress_status)
     mapping = {
-        "in progress": "Started",
+        "started": "In Progress",
+        "in progress": "In Progress",
         "completed": "Completed",
-        "not started": "Pending",
+        "pending": "Not Started",
+        "not started": "Not Started",
     }
     if status is None:
         return None

@@ -228,6 +228,17 @@ def _activity_value(row: dict[str, Any], payload: dict[str, Any], *fields: str) 
     return None
 
 
+def _json_object(value: Any) -> dict[str, Any]:
+    text = clean_text(value)
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     legacy_rows: dict[str, list[dict[str, Any]]] = {
         "redflags_patientsubmission": [],
@@ -249,7 +260,9 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
                     "language_code": _activity_value(row, payload, "language_code"),
                     "submitted_at": _activity_value(row, payload, "submitted_at", "event_at", "source_created_at"),
                     "patient_id": _activity_value(row, payload, "patient_id", "patient_id_raw"),
-                    "doctor_id": _activity_value(row, payload, "doctor_id"),
+                    "doctor_id": _activity_value(row, payload, "doctor_id", "doctor_uuid"),
+                    "campaign_id": _activity_value(row, payload, "campaign_id", "campaign_uuid"),
+                    "field_rep_id": _activity_value(row, payload, "field_rep_id", "field_rep_uuid_at_event_time"),
                     "form_id": _activity_value(row, payload, "form_id", "form_id_raw"),
                     "overall_flag_code": _activity_value(row, payload, "overall_flag_code"),
                 }
@@ -261,7 +274,9 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
                     "patient_id": _activity_value(row, payload, "patient_id", "patient_id_raw"),
                     "language_code": _activity_value(row, payload, "language_code"),
                     "submitted_at": _activity_value(row, payload, "submitted_at", "event_at", "source_created_at"),
-                    "doctor_id": _activity_value(row, payload, "doctor_id"),
+                    "doctor_id": _activity_value(row, payload, "doctor_id", "doctor_uuid"),
+                    "campaign_id": _activity_value(row, payload, "campaign_id", "campaign_uuid"),
+                    "field_rep_id": _activity_value(row, payload, "field_rep_id", "field_rep_uuid_at_event_time"),
                     "form_id": _activity_value(row, payload, "form_id", "form_id_raw"),
                     "overall_flag_code": _activity_value(row, payload, "overall_flag_code"),
                 }
@@ -290,22 +305,28 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
                     "frequency": _activity_value(row, payload, "frequency"),
                     "first_followup_date": _activity_value(row, payload, "first_followup_date"),
                     "num_followups": _activity_value(row, payload, "num_followups"),
-                    "doctor_id": _activity_value(row, payload, "doctor_id"),
+                    "doctor_id": _activity_value(row, payload, "doctor_id", "doctor_uuid"),
+                    "campaign_id": _activity_value(row, payload, "campaign_id", "campaign_uuid"),
+                    "field_rep_id": _activity_value(row, payload, "field_rep_id", "field_rep_uuid_at_event_time"),
                 }
             )
         elif source_table == "redflags_metricevent":
+            event_type = _activity_value(row, payload, "event_type")
             legacy_rows[source_table].append(
                 {
                     "id": _activity_value(row, payload, "id", "source_event_id", "source_pk_value"),
-                    "event_type": _activity_value(row, payload, "event_type"),
-                    "action_key": _activity_value(row, payload, "action_key"),
+                    "event_type": event_type,
+                    "action_key": _activity_value(row, payload, "action_key")
+                    or (_activity_value(row, payload, "field_rep_uuid_at_event_time") if (clean_text(event_type) or "").lower() == "field_rep_login" else None),
                     "share_code": _activity_value(row, payload, "share_code"),
                     "form_id": _activity_value(row, payload, "form_id", "form_id_raw"),
                     "language_code": _activity_value(row, payload, "language_code"),
                     "video_url": _activity_value(row, payload, "video_url"),
                     "meta": _activity_value(row, payload, "meta"),
                     "ts": _activity_value(row, payload, "ts", "event_at", "source_created_at"),
-                    "doctor_id": _activity_value(row, payload, "doctor_id"),
+                    "doctor_id": _activity_value(row, payload, "doctor_id", "doctor_uuid"),
+                    "campaign_id": _activity_value(row, payload, "campaign_id", "campaign_uuid"),
+                    "field_rep_id": _activity_value(row, payload, "field_rep_id", "field_rep_uuid_at_event_time"),
                     "patient_id": _activity_value(row, payload, "patient_id", "patient_id_raw"),
                     "red_flag_id": _activity_value(row, payload, "red_flag_id", "red_flag_id_raw"),
                     "overall_flag_code": _activity_value(row, payload, "overall_flag_code"),
@@ -398,6 +419,18 @@ def build_silver(run_id: str) -> dict[str, Any]:
             "campaign_start_date": _empty_text(iso_date(campaign.get("start_date"))),
             "campaign_end_date": _empty_text(iso_date(campaign.get("end_date"))),
         }
+
+    def campaign_matches(row: dict[str, Any], campaign_hint: Any) -> bool:
+        hint = clean_text(campaign_hint)
+        if not hint:
+            return True
+        hint_norm = _norm_id(hint)
+        candidate_values = (
+            row.get("campaign_id"),
+            row.get("campaign_key"),
+            row.get("campaign_label"),
+        )
+        return any(clean_text(value) == hint or _norm_id(value) == hint_norm for value in candidate_values)
 
     def resolve_field_rep(field_rep_value: Any, campaign_id: Any = None) -> dict[str, str]:
         raw = clean_text(field_rep_value)
@@ -725,9 +758,18 @@ def build_silver(run_id: str) -> dict[str, Any]:
         patient_video_by_flag_and_language.setdefault((red_flag_id, language_code), patient_video_url)
         patient_video_by_flag.setdefault(red_flag_id, patient_video_url)
 
-    def resolve_doctor_matches_from_source_id(source_doctor_id: Any, source_hint: str, event_date: Any = None) -> list[tuple[str, dict[str, Any] | None]]:
+    def resolve_doctor_matches_from_source_id(
+        source_doctor_id: Any,
+        source_hint: str,
+        event_date: Any = None,
+        campaign_hint: Any = None,
+    ) -> list[tuple[str, dict[str, Any] | None]]:
         doctor_id = clean_text(source_doctor_id)
         dim_matches = dim_by_doctor_id.get(doctor_id) or []
+        if campaign_hint:
+            campaign_matches_for_event = [row for row in dim_matches if campaign_matches(row, campaign_hint)]
+            if campaign_matches_for_event:
+                dim_matches = campaign_matches_for_event
         if dim_matches:
             match = _best_dim_for_event(dim_matches, event_date)
             return [(match["doctor_key"], match)] if match else []
@@ -737,13 +779,104 @@ def build_silver(run_id: str) -> dict[str, Any]:
             return [(f"unmatched:{doctor_id}", None)]
         return [(f"unmatched:{source_hint}", None)]
 
+    def field_rep_from_event(row: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+        event_type = (clean_text(row.get("event_type")) or "").lower()
+        raw_value = clean_text(row.get("field_rep_id"))
+        if event_type == "field_rep_login":
+            raw_value = raw_value or clean_text(row.get("action_key"))
+        rep = field_rep_by_id.get(raw_value or "") or field_rep_by_external.get(_norm_id(raw_value))
+        return rep, raw_value or ""
+
+    def campaign_ids_for_field_rep_event(rep: dict[str, Any] | None, row: dict[str, Any]) -> list[str]:
+        campaign_hint = clean_text(row.get("campaign_id"))
+        if campaign_hint:
+            direct_match = clean_text((rfa_campaigns.get(campaign_hint) or {}).get("id"))
+            if direct_match:
+                return [direct_match]
+            hint_norm = _norm_id(campaign_hint)
+            normalized_matches = [
+                campaign_id
+                for campaign_id, campaign in rfa_campaigns.items()
+                if _norm_id(campaign_id) == hint_norm or _norm_id(campaign.get("name")) == hint_norm
+            ]
+            if normalized_matches:
+                return sorted(normalized_matches)
+        source_rep_id = clean_text((rep or {}).get("id"))
+        return sorted(rep_campaign_ids.get(source_rep_id or "", set()) & set(rfa_campaigns.keys()))
+
+    def field_rep_display(rep: dict[str, Any] | None, raw_value: str) -> dict[str, str]:
+        source_id = clean_text((rep or {}).get("id")) or raw_value
+        display_id = clean_text((rep or {}).get("brand_supplied_field_rep_id")) or source_id or "Unassigned"
+        return {
+            "source_field_rep_id": source_id or display_id,
+            "field_rep_id": display_id,
+            "field_rep_name": clean_text((rep or {}).get("full_name")) or display_id,
+            "state": clean_text((rep or {}).get("state")) or "",
+        }
+
+    def device_type_from_metric_meta(row: dict[str, Any]) -> str:
+        meta = _json_object(row.get("meta"))
+        value = clean_text(meta.get("device_type") or meta.get("device") or meta.get("platform"))
+        return value or ""
+
+    field_rep_login_rows = []
+    for row in metric_rows:
+        if (clean_text(row.get("event_type")) or "").lower() != "field_rep_login":
+            continue
+        login_ts = _empty_text(iso_datetime(row.get("ts")))
+        rep, raw_field_rep_id = field_rep_from_event(row)
+        display = field_rep_display(rep, raw_field_rep_id)
+        for campaign_id in campaign_ids_for_field_rep_event(rep, row):
+            if privacy_allowlist and campaign_id not in rfa_campaigns:
+                continue
+            campaign_key, campaign_label = campaign_meta(campaign_id)
+            field_rep_login_id = _empty_text(row.get("id")) or hash_fields("field_rep_login", raw_field_rep_id, login_ts)
+            if campaign_key:
+                field_rep_login_id = f"{field_rep_login_id}:campaign:{campaign_key}"
+            field_rep_login_rows.append(
+                {
+                    "field_rep_login_id": field_rep_login_id,
+                    "source_metric_event_id": _empty_text(row.get("id")),
+                    "source_field_rep_id": display["source_field_rep_id"],
+                    "campaign_key": campaign_key,
+                    "campaign_label": campaign_label,
+                    "field_rep_id": display["field_rep_id"],
+                    "field_rep_name": display["field_rep_name"],
+                    "state": display["state"],
+                    "login_ts": login_ts,
+                    "device_type": device_type_from_metric_meta(row),
+                }
+            )
+    replace_table(
+        SILVER_SCHEMA,
+        "fact_field_rep_login",
+        [
+            "field_rep_login_id",
+            "source_metric_event_id",
+            "source_field_rep_id",
+            "campaign_key",
+            "campaign_label",
+            "field_rep_id",
+            "field_rep_name",
+            "state",
+            "login_ts",
+            "device_type",
+        ],
+        field_rep_login_rows,
+    )
+
     screening_rows = []
     screening_source_index: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for source_table, source_rows in (("redflags_patientsubmission", redflag_submissions), ("gnd_gndpatientsubmission", gnd_submissions)):
         for row in source_rows:
             source_submission_id = clean_text(row.get("record_id") or row.get("id")) or hash_fields(source_table, row)
             submitted_at = iso_datetime(row.get("submitted_at"))
-            for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"{source_table}:{source_submission_id}", submitted_at):
+            for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(
+                row.get("doctor_id"),
+                f"{source_table}:{source_submission_id}",
+                submitted_at,
+                campaign_hint=row.get("campaign_id"),
+            ):
                 filters = _doctor_filters(doctor_dim)
                 if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
                     continue
@@ -873,7 +1006,12 @@ def build_silver(run_id: str) -> dict[str, Any]:
     metric_fact_rows = []
     for row in metric_rows:
         event_ts = _empty_text(iso_datetime(row.get("ts")))
-        for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"metric:{row.get('id')}", event_ts):
+        for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(
+            row.get("doctor_id"),
+            f"metric:{row.get('id')}",
+            event_ts,
+            campaign_hint=row.get("campaign_id"),
+        ):
             filters = _doctor_filters(doctor_dim)
             if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
                 continue
@@ -948,7 +1086,12 @@ def build_silver(run_id: str) -> dict[str, Any]:
     followup_fact_rows = []
     for row in followup_rows:
         for item in explode_followup_schedule(row):
-            for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(row.get("doctor_id"), f"followup:{row.get('id')}", item["scheduled_followup_date"]):
+            for doctor_key, doctor_dim in resolve_doctor_matches_from_source_id(
+                row.get("doctor_id"),
+                f"followup:{row.get('id')}",
+                item["scheduled_followup_date"],
+                campaign_hint=row.get("campaign_id"),
+            ):
                 filters = _doctor_filters(doctor_dim)
                 if privacy_allowlist and not _sapa_campaign_allowed(filters["campaign_key"], privacy_allowlist):
                     continue
@@ -1422,6 +1565,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             "dim_doctor_clinic": len(dim_rows),
             "fact_screening_submission": len(screening_rows),
             "fact_metric_event": len(metric_fact_rows),
+            "fact_field_rep_login": len(field_rep_login_rows),
             "fact_followup_schedule_instance": len(followup_fact_rows),
             "fact_webinar_registration": len(webinar_fact_rows),
             "fact_course_user_progress": len(course_progress_rows),
