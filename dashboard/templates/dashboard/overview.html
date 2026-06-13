@@ -171,7 +171,7 @@
         <div class="panel-title-row">
           <div>
             <h3 id="field-rep-modal-title">Field Representative Insights</h3>
-            <p class="subtext">Doctors Assigned is campaign-roster based. Engagement columns use the same doctor action metrics as the top cards.</p>
+            <p class="subtext">Doctors Assigned is campaign-roster based. Off-roster Activity credits known-rep sends without adding those doctors to the assigned roster.</p>
             {% if field_rep_summary.assignment_issue_count %}
               <p class="data-warning">{{ field_rep_summary.assignment_issue_count }} field-rep mapping issue{{ field_rep_summary.assignment_issue_count|pluralize }} found.</p>
             {% endif %}
@@ -206,6 +206,7 @@
                 <th>State</th>
                 <th>Doctors Assigned</th>
                 <th>Collateral Sent</th>
+                <th>Off-roster Activity</th>
                 <th>Viewed</th>
                 <th>Video Played</th>
                 <th>PDF / Collateral Saved</th>
@@ -245,6 +246,7 @@
                       {{ rep.doctors_sent }}
                     </button>
                   </td>
+                  <td>{{ rep.off_roster_activity_doctors|default:0 }}</td>
                   <td>
                     <button
                       type="button"
@@ -289,7 +291,7 @@
                   </td>
                 </tr>
               {% empty %}
-                <tr><td colspan="8">No field representative assignment data available.</td></tr>
+                <tr><td colspan="9">No field representative assignment data available.</td></tr>
               {% endfor %}
             </tbody>
           </table>
