@@ -2086,6 +2086,7 @@ def _field_rep_insight_rows(
                 STRING_AGG(DISTINCT NULLIF(ma.source_field_rep_email, ''), ', ' ORDER BY NULLIF(ma.source_field_rep_email, '')) AS source_field_rep_email,
                 STRING_AGG(DISTINCT NULLIF(ma.source_brand_rep_id, ''), ', ' ORDER BY NULLIF(ma.source_brand_rep_id, '')) AS source_brand_rep_id,
                 STRING_AGG(DISTINCT NULLIF(ma.evidence_source, ''), ', ' ORDER BY NULLIF(ma.evidence_source, '')) AS evidence_source,
+                MAX(CASE WHEN position('reporting_correction_rule' in COALESCE(ma.evidence_source, '')) > 0 THEN 1 ELSE 0 END) AS correction_flag,
                 MAX(ma.sent_flag) AS sent_flag,
                 MAX(ma.viewed_flag) AS viewed_flag,
                 MAX(ma.video_flag) AS video_flag,
@@ -2109,6 +2110,7 @@ def _field_rep_insight_rows(
                 COUNT(*) FILTER (WHERE viewed_flag = 1) AS doctors_viewed,
                 COUNT(*) FILTER (WHERE video_flag = 1) AS doctors_video_played,
                 COUNT(*) FILTER (WHERE pdf_flag = 1) AS doctors_pdf_downloaded,
+                COUNT(*) FILTER (WHERE sent_flag = 1 AND correction_flag = 1) AS correction_accepted_doctors,
                 {activity_doctors_json_sql}
             FROM activity_doctor_rows
             GROUP BY field_rep_id
@@ -2127,6 +2129,7 @@ def _field_rep_insight_rows(
             COALESCE(ab.video_doctors_json, '[]'::jsonb)::text AS video_doctors_json,
             COALESCE(ab.doctors_pdf_downloaded, 0)::int AS doctors_pdf_downloaded,
             COALESCE(ab.pdf_doctors_json, '[]'::jsonb)::text AS pdf_doctors_json,
+            COALESCE(ab.correction_accepted_doctors, 0)::int AS correction_accepted_doctors,
             CASE
                 WHEN COALESCE(ad.total_doctors_assigned, 0) = 0
                  AND (
@@ -2135,8 +2138,9 @@ def _field_rep_insight_rows(
                     OR COALESCE(ab.doctors_video_played, 0) > 0
                     OR COALESCE(ab.doctors_pdf_downloaded, 0) > 0
                  )
+                 AND COALESCE(ab.correction_accepted_doctors, 0) = 0
                 THEN 'No campaign doctor roster match; engagement comes from consolidated doctor action metrics.'
-                WHEN COALESCE(ab.doctors_sent, 0) > COALESCE(ad.total_doctors_assigned, 0)
+                WHEN COALESCE(ab.doctors_sent, 0) > COALESCE(ad.total_doctors_assigned, 0) + COALESCE(ab.correction_accepted_doctors, 0)
                 THEN 'Engagement exceeds campaign roster matches; check doctor roster or rep mapping.'
                 ELSE ''
             END AS assignment_note,
@@ -2815,6 +2819,9 @@ def _manual_mapping_export_rows(field_rep_insights: list[dict[str, Any]]) -> lis
         is_activity_metric = record["metric"] != "Doctors Assigned"
         is_outside_roster = is_activity_metric and not is_unmapped_rep and bool(effective_key) and effective_key not in assigned_keys
         is_unknown_name = _is_missing_doctor_name(record["doctor_name"])
+        is_accepted_correction = "reporting_correction_rule" in str(record.get("evidence_source") or "")
+        if is_activity_metric and is_accepted_correction:
+            continue
         if not is_unmapped_rep and not is_unknown_name and not is_outside_roster:
             continue
 
