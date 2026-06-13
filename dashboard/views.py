@@ -2112,7 +2112,15 @@ def _field_rep_insight_rows(
                 COUNT(*) FILTER (WHERE video_flag = 1) AS doctors_video_played,
                 COUNT(*) FILTER (WHERE pdf_flag = 1) AS doctors_pdf_downloaded,
                 COUNT(*) FILTER (WHERE sent_flag = 1 AND correction_flag = 1) AS correction_accepted_doctors,
-                COUNT(*) FILTER (WHERE sent_flag = 1 AND assigned_match_flag = 0) AS off_roster_activity_doctors,
+                COUNT(*) FILTER (
+                    WHERE sent_flag = 1 AND assigned_match_flag = 0 AND field_rep_id <> '{UNMAPPED_ACTIVITY_FIELD_REP_ID}'
+                ) AS off_roster_sent_doctors,
+                COUNT(*) FILTER (
+                    WHERE viewed_flag = 1 AND assigned_match_flag = 0 AND field_rep_id <> '{UNMAPPED_ACTIVITY_FIELD_REP_ID}'
+                ) AS off_roster_viewed_doctors,
+                COUNT(*) FILTER (
+                    WHERE pdf_flag = 1 AND assigned_match_flag = 0 AND field_rep_id <> '{UNMAPPED_ACTIVITY_FIELD_REP_ID}'
+                ) AS off_roster_pdf_downloaded_doctors,
                 {activity_doctors_json_sql}
             FROM activity_doctor_rows
             GROUP BY field_rep_id
@@ -2132,7 +2140,9 @@ def _field_rep_insight_rows(
             COALESCE(ab.doctors_pdf_downloaded, 0)::int AS doctors_pdf_downloaded,
             COALESCE(ab.pdf_doctors_json, '[]'::jsonb)::text AS pdf_doctors_json,
             COALESCE(ab.correction_accepted_doctors, 0)::int AS correction_accepted_doctors,
-            COALESCE(ab.off_roster_activity_doctors, 0)::int AS off_roster_activity_doctors,
+            COALESCE(ab.off_roster_sent_doctors, 0)::int AS off_roster_sent_doctors,
+            COALESCE(ab.off_roster_viewed_doctors, 0)::int AS off_roster_viewed_doctors,
+            COALESCE(ab.off_roster_pdf_downloaded_doctors, 0)::int AS off_roster_pdf_downloaded_doctors,
             CASE
                 WHEN ar.field_rep_id = '{UNMAPPED_ACTIVITY_FIELD_REP_ID}'
                  AND (
@@ -2516,14 +2526,23 @@ def _build_media_logo_url(company_logo_path: Any) -> str | None:
 
 def _format_field_rep_summary(field_rep_insights: list[dict[str, Any]], total_doctors: int = 0) -> dict[str, int]:
     assigned_rep_rows = [row for row in field_rep_insights if not row.get("is_unmapped_activity")]
+    off_roster_sent = sum(
+        _to_int(row.get("off_roster_sent_doctors", row.get("off_roster_activity_doctors")))
+        for row in field_rep_insights
+    )
     return {
         "total_reps": len(assigned_rep_rows),
         "total_doctors_assigned": sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights),
         "doctors_sent": sum(_to_int(row.get("doctors_sent")) for row in field_rep_insights),
-        "off_roster_activity_doctors": sum(_to_int(row.get("off_roster_activity_doctors")) for row in field_rep_insights),
+        "off_roster_sent_doctors": off_roster_sent,
+        "off_roster_activity_doctors": off_roster_sent,
         "doctors_viewed": sum(_to_int(row.get("doctors_viewed")) for row in field_rep_insights),
+        "off_roster_viewed_doctors": sum(_to_int(row.get("off_roster_viewed_doctors")) for row in field_rep_insights),
         "doctors_video_played": sum(_to_int(row.get("doctors_video_played")) for row in field_rep_insights),
         "doctors_pdf_downloaded": sum(_to_int(row.get("doctors_pdf_downloaded")) for row in field_rep_insights),
+        "off_roster_pdf_downloaded_doctors": sum(
+            _to_int(row.get("off_roster_pdf_downloaded_doctors")) for row in field_rep_insights
+        ),
         "assignment_issue_count": sum(1 for row in field_rep_insights if row.get("assignment_note")),
     }
 
@@ -2634,10 +2653,12 @@ FIELD_REP_SUMMARY_EXPORT_HEADERS = [
     "State",
     "Doctors Assigned",
     "Collateral Sent",
-    "Off-roster Activity",
+    "Off-roster Sent",
     "Viewed",
+    "Off-roster Viewed",
     "Video Played",
     "PDF / Collateral Saved",
+    "Off-roster PDF Saved",
 ]
 
 
@@ -2725,10 +2746,12 @@ def _field_rep_summary_export_rows(field_rep_insights: list[dict[str, Any]]) -> 
             row.get("state_normalized", "UNKNOWN") or "UNKNOWN",
             _to_int(row.get("total_doctors_assigned")),
             _to_int(row.get("doctors_sent")),
-            _to_int(row.get("off_roster_activity_doctors")),
+            _to_int(row.get("off_roster_sent_doctors", row.get("off_roster_activity_doctors"))),
             _to_int(row.get("doctors_viewed")),
+            _to_int(row.get("off_roster_viewed_doctors")),
             _to_int(row.get("doctors_video_played")),
             _to_int(row.get("doctors_pdf_downloaded")),
+            _to_int(row.get("off_roster_pdf_downloaded_doctors")),
         ]
         for row in field_rep_insights
     ]
@@ -3005,13 +3028,15 @@ def _campaign_pdf_lines(context: dict[str, Any]) -> list[str]:
             f"Field Reps: {summary.get('total_reps', 0)}",
             f"Doctors Assigned: {summary.get('total_doctors_assigned', 0)}",
             f"Collateral Sent: {summary.get('doctors_sent', 0)}",
-            f"Off-roster Activity: {summary.get('off_roster_activity_doctors', 0)}",
+            f"Off-roster Sent: {summary.get('off_roster_sent_doctors', summary.get('off_roster_activity_doctors', 0))}",
             f"Viewed: {summary.get('doctors_viewed', 0)}",
+            f"Off-roster Viewed: {summary.get('off_roster_viewed_doctors', 0)}",
             f"Video Played: {summary.get('doctors_video_played', 0)}",
             f"PDF / Collateral Saved: {summary.get('doctors_pdf_downloaded', 0)}",
+            f"Off-roster PDF Saved: {summary.get('off_roster_pdf_downloaded_doctors', 0)}",
             "",
             "Field Rep Breakdown",
-            "Field Rep ID | Name | State | Assigned | Sent | Off-roster | Viewed | Video | Saved",
+            "Field Rep ID | Name | State | Assigned | Sent | Off-roster Sent | Viewed | Off-roster Viewed | Video | Saved | Off-roster Saved",
         ]
     )
     for row in context.get("field_rep_insights") or []:
@@ -3023,10 +3048,12 @@ def _campaign_pdf_lines(context: dict[str, Any]) -> list[str]:
                     str(row.get("state_normalized", "UNKNOWN") or "UNKNOWN"),
                     str(_to_int(row.get("total_doctors_assigned"))),
                     str(_to_int(row.get("doctors_sent"))),
-                    str(_to_int(row.get("off_roster_activity_doctors"))),
+                    str(_to_int(row.get("off_roster_sent_doctors", row.get("off_roster_activity_doctors")))),
                     str(_to_int(row.get("doctors_viewed"))),
+                    str(_to_int(row.get("off_roster_viewed_doctors"))),
                     str(_to_int(row.get("doctors_video_played"))),
                     str(_to_int(row.get("doctors_pdf_downloaded"))),
+                    str(_to_int(row.get("off_roster_pdf_downloaded_doctors"))),
                 ]
             )
         )

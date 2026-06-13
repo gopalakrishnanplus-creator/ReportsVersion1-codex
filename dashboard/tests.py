@@ -516,10 +516,12 @@ class DashboardAccessViewTests(SimpleTestCase):
                 "total_reps": 1,
                 "total_doctors_assigned": 2,
                 "doctors_sent": 2,
-                "off_roster_activity_doctors": 1,
+                "off_roster_sent_doctors": 1,
                 "doctors_viewed": 1,
+                "off_roster_viewed_doctors": 1,
                 "doctors_video_played": 1,
                 "doctors_pdf_downloaded": 1,
+                "off_roster_pdf_downloaded_doctors": 1,
                 "assignment_issue_count": 0,
             },
             "field_rep_insights": [
@@ -528,9 +530,12 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "field_rep_name": "Asha Mehta",
                     "total_doctors_assigned": 1,
                     "doctors_sent": 2,
+                    "off_roster_sent_doctors": 1,
                     "doctors_viewed": 1,
+                    "off_roster_viewed_doctors": 1,
                     "doctors_video_played": 1,
                     "doctors_pdf_downloaded": 1,
+                    "off_roster_pdf_downloaded_doctors": 1,
                     "assigned_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"}]',
                     "sent_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"},{"name":"","phone":"8888888888","doctor_key":"doc-2"}]',
                     "viewed_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"}]',
@@ -587,7 +592,10 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("activity_doctor_rows AS", sql)
         self.assertIn("correction_accepted_doctors", sql)
         self.assertIn("assigned_match_flag", sql)
-        self.assertIn("off_roster_activity_doctors", sql)
+        self.assertIn("off_roster_sent_doctors", sql)
+        self.assertIn("off_roster_viewed_doctors", sql)
+        self.assertIn("off_roster_pdf_downloaded_doctors", sql)
+        self.assertIn("field_rep_id <> '__unmapped_activity__'", sql)
         self.assertIn("reporting_correction_rule", sql)
         self.assertNotIn("COALESCE(ab.doctors_sent, 0) > COALESCE(ad.total_doctors_assigned, 0) + COALESCE(ab.correction_accepted_doctors, 0)", sql)
         self.assertNotIn("Engagement exceeds campaign roster matches", sql)
@@ -639,7 +647,9 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(summary["total_reps"], 1)
         self.assertEqual(summary["total_doctors_assigned"], 2)
         self.assertEqual(summary["doctors_sent"], 3)
-        self.assertEqual(summary["off_roster_activity_doctors"], 0)
+        self.assertEqual(summary["off_roster_sent_doctors"], 0)
+        self.assertEqual(summary["off_roster_viewed_doctors"], 0)
+        self.assertEqual(summary["off_roster_pdf_downloaded_doctors"], 0)
 
     def test_field_rep_insights_export_downloads_server_workbook(self):
         self._authenticated_campaign_session()
@@ -656,7 +666,9 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("field_rep_insights_demo_all_weeks_", response["Content-Disposition"])
         workbook = response.content.decode("utf-8")
         self.assertIn("Field Representative Summary", workbook)
-        self.assertIn("Off-roster Activity", workbook)
+        self.assertIn("Off-roster Sent", workbook)
+        self.assertIn("Off-roster Viewed", workbook)
+        self.assertIn("Off-roster PDF Saved", workbook)
         self.assertIn("Doctor Details", workbook)
         self.assertIn("FR-101", workbook)
         self.assertIn("Dr Meera Rao", workbook)
@@ -1569,8 +1581,12 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, '<div class="brand-logo">Demo</div>', html=True)
         self.assertContains(response, "Field Representative Insights")
+        self.assertContains(response, "Off-roster means valid activity by this rep for doctors outside that roster")
         self.assertContains(response, 'role="dialog"')
         self.assertContains(response, "Field Rep ID")
+        self.assertContains(response, "Off-roster Sent")
+        self.assertContains(response, "Off-roster Viewed")
+        self.assertContains(response, "Off-roster PDF Saved")
         self.assertContains(response, "Download Excel")
         self.assertContains(response, "Switch Collateral")
         self.assertContains(response, 'class="comparison-grid single"')
