@@ -570,8 +570,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("action_dates AS", sql)
         self.assertIn("campaign_roster_matches AS", sql)
         self.assertIn("silver.bridge_brand_campaign_doctor_base", sql)
-        self.assertIn("external_rep_key AS rep_key, 'brand_field_id'::text AS key_type", sql)
-        self.assertNotIn("AND ark.key_type = 'campaign_fieldrep_id'", sql)
+        self.assertIn("ark.key_type = 'campaign_fieldrep_id'", sql)
         self.assertIn("activity_key_candidates AS", sql)
         self.assertIn("activity_candidate_matches AS", sql)
         self.assertIn("unambiguous_activity_matches AS", sql)
@@ -2319,7 +2318,7 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertIn("transaction_doctor_lookup AS", sql)
         self.assertIn("rep_evidence_latest AS", sql)
         self.assertIn("campaign_roster_matches AS", sql)
-        self.assertNotIn("AND ark.key_type = 'campaign_fieldrep_id'", sql)
+        self.assertIn("AND ark.key_type = 'campaign_fieldrep_id'", sql)
         self.assertNotIn("FROM silver.fact_collateral_transaction tx\n                    WHERE", sql)
 
     def test_field_rep_insights_state_preserves_display_value_and_prefers_known_over_unknown(self):

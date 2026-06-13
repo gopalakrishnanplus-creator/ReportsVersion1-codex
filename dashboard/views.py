@@ -707,29 +707,7 @@ def _campaign_display_name(selected_campaign: str, brand_campaign_variants: list
 def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list[str]) -> int:
     brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
     candidate_cte = _candidate_campaign_ids_cte(brand_placeholders)
-    alias_joins, alias_selects, alias_key_columns = _field_rep_alias_sql_parts()
-    alias_key_rank = {
-        "auth_email_key": 10,
-        "local_email_key": 10,
-        "legacy_email_key": 10,
-        "legacy_gmail_key": 10,
-        "local_user_id_key": 30,
-        "legacy_rep_id_key": 35,
-        "local_field_id_key": 50,
-        "legacy_field_id_key": 50,
-        "auth_username_key": 60,
-        "local_username_key": 60,
-        "legacy_whatsapp_key": 70,
-    }
-    alias_key_unions = "\n            ".join(
-        f"""
-            UNION
-            SELECT field_rep_id, {column} AS rep_key, {alias_key_rank.get(column, 90)} AS match_rank
-            FROM assigned_reps
-            WHERE {column} <> ''
-        """.rstrip()
-        for column in alias_key_columns
-    )
+    alias_joins, alias_selects, _alias_key_columns = _field_rep_alias_sql_parts()
     params = [selected_campaign, *brand_keys, *brand_keys, _normalize_lookup_key(selected_campaign)]
     rows = _fetch_dicts(
         f"""
@@ -751,11 +729,6 @@ def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list
             SELECT field_rep_id, internal_rep_key AS rep_key, 40 AS match_rank
             FROM assigned_reps
             WHERE internal_rep_key <> ''
-            UNION
-            SELECT field_rep_id, external_rep_key AS rep_key, 45 AS match_rank
-            FROM assigned_reps
-            WHERE external_rep_key <> ''
-            {alias_key_unions}
         ),
         campaign_roster_doctors AS (
             SELECT DISTINCT ark.field_rep_id, b.doctor_identity_key
@@ -766,11 +739,10 @@ def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list
               AND COALESCE(NULLIF(b.doctor_identity_key, ''), '') <> ''
         ),
         global_assigned_doctors AS (
-            SELECT DISTINCT ark.field_rep_id, d.doctor_identity_key
-            FROM assigned_rep_keys ark
+            SELECT DISTINCT ar.field_rep_id, d.doctor_identity_key
+            FROM assigned_reps ar
             JOIN silver.dim_doctor d
-              ON {_normalized_sql('d.field_rep_id_resolved')} = ark.rep_key
-              OR {_normalized_sql('d.rep_id_normalized')} = ark.rep_key
+              ON d.field_rep_id_resolved = ar.field_rep_id
             WHERE COALESCE(NULLIF(d.doctor_identity_key, ''), '') <> ''
         ),
         assigned_doctors AS (
@@ -1356,6 +1328,7 @@ def _field_rep_insight_rows(
             FROM silver.bridge_brand_campaign_doctor_base b
             JOIN assigned_rep_keys ark
               ON {_normalized_sql('b.field_rep_id_resolved')} = ark.rep_key
+             AND ark.key_type = 'campaign_fieldrep_id'
             JOIN assigned_reps ar_rule
               ON ar_rule.field_rep_id = ark.field_rep_id
             LEFT JOIN doctor_identity_lookup d_identity
