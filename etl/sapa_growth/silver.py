@@ -335,6 +335,29 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
     return legacy_rows
 
 
+def _legacy_row_key(row: dict[str, Any], fields: tuple[str, ...]) -> str:
+    for field in fields:
+        value = clean_text(row.get(field))
+        if value:
+            return f"{field}:{value}"
+    return f"hash:{hash_fields(*sorted((key, clean_text(value) or '') for key, value in row.items()))}"
+
+
+def _merge_legacy_rows(source_rows: list[dict[str, Any]], activity_rows: list[dict[str, Any]], key_fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for row in source_rows + activity_rows:
+        key = _legacy_row_key(row, key_fields)
+        existing = merged.get(key, {})
+        combined = dict(existing)
+        for field, value in row.items():
+            if clean_text(value) is not None:
+                combined[field] = value
+            elif field not in combined:
+                combined[field] = value
+        merged[key] = combined
+    return list(merged.values())
+
+
 def build_silver(run_id: str) -> dict[str, Any]:
     now_iso = _now_iso()
     privacy_allowlist = active_campaign_privacy_allowlist()
@@ -365,12 +388,12 @@ def build_silver(run_id: str) -> dict[str, Any]:
 
     if rfa_activity_events:
         activity_legacy_rows = _activity_events_as_legacy_rows(rfa_activity_events)
-        redflag_submissions = activity_legacy_rows["redflags_patientsubmission"]
-        gnd_submissions = activity_legacy_rows["gnd_gndpatientsubmission"]
-        redflag_occurrences = activity_legacy_rows["redflags_submissionredflag"]
-        gnd_occurrences = activity_legacy_rows["gnd_gndsubmissionredflag"]
-        followup_rows = activity_legacy_rows["redflags_followupreminder"]
-        metric_rows = activity_legacy_rows["redflags_metricevent"]
+        redflag_submissions = _merge_legacy_rows(redflag_submissions, activity_legacy_rows["redflags_patientsubmission"], ("record_id", "id"))
+        gnd_submissions = _merge_legacy_rows(gnd_submissions, activity_legacy_rows["gnd_gndpatientsubmission"], ("id", "record_id"))
+        redflag_occurrences = _merge_legacy_rows(redflag_occurrences, activity_legacy_rows["redflags_submissionredflag"], ("id",))
+        gnd_occurrences = _merge_legacy_rows(gnd_occurrences, activity_legacy_rows["gnd_gndsubmissionredflag"], ("id",))
+        followup_rows = _merge_legacy_rows(followup_rows, activity_legacy_rows["redflags_followupreminder"], ("id",))
+        metric_rows = _merge_legacy_rows(metric_rows, activity_legacy_rows["redflags_metricevent"], ("id",))
 
     redflag_doctor_by_id = {clean_text(row.get("doctor_id")): row for row in redflag_doctors if clean_text(row.get("doctor_id"))}
     clinic_outcome_by_doctor = {clean_text(row.get("doctor_id")): row for row in clinic_outcomes if clean_text(row.get("doctor_id"))}
