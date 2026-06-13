@@ -10,8 +10,8 @@
 
 <section class="ida-band">
   <div>
-    <h2>Hide specific people except in one campaign</h2>
-    <p class="ida-muted">Add a person by email and/or phone, then enter the only campaign where that person may remain visible. Matching doctor, patient, and field-rep rows are excluded from other derived dashboards during ETL rebuild.</p>
+    <h2>Hide RAW records from reporting</h2>
+    <p class="ida-muted">Select the system and RAW table, paste the exact record IDs to hide, then rerun ETL. The selected records and their downstream reporting rows are excluded from dashboards without deleting RAW data.</p>
   </div>
   <div class="ida-safety-note">
     <strong>No RAW deletion</strong>
@@ -20,7 +20,95 @@
 </section>
 
 <section class="ida-panel">
-  <p class="ida-eyebrow">Status</p>
+  <p class="ida-eyebrow">RAW Record Rules</p>
+  {% if is_raw_visibility_active %}
+  <h2>{{ active_raw_visibility_rules|length }} active RAW visibility rule{{ active_raw_visibility_rules|length|pluralize }}</h2>
+  <p class="ida-muted">Active RAW rules are applied before derived report tables are rebuilt.</p>
+  {% else %}
+  <h2>No RAW record rules active</h2>
+  <p class="ida-muted">Add deleted collaterals, test campaign records, share rows, doctors, patients, or field reps below.</p>
+  {% endif %}
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Add RAW Records To Hide</p>
+  <form class="ida-form ida-record-form" method="post">
+    {% csrf_token %}
+    <input type="hidden" name="privacy_action" value="add_raw_visibility">
+    <div class="ida-field-grid">
+      <label class="ida-field ida-field-wide">
+        <span>System and RAW table</span>
+        <select name="table_ref" required>
+          <option value="">Select a system and RAW table</option>
+          {% for option in raw_visibility_table_options %}
+          <option value="{{ option.value }}">{{ option.system_label }} - {{ option.schema_name }}.{{ option.table_name }} - {{ option.entity_label }}</option>
+          {% endfor %}
+        </select>
+        <small>Use IDs from the table's identifier columns shown in the downloaded RAW CSV.</small>
+      </label>
+      <label class="ida-field ida-field-wide">
+        <span>Record IDs to hide</span>
+        <textarea name="record_identifiers" rows="4" placeholder="One or more IDs, comma-separated or one per line" required></textarea>
+        <small>Examples: collateral ID, campaign ID, doctor ID, share public ID, video code, or field rep ID depending on the selected RAW table.</small>
+      </label>
+      <label class="ida-field ida-field-wide">
+        <span>Reason</span>
+        <input type="text" name="reason" placeholder="Source record deleted or test record must not show in reports" required>
+      </label>
+    </div>
+    <button class="ida-button" type="submit">Hide RAW Records</button>
+  </form>
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">RAW Visibility Rules</p>
+  <div class="ida-table-wrap">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>System</th>
+          <th>RAW table</th>
+          <th>Entity</th>
+          <th>Record ID</th>
+          <th>Downstream effect</th>
+          <th>Reason</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rule in raw_visibility_rules %}
+        <tr>
+          <td>{% if rule.is_active %}<strong>Active</strong>{% else %}Inactive{% endif %}</td>
+          <td>{{ rule.system_label }}</td>
+          <td><code>{{ rule.schema_name }}.{{ rule.table_name }}</code><br><span>{{ rule.table_label }}</span></td>
+          <td>{{ rule.entity_label }}</td>
+          <td><code>{{ rule.record_identifier }}</code></td>
+          <td>{{ rule.downstream_effect }}</td>
+          <td>{{ rule.reason }}</td>
+          <td>
+            {% if rule.is_active %}
+            <form method="post">
+              {% csrf_token %}
+              <input type="hidden" name="privacy_action" value="deactivate_raw_visibility">
+              <input type="hidden" name="rule_id" value="{{ rule.rule_id }}">
+              <button class="ida-button ida-button-secondary" type="submit">Deactivate</button>
+            </form>
+            {% else %}
+            <span class="ida-muted">No action</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8">No RAW visibility rules have been created.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Person Rule Status</p>
   {% if is_person_privacy_active %}
   <h2>{{ active_person_rules|length }} active person visibility rule{{ active_person_rules|length|pluralize }}</h2>
   <p class="ida-muted">Only the specified campaign will show each matching person's PII after the next ETL rebuild.</p>

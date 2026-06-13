@@ -30,11 +30,15 @@ from etl.reporting_corrections import (
     list_reporting_correction_rules,
 )
 from etl.reporting_privacy import (
+    create_raw_visibility_rule,
     create_campaign_privacy_allowlist_rule,
     create_person_privacy_rule,
+    deactivate_raw_visibility_rule,
     deactivate_campaign_privacy_allowlist_rule,
     deactivate_person_privacy_rule,
     ensure_campaign_privacy_table,
+    list_raw_visibility_rules,
+    list_raw_visibility_table_options,
     list_campaign_privacy_allowlist_rules,
     list_person_privacy_rules,
 )
@@ -1820,6 +1824,17 @@ def _parse_campaign_ids(raw_value: str) -> list[str]:
     return _dedupe_text_values(re.split(r"[\n,;\t]+", raw_value or ""))
 
 
+def _parse_raw_visibility_record_ids(raw_value: str) -> list[str]:
+    return _dedupe_text_values(re.split(r"[\n,;\t]+", raw_value or ""))
+
+
+def _parse_raw_visibility_table_ref(raw_value: str) -> tuple[str, str, str]:
+    parts = [part.strip() for part in (raw_value or "").split("||")]
+    if len(parts) != 3 or not all(parts):
+        raise ValueError("Select a system and RAW table.")
+    return parts[0].lower(), parts[1], parts[2]
+
+
 def _values_getlist(values: Any, key: str) -> list[str]:
     if hasattr(values, "getlist"):
         return values.getlist(key)
@@ -2379,6 +2394,14 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
 
     if request.method == "POST":
         action = request.POST.get("privacy_action") or "add"
+        if action == "deactivate_raw_visibility":
+            rule_id = (request.POST.get("rule_id") or "").strip()
+            if deactivate_raw_visibility_rule(rule_id):
+                messages.success(request, "RAW visibility rule deactivated. Rerun ETL to refresh derived dashboards.")
+            else:
+                messages.error(request, "RAW visibility rule was not found.")
+            return redirect("internal-data-admin-privacy")
+
         if action == "deactivate_person":
             rule_id = (request.POST.get("rule_id") or "").strip()
             if deactivate_person_privacy_rule(rule_id):
@@ -2410,6 +2433,30 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
             except Exception as exc:
                 messages.error(request, f"Person visibility rule could not be created: {exc}")
 
+        if action == "add_raw_visibility":
+            try:
+                system_key, schema_name, table_name = _parse_raw_visibility_table_ref(request.POST.get("table_ref", ""))
+                record_ids = _parse_raw_visibility_record_ids(request.POST.get("record_identifiers", ""))
+                if not record_ids:
+                    raise ValueError("Enter at least one record identifier.")
+                with transaction.atomic():
+                    for record_identifier in record_ids:
+                        create_raw_visibility_rule(
+                            system_key=system_key,
+                            schema_name=schema_name,
+                            table_name=table_name,
+                            record_identifier=record_identifier,
+                            reason=request.POST.get("reason", ""),
+                            created_by=actor,
+                        )
+                messages.success(
+                    request,
+                    f"Created {len(record_ids)} RAW visibility rule{'' if len(record_ids) == 1 else 's'}. Rerun ETL to refresh derived dashboards.",
+                )
+                return redirect("internal-data-admin-privacy")
+            except Exception as exc:
+                messages.error(request, f"RAW visibility rule could not be created: {exc}")
+
         if action == "add":
             try:
                 create_campaign_privacy_allowlist_rule(
@@ -2426,6 +2473,8 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
     active_rules = [rule for rule in rules if rule.get("is_active")]
     person_rules = list_person_privacy_rules(include_inactive=True)
     active_person_rules = [rule for rule in person_rules if rule.get("is_active")]
+    raw_visibility_rules = list_raw_visibility_rules(include_inactive=True)
+    active_raw_visibility_rules = [rule for rule in raw_visibility_rules if rule.get("is_active")]
     return render(
         request,
         "dashboard/internal_data_admin/privacy.html",
@@ -2434,8 +2483,12 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
             "active_rules": active_rules,
             "person_rules": person_rules,
             "active_person_rules": active_person_rules,
+            "raw_visibility_rules": raw_visibility_rules,
+            "active_raw_visibility_rules": active_raw_visibility_rules,
+            "raw_visibility_table_options": list_raw_visibility_table_options(),
             "is_allowlist_active": bool(active_rules),
             "is_person_privacy_active": bool(active_person_rules),
+            "is_raw_visibility_active": bool(active_raw_visibility_rules),
         },
     )
 

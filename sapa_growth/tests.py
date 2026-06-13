@@ -401,6 +401,9 @@ class SapaGrowthLogicTests(SimpleTestCase):
         ), patch(
             "etl.sapa_growth.silver.active_person_privacy_rules",
             return_value=[],
+        ), patch(
+            "etl.sapa_growth.silver.active_raw_visibility_rules",
+            return_value=[],
         ):
             sapa_silver.build_silver("run-1")
 
