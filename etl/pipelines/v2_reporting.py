@@ -25,8 +25,11 @@ from etl.reporting_corrections import (
 from etl.reporting_privacy import (
     active_campaign_privacy_allowlist,
     active_person_privacy_rules,
+    active_raw_visibility_rules,
     filter_rows_by_campaign_fields,
     person_privacy_allowed_campaigns_for_row,
+    raw_visibility_entity_ids,
+    row_matches_raw_visibility_ids,
     row_visible_by_person_privacy,
 )
 
@@ -1134,6 +1137,147 @@ def _apply_person_privacy_to_source(source: dict[str, list[dict[str, Any]]], per
             if _field(row, "campaign_fieldrep_id") not in restricted_rep_allowed_campaigns
             or _field(row, "campaign_fieldrep_id") in visible_restricted_rep_ids
         ]
+
+    return output
+
+
+def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw_visibility_rules: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    if not raw_visibility_rules:
+        return source
+
+    output = {key: list(rows) for key, rows in source.items()}
+
+    def remove_hidden(source_key: str, hidden_ids: set[str], fields: tuple[str, ...]) -> None:
+        if not hidden_ids:
+            return
+        output[source_key] = [
+            row for row in output.get(source_key, []) if not row_matches_raw_visibility_ids(row, hidden_ids, fields)
+        ]
+
+    campaign_ids = raw_visibility_entity_ids(raw_visibility_rules, "campaign", system_key="inclinic")
+    if campaign_ids:
+        for source_key, fields in {
+            "campaign_v2": ("legacy_campaign_id", "id", "campaign_id", "campaign_uuid", "brand_campaign_id", "source_pk_value"),
+            "campaign_management_campaign": ("id", "brand_campaign_id", "campaign_id", "campaign_uuid", "source_pk_value"),
+            "campaign_field_rep_assignment_v2": ("legacy_campaign_id", "campaign_id", "campaign_uuid"),
+            "doctor_field_rep_roster_bridge_v2": ("legacy_campaign_id", "campaign_id", "campaign_uuid"),
+            "inclinic_assigned_doctor_roster_v2": ("legacy_campaign_id", "campaign_id", "campaign_uuid"),
+            "inclinic_campaign_collateral_v2": ("legacy_campaign_id", "campaign_id", "old_campaign_id", "brand_campaign_id", "campaign_uuid"),
+            "inclinic_campaign_field_rep_assignment_v2": ("legacy_campaign_id", "campaign_id", "old_campaign_id", "brand_campaign_id", "campaign_uuid"),
+            "inclinic_collateral_transaction_v2": ("legacy_campaign_id", "old_brand_campaign_id", "brand_campaign_id", "campaign_id", "campaign_uuid"),
+            "inclinic_share_event_v2": ("legacy_campaign_id", "old_brand_campaign_id", "brand_campaign_id", "campaign_id", "campaign_uuid"),
+        }.items():
+            remove_hidden(source_key, campaign_ids, fields)
+
+    field_rep_ids = raw_visibility_entity_ids(raw_visibility_rules, "field_rep", system_key="inclinic")
+    if field_rep_ids:
+        for source_key, fields in {
+            "field_rep_v2": (
+                "current_campaign_fieldrep_id",
+                "id",
+                "field_rep_uuid",
+                "current_brand_supplied_field_rep_id",
+                "brand_supplied_field_rep_id",
+                "source_pk_value",
+            ),
+            "inclinic_field_rep_identity_v2": (
+                "campaign_fieldrep_id",
+                "field_rep_uuid",
+                "source_value",
+                "source_value_normalized",
+                "source_pk_value",
+            ),
+            "campaign_field_rep_assignment_v2": ("field_rep_id", "campaign_fieldrep_id", "field_rep_uuid", "source_pk_value"),
+            "doctor_field_rep_roster_bridge_v2": ("field_rep_id", "campaign_fieldrep_id", "old_field_rep_id", "field_rep_uuid"),
+            "inclinic_assigned_doctor_roster_v2": ("field_rep_id", "campaign_fieldrep_id", "old_field_rep_id", "field_rep_uuid"),
+            "inclinic_campaign_field_rep_assignment_v2": ("field_rep_id", "campaign_fieldrep_id", "old_field_rep_id", "field_rep_uuid"),
+            "inclinic_collateral_transaction_v2": (
+                "field_rep_id",
+                "campaign_fieldrep_id",
+                "old_field_rep_id",
+                "brand_supplied_field_rep_id",
+                "old_field_rep_unique_id",
+                "field_rep_uuid",
+            ),
+            "inclinic_share_event_v2": (
+                "field_rep_id",
+                "campaign_fieldrep_id",
+                "old_field_rep_id",
+                "brand_supplied_field_rep_id",
+                "old_field_rep_unique_id",
+                "field_rep_uuid",
+            ),
+        }.items():
+            remove_hidden(source_key, field_rep_ids, fields)
+
+    doctor_ids = raw_visibility_entity_ids(raw_visibility_rules, "doctor", system_key="inclinic")
+    if doctor_ids:
+        for source_key, fields in {
+            "doctor_field_rep_roster_bridge_v2": (
+                "doctor_phone_normalized",
+                "doctor_phone_raw",
+                "doctor_uuid",
+                "inclinic_doctor_uuid",
+                "source_pk_value",
+            ),
+            "inclinic_assigned_doctor_roster_v2": (
+                "doctor_phone_normalized",
+                "doctor_phone_raw",
+                "doctor_uuid",
+                "inclinic_doctor_uuid",
+                "source_pk_value",
+            ),
+            "inclinic_collateral_transaction_v2": (
+                "doctor_phone_normalized",
+                "old_doctor_number",
+                "doctor_uuid",
+                "inclinic_doctor_uuid",
+                "old_doctor_unique_id",
+            ),
+            "inclinic_share_event_v2": (
+                "doctor_phone_normalized",
+                "old_doctor_identifier",
+                "doctor_uuid",
+                "inclinic_doctor_uuid",
+            ),
+        }.items():
+            remove_hidden(source_key, doctor_ids, fields)
+
+    collateral_ids = raw_visibility_entity_ids(raw_visibility_rules, "collateral", system_key="inclinic")
+    if collateral_ids:
+        for source_key, fields in {
+            "inclinic_collateral_v2": ("old_id", "collateral_uuid", "source_pk_value"),
+            "inclinic_campaign_collateral_v2": (
+                "old_collateral_id",
+                "collateral_uuid",
+                "old_id",
+                "campaign_collateral_uuid",
+                "source_pk_value",
+            ),
+            "inclinic_collateral_transaction_v2": (
+                "old_collateral_id",
+                "collateral_uuid",
+                "collateral_id",
+                "source_pk_value",
+            ),
+            "inclinic_share_event_v2": (
+                "old_collateral_id",
+                "collateral_uuid",
+                "collateral_id",
+                "source_pk_value",
+            ),
+        }.items():
+            remove_hidden(source_key, collateral_ids, fields)
+
+    share_ids = raw_visibility_entity_ids(raw_visibility_rules, "share", system_key="inclinic")
+    remove_hidden("inclinic_share_event_v2", share_ids, ("old_id", "share_event_uuid", "source_pk_value"))
+
+    transaction_ids = raw_visibility_entity_ids(raw_visibility_rules, "transaction", system_key="inclinic")
+    remove_hidden(
+        "inclinic_collateral_transaction_v2",
+        transaction_ids,
+        ("old_id", "transaction_uuid", "old_transaction_id", "source_pk_value"),
+    )
 
     return output
 
@@ -2251,6 +2395,8 @@ def build_v2_reporting(run_id: str) -> dict[str, Any]:
     source = _apply_campaign_privacy_to_source(source, privacy_allowlist)
     person_privacy_rules = active_person_privacy_rules()
     source = _apply_person_privacy_to_source(source, person_privacy_rules)
+    raw_visibility_rules = active_raw_visibility_rules(system_key="inclinic")
+    source = _apply_raw_visibility_to_source(source, raw_visibility_rules)
 
     ensure_schema("silver")
     _drop_bronze_views()
@@ -2309,6 +2455,7 @@ def build_v2_reporting(run_id: str) -> dict[str, Any]:
             "ops.reporting_data_correction_rule_active": len(correction_rules),
             "ops.reporting_campaign_privacy_allowlist_active": len(privacy_allowlist),
             "ops.reporting_person_privacy_rule_active": len(person_privacy_rules),
+            "ops.reporting_raw_visibility_rule_active": len(raw_visibility_rules),
         },
         "preservation_counts": preservation_counts,
         "issues": issues,

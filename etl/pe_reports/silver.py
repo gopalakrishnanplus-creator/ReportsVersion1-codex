@@ -11,8 +11,11 @@ from etl.pe_reports.storage import fetch_table, replace_table
 from etl.reporting_privacy import (
     active_campaign_privacy_allowlist,
     active_person_privacy_rules,
+    active_raw_visibility_rules,
     campaign_allowed_by_allowlist,
     person_privacy_matching_rules,
+    raw_visibility_entity_ids,
+    row_matches_raw_visibility_ids,
     row_visible_by_person_privacy,
 )
 from etl.pe_reports.utils import (
@@ -384,6 +387,97 @@ def _pe_person_matches(row: dict[str, Any], person_rules: list[dict[str, Any]]) 
             phone_fields=("phone_normalized", "whatsapp_normalized", "phone", "phone_number_normalized", "recipient_reference"),
         )
     )
+
+
+def _apply_raw_visibility_to_pe_inputs(
+    tables: dict[str, list[dict[str, Any]]],
+    raw_visibility_rules: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    if not raw_visibility_rules:
+        return tables
+
+    output = {key: list(rows) for key, rows in tables.items()}
+
+    def remove_hidden(table_key: str, hidden_ids: set[str], fields: tuple[str, ...]) -> None:
+        if not hidden_ids:
+            return
+        output[table_key] = [
+            row for row in output.get(table_key, []) if not row_matches_raw_visibility_ids(row, hidden_ids, fields)
+        ]
+
+    campaign_ids = raw_visibility_entity_ids(raw_visibility_rules, "campaign", system_key="pe")
+    if campaign_ids:
+        for table_key, fields in {
+            "campaign_rows": ("id", "campaign_id", "campaign_uuid"),
+            "publisher_campaign_rows": (
+                "campaign_id",
+                "campaign_uuid",
+                "pe_campaign_uuid",
+                "pe_campaign_id_normalized",
+                "master_campaign_id_normalized",
+            ),
+            "enrollment_rows": ("campaign_id", "campaign_uuid"),
+            "campaign_field_rep_rows": ("campaign_id", "campaign_uuid"),
+            "rep_assignment_credit_rows": ("campaign_uuid",),
+            "share_rows": ("campaign_uuid", "pe_campaign_uuid"),
+            "playback_rows": ("campaign_uuid",),
+            "banner_click_rows": ("campaign_uuid", "banner_id"),
+        }.items():
+            remove_hidden(table_key, campaign_ids, fields)
+
+    doctor_ids = raw_visibility_entity_ids(raw_visibility_rules, "doctor", system_key="pe")
+    doctor_ids |= raw_visibility_entity_ids(raw_visibility_rules, "patient", system_key="pe")
+    if doctor_ids:
+        for table_key, fields in {
+            "doctor_rows": ("doctor_id", "email", "whatsapp_no", "clinic_phone", "field_rep_id"),
+            "campaign_doctor_rows": ("id", "doctor_id", "doctor_uuid", "email", "phone"),
+            "enrollment_rows": ("doctor_id", "doctor_uuid"),
+            "share_summary_rows": ("id", "doctor_id"),
+            "share_rows": ("doctor_id", "doctor_summary_id", "recipient_reference"),
+            "playback_rows": ("doctor_id", "doctor_summary_id"),
+            "banner_click_rows": ("doctor_id", "doctor_summary_id"),
+            "rep_assignment_credit_rows": ("doctor_uuid",),
+        }.items():
+            remove_hidden(table_key, doctor_ids, fields)
+
+    field_rep_ids = raw_visibility_entity_ids(raw_visibility_rules, "field_rep", system_key="pe")
+    if field_rep_ids:
+        for table_key, fields in {
+            "field_rep_rows": ("id", "field_rep_uuid", "brand_supplied_field_rep_id", "phone_number"),
+            "campaign_field_rep_rows": ("field_rep_id", "field_rep_uuid", "id", "campaign_field_rep_assignment_uuid"),
+            "enrollment_rows": ("registered_by_id", "registered_by_field_rep_uuid"),
+            "rep_assignment_credit_rows": ("field_rep_uuid",),
+        }.items():
+            remove_hidden(table_key, field_rep_ids, fields)
+
+    content_ids = raw_visibility_entity_ids(raw_visibility_rules, "content", system_key="pe")
+    content_ids |= raw_visibility_entity_ids(raw_visibility_rules, "collateral", system_key="pe")
+    if content_ids:
+        for table_key, fields in {
+            "video_rows": ("id", "code", "video_id", "video_code"),
+            "video_language_rows": ("video_id", "video_code", "code"),
+            "bundle_rows": ("id", "code", "video_cluster_id", "video_cluster_code"),
+            "bundle_language_rows": ("video_cluster_id", "video_cluster_code", "code"),
+            "bundle_video_rows": ("video_id", "video_code", "video_cluster_id", "video_cluster_code"),
+            "trigger_rows": ("id", "code", "cluster_id", "primary_therapy_id"),
+            "trigger_cluster_rows": ("id", "code"),
+            "therapy_rows": ("id", "code"),
+            "share_rows": ("shared_item_code", "shared_item_name", "video_code", "video_cluster_code"),
+            "playback_rows": ("video_code", "video_name"),
+        }.items():
+            remove_hidden(table_key, content_ids, fields)
+
+    share_ids = raw_visibility_entity_ids(raw_visibility_rules, "share", system_key="pe")
+    if share_ids:
+        remove_hidden("share_rows", share_ids, ("id", "public_id", "share_event_uuid"))
+        remove_hidden("playback_rows", share_ids, ("share_id", "share_public_id", "share_event_uuid"))
+
+    activity_ids = raw_visibility_entity_ids(raw_visibility_rules, "activity", system_key="pe")
+    if activity_ids:
+        remove_hidden("playback_rows", activity_ids, ("id", "share_id", "share_public_id", "share_event_uuid"))
+        remove_hidden("banner_click_rows", activity_ids, ("id", "source_banner_click_id", "banner_id"))
+
+    return output
 
 
 def _preferred_localized_label(rows: list[dict[str, Any]], value_field: str, fallback: str | None = None) -> str | None:
@@ -1224,6 +1318,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
     counts: dict[str, int] = {}
     privacy_allowlist = active_campaign_privacy_allowlist()
     person_privacy_rules = active_person_privacy_rules()
+    raw_visibility_rules = active_raw_visibility_rules(system_key="pe")
 
     doctor_rows = fetch_table(BRONZE_SCHEMA, "redflags_doctor")
     campaign_doctor_rows = fetch_table(BRONZE_SCHEMA, "campaign_doctor")
@@ -1247,6 +1342,54 @@ def build_silver(run_id: str) -> dict[str, Any]:
     playback_rows = fetch_table(BRONZE_SCHEMA, "sharing_shareplaybackevent")
     banner_click_rows = fetch_table(BRONZE_SCHEMA, "sharing_sharebannerclickevent")
     rep_assignment_credit_rows = fetch_table(BRONZE_SCHEMA, "pe_rep_assignment_credit")
+
+    filtered_inputs = _apply_raw_visibility_to_pe_inputs(
+        {
+            "doctor_rows": doctor_rows,
+            "campaign_doctor_rows": campaign_doctor_rows,
+            "enrollment_rows": enrollment_rows,
+            "campaign_rows": campaign_rows,
+            "brand_rows": brand_rows,
+            "field_rep_rows": field_rep_rows,
+            "campaign_field_rep_rows": campaign_field_rep_rows,
+            "publisher_campaign_rows": publisher_campaign_rows,
+            "therapy_rows": therapy_rows,
+            "trigger_cluster_rows": trigger_cluster_rows,
+            "trigger_rows": trigger_rows,
+            "video_rows": video_rows,
+            "video_language_rows": video_language_rows,
+            "bundle_rows": bundle_rows,
+            "bundle_language_rows": bundle_language_rows,
+            "bundle_video_rows": bundle_video_rows,
+            "share_summary_rows": share_summary_rows,
+            "share_rows": share_rows,
+            "playback_rows": playback_rows,
+            "banner_click_rows": banner_click_rows,
+            "rep_assignment_credit_rows": rep_assignment_credit_rows,
+        },
+        raw_visibility_rules,
+    )
+    doctor_rows = filtered_inputs["doctor_rows"]
+    campaign_doctor_rows = filtered_inputs["campaign_doctor_rows"]
+    enrollment_rows = filtered_inputs["enrollment_rows"]
+    campaign_rows = filtered_inputs["campaign_rows"]
+    brand_rows = filtered_inputs["brand_rows"]
+    field_rep_rows = filtered_inputs["field_rep_rows"]
+    campaign_field_rep_rows = filtered_inputs["campaign_field_rep_rows"]
+    publisher_campaign_rows = filtered_inputs["publisher_campaign_rows"]
+    therapy_rows = filtered_inputs["therapy_rows"]
+    trigger_cluster_rows = filtered_inputs["trigger_cluster_rows"]
+    trigger_rows = filtered_inputs["trigger_rows"]
+    video_rows = filtered_inputs["video_rows"]
+    video_language_rows = filtered_inputs["video_language_rows"]
+    bundle_rows = filtered_inputs["bundle_rows"]
+    bundle_language_rows = filtered_inputs["bundle_language_rows"]
+    bundle_video_rows = filtered_inputs["bundle_video_rows"]
+    share_summary_rows = filtered_inputs["share_summary_rows"]
+    share_rows = filtered_inputs["share_rows"]
+    playback_rows = filtered_inputs["playback_rows"]
+    banner_click_rows = filtered_inputs["banner_click_rows"]
+    rep_assignment_credit_rows = filtered_inputs["rep_assignment_credit_rows"]
 
     brands_by_id = {clean_text(row.get("id")): row for row in brand_rows if clean_text(row.get("id"))}
     therapy_by_id = {clean_text(row.get("id")): row for row in therapy_rows if clean_text(row.get("id"))}
@@ -2361,6 +2504,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             "recon_doctor_share_summary": len(recon_rows),
             "ops.reporting_campaign_privacy_allowlist_active": len(privacy_allowlist),
             "ops.reporting_person_privacy_rule_active": len(person_privacy_rules),
+            "ops.reporting_raw_visibility_rule_active": len(raw_visibility_rules),
         }
     )
 

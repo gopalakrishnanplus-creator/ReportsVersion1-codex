@@ -12,8 +12,11 @@ from etl.sapa_growth.storage import fetch_table, replace_table
 from etl.reporting_privacy import (
     active_campaign_privacy_allowlist,
     active_person_privacy_rules,
+    active_raw_visibility_rules,
     campaign_allowed_by_allowlist,
     person_privacy_matching_rules,
+    raw_visibility_entity_ids,
+    row_matches_raw_visibility_ids,
     row_visible_by_person_privacy,
 )
 from sapa_growth.logic import (
@@ -152,6 +155,99 @@ def _sapa_person_matches(row: dict[str, Any], person_rules: list[dict[str, Any]]
             phone_fields=("canonical_phone", "canonical_whatsapp_no", "phone", "patient_whatsapp"),
         )
     )
+
+
+def _apply_raw_visibility_to_sapa_inputs(
+    tables: dict[str, list[dict[str, Any]]],
+    raw_visibility_rules: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    if not raw_visibility_rules:
+        return tables
+
+    output = {key: list(rows) for key, rows in tables.items()}
+
+    def remove_hidden(table_key: str, hidden_ids: set[str], fields: tuple[str, ...]) -> None:
+        if not hidden_ids:
+            return
+        output[table_key] = [
+            row for row in output.get(table_key, []) if not row_matches_raw_visibility_ids(row, hidden_ids, fields)
+        ]
+
+    campaign_ids = raw_visibility_entity_ids(raw_visibility_rules, "campaign", system_key="sapa")
+    if campaign_ids:
+        for table_key, fields in {
+            "campaign_rows": ("id", "campaign_id", "brand_campaign_id"),
+            "campaign_enrollments": ("campaign_id",),
+            "campaign_field_rep_rows": ("campaign_id",),
+            "campaign_doctors": ("campaign_id", "brand_campaign_id"),
+            "rfa_activity_events": ("campaign_uuid", "campaign_id", "brand_campaign_id"),
+            "redflag_submissions": ("campaign_id",),
+            "gnd_submissions": ("campaign_id",),
+            "followup_rows": ("campaign_id",),
+            "metric_rows": ("campaign_id",),
+        }.items():
+            remove_hidden(table_key, campaign_ids, fields)
+
+    field_rep_ids = raw_visibility_entity_ids(raw_visibility_rules, "field_rep", system_key="sapa")
+    if field_rep_ids:
+        for table_key, fields in {
+            "source_field_rep_rows": ("id", "brand_supplied_field_rep_id", "user_id", "phone_number"),
+            "campaign_field_rep_rows": ("id", "field_rep_id"),
+            "campaign_doctors": ("field_rep_id",),
+            "campaign_enrollments": ("registered_by_id",),
+            "rfa_activity_events": ("field_rep_uuid_at_event_time",),
+            "metric_rows": ("field_rep_id", "action_key"),
+        }.items():
+            remove_hidden(table_key, field_rep_ids, fields)
+
+    doctor_ids = raw_visibility_entity_ids(raw_visibility_rules, "doctor", system_key="sapa")
+    doctor_ids |= raw_visibility_entity_ids(raw_visibility_rules, "patient", system_key="sapa")
+    if doctor_ids:
+        for table_key, fields in {
+            "campaign_doctors": ("id", "doctor_id", "email", "phone"),
+            "redflag_doctors": ("doctor_id", "email", "whatsapp_no", "clinic_phone"),
+            "campaign_enrollments": ("doctor_id",),
+            "redflag_submissions": ("doctor_id", "patient_id", "record_id"),
+            "gnd_submissions": ("doctor_id", "patient_id", "id"),
+            "followup_rows": ("doctor_id", "patient_id", "patient_whatsapp", "id"),
+            "metric_rows": ("doctor_id", "patient_id", "id"),
+            "clinic_outcomes": ("doctor_id",),
+            "rfa_activity_events": ("doctor_uuid", "patient_id_raw"),
+            "webinar_rows": ("email", "phone", "registration_id"),
+            "course_summary_rows": ("user_id", "user_email", "phone"),
+            "course_breakdown_rows": ("user_id", "user_email", "phone"),
+        }.items():
+            remove_hidden(table_key, doctor_ids, fields)
+
+    content_ids = raw_visibility_entity_ids(raw_visibility_rules, "content", system_key="sapa")
+    content_ids |= raw_visibility_entity_ids(raw_visibility_rules, "collateral", system_key="sapa")
+    if content_ids:
+        for table_key, fields in {
+            "redflag_catalog_rows": ("red_flag_id", "doctor_video_url"),
+            "gnd_redflag_catalog_rows": ("red_flag_id", "doctor_video_url"),
+            "redflags_patientvideo_rows": ("id", "red_flag_id", "patient_video_url"),
+            "gnd_patientvideo_rows": ("id", "red_flag_id", "patient_video_url"),
+            "redflag_occurrences": ("red_flag_id", "red_flag", "id"),
+            "gnd_occurrences": ("red_flag_id", "red_flag", "id"),
+            "metric_rows": ("red_flag_id", "video_url", "form_id", "action_key"),
+            "rfa_activity_events": ("red_flag_id_raw", "form_id_raw", "overall_flag_code"),
+        }.items():
+            remove_hidden(table_key, content_ids, fields)
+
+    activity_ids = raw_visibility_entity_ids(raw_visibility_rules, "activity", system_key="sapa")
+    if activity_ids:
+        for table_key, fields in {
+            "rfa_activity_events": ("activity_event_uuid", "source_event_id", "source_pk_value"),
+            "redflag_submissions": ("record_id",),
+            "gnd_submissions": ("id",),
+            "redflag_occurrences": ("id", "submission_id"),
+            "gnd_occurrences": ("id", "submission_id"),
+            "followup_rows": ("id",),
+            "metric_rows": ("id",),
+        }.items():
+            remove_hidden(table_key, activity_ids, fields)
+
+    return output
 
 
 def _truthy(value: Any) -> bool:
@@ -362,6 +458,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
     now_iso = _now_iso()
     privacy_allowlist = active_campaign_privacy_allowlist()
     person_privacy_rules = active_person_privacy_rules()
+    raw_visibility_rules = active_raw_visibility_rules(system_key="sapa")
 
     campaign_doctors = fetch_table(BRONZE_SCHEMA, "campaign_doctor")
     campaign_enrollments = fetch_table(BRONZE_SCHEMA, "campaign_doctorcampaignenrollment")
@@ -385,6 +482,56 @@ def build_silver(run_id: str) -> dict[str, Any]:
     webinar_rows = fetch_table(BRONZE_SCHEMA, "wp_webinar_registrations")
     course_summary_rows = fetch_table(BRONZE_SCHEMA, "wp_course_summary")
     course_breakdown_rows = fetch_table(BRONZE_SCHEMA, "wp_course_breakdown")
+
+    filtered_inputs = _apply_raw_visibility_to_sapa_inputs(
+        {
+            "campaign_doctors": campaign_doctors,
+            "campaign_enrollments": campaign_enrollments,
+            "campaign_rows": campaign_rows,
+            "brand_rows": brand_rows,
+            "source_field_rep_rows": source_field_rep_rows,
+            "campaign_field_rep_rows": campaign_field_rep_rows,
+            "rfa_activity_events": rfa_activity_events,
+            "redflag_doctors": redflag_doctors,
+            "redflag_submissions": redflag_submissions,
+            "gnd_submissions": gnd_submissions,
+            "redflag_occurrences": redflag_occurrences,
+            "gnd_occurrences": gnd_occurrences,
+            "redflag_catalog_rows": redflag_catalog_rows,
+            "gnd_redflag_catalog_rows": gnd_redflag_catalog_rows,
+            "redflags_patientvideo_rows": redflags_patientvideo_rows,
+            "gnd_patientvideo_rows": gnd_patientvideo_rows,
+            "followup_rows": followup_rows,
+            "metric_rows": metric_rows,
+            "clinic_outcomes": clinic_outcomes,
+            "webinar_rows": webinar_rows,
+            "course_summary_rows": course_summary_rows,
+            "course_breakdown_rows": course_breakdown_rows,
+        },
+        raw_visibility_rules,
+    )
+    campaign_doctors = filtered_inputs["campaign_doctors"]
+    campaign_enrollments = filtered_inputs["campaign_enrollments"]
+    campaign_rows = filtered_inputs["campaign_rows"]
+    brand_rows = filtered_inputs["brand_rows"]
+    source_field_rep_rows = filtered_inputs["source_field_rep_rows"]
+    campaign_field_rep_rows = filtered_inputs["campaign_field_rep_rows"]
+    rfa_activity_events = filtered_inputs["rfa_activity_events"]
+    redflag_doctors = filtered_inputs["redflag_doctors"]
+    redflag_submissions = filtered_inputs["redflag_submissions"]
+    gnd_submissions = filtered_inputs["gnd_submissions"]
+    redflag_occurrences = filtered_inputs["redflag_occurrences"]
+    gnd_occurrences = filtered_inputs["gnd_occurrences"]
+    redflag_catalog_rows = filtered_inputs["redflag_catalog_rows"]
+    gnd_redflag_catalog_rows = filtered_inputs["gnd_redflag_catalog_rows"]
+    redflags_patientvideo_rows = filtered_inputs["redflags_patientvideo_rows"]
+    gnd_patientvideo_rows = filtered_inputs["gnd_patientvideo_rows"]
+    followup_rows = filtered_inputs["followup_rows"]
+    metric_rows = filtered_inputs["metric_rows"]
+    clinic_outcomes = filtered_inputs["clinic_outcomes"]
+    webinar_rows = filtered_inputs["webinar_rows"]
+    course_summary_rows = filtered_inputs["course_summary_rows"]
+    course_breakdown_rows = filtered_inputs["course_breakdown_rows"]
 
     if rfa_activity_events:
         activity_legacy_rows = _activity_events_as_legacy_rows(rfa_activity_events)
@@ -1595,6 +1742,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             "fact_doctor_status_daily": len(doctor_status_rows),
             "ops.reporting_campaign_privacy_allowlist_active": len(privacy_allowlist),
             "ops.reporting_person_privacy_rule_active": len(person_privacy_rules),
+            "ops.reporting_raw_visibility_rule_active": len(raw_visibility_rules),
         },
         "issues": {
             "invalid_course_status": dict(invalid_course_status_counter),

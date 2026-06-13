@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import os
 from collections import Counter
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,11 +13,15 @@ from django.urls import resolve
 
 import dashboard.views
 from etl import inclinic_pipeline
+from etl.pe_reports import silver as pe_silver
 from etl.pipelines import bronze_transform, raw_ingestion, silver_transform, v2_reporting
+from etl.sapa_growth import silver as sapa_silver
 from etl.reporting_privacy import (
     campaign_allowed_by_allowlist,
     filter_rows_by_campaign_fields,
     normalize_campaign_id,
+    normalize_record_identifier,
+    raw_visibility_entity_ids,
     row_visible_by_person_privacy,
 )
 from dashboard.internal_data_admin import (
@@ -483,6 +488,31 @@ class DashboardRoutingTests(SimpleTestCase):
                 phone_fields=("phone",),
             )
         )
+
+    def test_raw_visibility_helper_normalizes_entity_ids_by_system(self):
+        rules = [
+            {
+                "system_key": "inclinic",
+                "entity_type": "collateral",
+                "record_identifier_normalized": normalize_record_identifier("COL-001"),
+                "is_active": True,
+            },
+            {
+                "system_key": "pe",
+                "entity_type": "content",
+                "record_identifier_normalized": normalize_record_identifier("VID-1"),
+                "is_active": True,
+            },
+            {
+                "system_key": "inclinic",
+                "entity_type": "collateral",
+                "record_identifier_normalized": normalize_record_identifier("COL-002"),
+                "is_active": False,
+            },
+        ]
+
+        self.assertEqual(normalize_record_identifier(" COL-001 "), "col001")
+        self.assertEqual(raw_visibility_entity_ids(rules, "collateral", system_key="inclinic"), {"col001"})
 
 
 class DashboardAccessViewTests(SimpleTestCase):
@@ -999,6 +1029,38 @@ class DashboardAccessViewTests(SimpleTestCase):
         with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
             "dashboard.internal_data_admin.ensure_campaign_privacy_table",
         ), patch(
+            "dashboard.internal_data_admin.list_raw_visibility_rules",
+            return_value=[
+                {
+                    "rule_id": "raw-rule-1",
+                    "system_key": "inclinic",
+                    "system_label": "InClinic Reporting",
+                    "schema_name": "raw_v2_inclinic",
+                    "table_name": "inclinic_collateral_v2",
+                    "table_label": "InClinic collateral master",
+                    "record_identifier": "COL-1",
+                    "record_identifier_normalized": "col1",
+                    "entity_type": "collateral",
+                    "entity_label": "Collateral / content",
+                    "downstream_effect": "Hides linked collateral rows.",
+                    "reason": "Source collateral deleted",
+                    "is_active": True,
+                    "created_by": "internal_admin",
+                    "created_at": "2026-06-05 10:00:00+00",
+                }
+            ],
+        ), patch(
+            "dashboard.internal_data_admin.list_raw_visibility_table_options",
+            return_value=[
+                {
+                    "value": "inclinic||raw_v2_inclinic||inclinic_collateral_v2",
+                    "system_label": "InClinic Reporting",
+                    "schema_name": "raw_v2_inclinic",
+                    "table_name": "inclinic_collateral_v2",
+                    "entity_label": "Collateral / content",
+                }
+            ],
+        ), patch(
             "dashboard.internal_data_admin.list_person_privacy_rules",
             return_value=[
                 {
@@ -1034,9 +1096,67 @@ class DashboardAccessViewTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reporting Privacy Controls")
+        self.assertContains(response, "1 active RAW visibility rule")
+        self.assertContains(response, "COL-1")
         self.assertContains(response, "1 active person visibility rule")
         self.assertContains(response, "test.user@example.com")
         self.assertContains(response, "83ce7fc7c965433ab2b9717394abe3c1")
+
+    def test_internal_data_admin_privacy_post_adds_raw_visibility_rules(self):
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin.ensure_campaign_privacy_table",
+        ), patch(
+            "dashboard.internal_data_admin.transaction.atomic",
+            return_value=nullcontext(),
+        ), patch(
+            "dashboard.internal_data_admin.create_raw_visibility_rule",
+            side_effect=["raw-rule-1", "raw-rule-2"],
+        ) as create_rule:
+            response = self.client.post(
+                "/_internal/data-admin/privacy/",
+                {
+                    "privacy_action": "add_raw_visibility",
+                    "table_ref": "inclinic||raw_v2_inclinic||inclinic_collateral_v2",
+                    "record_identifiers": "COL-1\nCOL-2",
+                    "reason": "Source collateral deleted from source",
+                },
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/_internal/data-admin/privacy/")
+        self.assertEqual(create_rule.call_count, 2)
+        create_rule.assert_any_call(
+            system_key="inclinic",
+            schema_name="raw_v2_inclinic",
+            table_name="inclinic_collateral_v2",
+            record_identifier="COL-1",
+            reason="Source collateral deleted from source",
+            created_by="internal_admin",
+        )
+        create_rule.assert_any_call(
+            system_key="inclinic",
+            schema_name="raw_v2_inclinic",
+            table_name="inclinic_collateral_v2",
+            record_identifier="COL-2",
+            reason="Source collateral deleted from source",
+            created_by="internal_admin",
+        )
+
+    def test_internal_data_admin_privacy_post_deactivates_raw_visibility_rule(self):
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin.ensure_campaign_privacy_table",
+        ), patch(
+            "dashboard.internal_data_admin.deactivate_raw_visibility_rule",
+            return_value=True,
+        ) as deactivate_rule:
+            response = self.client.post(
+                "/_internal/data-admin/privacy/",
+                {"privacy_action": "deactivate_raw_visibility", "rule_id": "raw-rule-1"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/_internal/data-admin/privacy/")
+        deactivate_rule.assert_called_once_with("raw-rule-1")
 
     def test_internal_data_admin_privacy_post_adds_person_rule(self):
         with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
@@ -1967,6 +2087,82 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertEqual([row["field_rep_id"] for row in filtered["campaign_field_rep_assignment_v2"]], ["rep-1", "rep-2"])
         self.assertEqual([row["legacy_campaign_id"] for row in filtered["campaign_field_rep_assignment_v2"]], ["Allowed Campaign", "Other Campaign"])
         self.assertEqual([row["current_campaign_fieldrep_id"] for row in filtered["field_rep_v2"]], ["rep-1", "rep-2"])
+
+    def test_raw_visibility_filter_hides_inclinic_collateral_hierarchy(self):
+        rules = [
+            {
+                "system_key": "inclinic",
+                "entity_type": "collateral",
+                "record_identifier_normalized": normalize_record_identifier("COL-1"),
+                "is_active": True,
+            }
+        ]
+        source = {
+            "inclinic_collateral_v2": [{"old_id": "COL-1"}, {"old_id": "COL-2"}],
+            "inclinic_campaign_collateral_v2": [{"old_collateral_id": "COL-1"}, {"old_collateral_id": "COL-2"}],
+            "inclinic_collateral_transaction_v2": [{"old_collateral_id": "COL-1"}, {"old_collateral_id": "COL-2"}],
+            "inclinic_share_event_v2": [{"old_collateral_id": "COL-1"}, {"old_collateral_id": "COL-2"}],
+        }
+
+        filtered = v2_reporting._apply_raw_visibility_to_source(source, rules)
+
+        self.assertEqual([row["old_id"] for row in filtered["inclinic_collateral_v2"]], ["COL-2"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_campaign_collateral_v2"]], ["COL-2"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_collateral_transaction_v2"]], ["COL-2"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_share_event_v2"]], ["COL-2"])
+
+    def test_raw_visibility_filter_hides_pe_content_hierarchy(self):
+        rules = [
+            {
+                "system_key": "pe",
+                "entity_type": "content",
+                "record_identifier_normalized": normalize_record_identifier("VID-1"),
+                "is_active": True,
+            }
+        ]
+        tables = {
+            "video_rows": [{"code": "VID-1"}, {"code": "VID-2"}],
+            "video_language_rows": [],
+            "bundle_rows": [],
+            "bundle_language_rows": [],
+            "bundle_video_rows": [{"video_code": "VID-1"}, {"video_code": "VID-2"}],
+            "trigger_rows": [],
+            "trigger_cluster_rows": [],
+            "therapy_rows": [],
+            "share_rows": [{"shared_item_code": "VID-1"}, {"shared_item_code": "VID-2"}],
+            "playback_rows": [{"video_code": "VID-1"}, {"video_code": "VID-2"}],
+        }
+
+        filtered = pe_silver._apply_raw_visibility_to_pe_inputs(tables, rules)
+
+        self.assertEqual([row["code"] for row in filtered["video_rows"]], ["VID-2"])
+        self.assertEqual([row["video_code"] for row in filtered["bundle_video_rows"]], ["VID-2"])
+        self.assertEqual([row["shared_item_code"] for row in filtered["share_rows"]], ["VID-2"])
+        self.assertEqual([row["video_code"] for row in filtered["playback_rows"]], ["VID-2"])
+
+    def test_raw_visibility_filter_hides_sapa_activity_before_merge(self):
+        rules = [
+            {
+                "system_key": "sapa",
+                "entity_type": "activity",
+                "record_identifier_normalized": normalize_record_identifier("ACT-1"),
+                "is_active": True,
+            }
+        ]
+        tables = {
+            "rfa_activity_events": [{"activity_event_uuid": "ACT-1"}, {"activity_event_uuid": "ACT-2"}],
+            "redflag_submissions": [{"record_id": "ACT-1"}, {"record_id": "ACT-2"}],
+            "gnd_submissions": [],
+            "redflag_occurrences": [],
+            "gnd_occurrences": [],
+            "followup_rows": [],
+            "metric_rows": [],
+        }
+
+        filtered = sapa_silver._apply_raw_visibility_to_sapa_inputs(tables, rules)
+
+        self.assertEqual([row["activity_event_uuid"] for row in filtered["rfa_activity_events"]], ["ACT-2"])
+        self.assertEqual([row["record_id"] for row in filtered["redflag_submissions"]], ["ACT-2"])
 
     def test_field_rep_state_falls_back_to_inclinic_identity_v2_state(self):
         source = {
