@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from django.conf import settings
@@ -581,6 +583,9 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("assigned_doctor_rows AS", sql)
         self.assertIn("assigned_doctors_json", sql)
         self.assertIn("activity_doctor_rows AS", sql)
+        self.assertIn("correction_accepted_doctors", sql)
+        self.assertIn("reporting_correction_rule", sql)
+        self.assertIn("COALESCE(ab.doctors_sent, 0) > COALESCE(ad.total_doctors_assigned, 0) + COALESCE(ab.correction_accepted_doctors, 0)", sql)
         self.assertIn("sent_doctors_json", sql)
         self.assertIn("viewed_doctors_json", sql)
         self.assertIn("video_doctors_json", sql)
@@ -832,6 +837,25 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(state_attention[0]["reached_pct"], 100.0)
         self.assertEqual(state_attention[0]["open_pct"], 33.3)
         self.assertEqual(state_attention[0]["consumed_pct"], 100.0)
+
+    def test_manual_mapping_export_omits_activity_accepted_by_reporting_correction_rule(self):
+        rows = [
+            {
+                "field_rep_id": "3997",
+                "field_rep_name": "Arvind Kumar",
+                "assigned_doctors_json": "[]",
+                "sent_doctors_json": (
+                    '[{"name":"","phone":"7717491455","doctor_key":"doc-1",'
+                    '"source_field_rep_id":"86","source_field_rep_email":"arvind-hp3997@apexlab.com",'
+                    '"source_brand_rep_id":"3997","evidence_source":"collateral_transaction, reporting_correction_rule"}]'
+                ),
+                "viewed_doctors_json": "[]",
+                "video_doctors_json": "[]",
+                "pdf_doctors_json": "[]",
+            }
+        ]
+
+        self.assertEqual(dashboard.views._manual_mapping_export_rows(rows), [])
 
     def test_united_kingdom_state_is_grouped_as_unknown(self):
         self.assertEqual(dashboard.views._display_state_name("United Kingdom"), "Unknown")
@@ -1781,6 +1805,22 @@ class DashboardAccessViewTests(SimpleTestCase):
 
 
 class V2ReportingPreservationTests(SimpleTestCase):
+    def test_inclinic_manual_roster_correction_preset_is_scoped_and_reviewed(self):
+        preset = (
+            Path(settings.BASE_DIR)
+            / "etl"
+            / "correction_presets"
+            / "inclinic_apex_83ce_week5_manual_roster_corrections.csv"
+        )
+        with preset.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+
+        self.assertEqual(len(rows), 121)
+        self.assertEqual({row["campaign_id"] for row in rows}, {"83ce7fc7c965433ab2b9717394abe3c1"})
+        self.assertNotIn("30", {row["source_row"] for row in rows})
+        self.assertNotIn("123", {row["source_row"] for row in rows})
+        self.assertEqual(len({row["doctor_phone"] for row in rows}), 121)
+
     def test_v2_source_safety_fails_before_blank_reporting_rebuild(self):
         source = {key: [{"id": "1"}] for key in v2_reporting.REQUIRED_V2_SOURCE_KEYS}
         source["inclinic_share_event_v2"] = []

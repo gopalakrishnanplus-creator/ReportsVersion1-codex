@@ -149,6 +149,133 @@ def create_reporting_correction_rule(
     return correction_id
 
 
+def upsert_reporting_correction_rule(
+    *,
+    rule_type: str,
+    campaign_id: str,
+    doctor_phone: str,
+    doctor_name: str = "",
+    field_rep_brand_supplied_id: str = "",
+    expected_field_rep_brand_supplied_id: str = "",
+    affected_field_rep_brand_supplied_ids: str = "",
+    reason: str,
+    created_by: str,
+    system_name: str = "inclinic",
+) -> tuple[str, bool]:
+    ensure_reporting_correction_table()
+    rule_type = _clean(rule_type)
+    if rule_type not in ACTIVE_RULE_TYPES:
+        raise ValueError("Choose a valid reporting correction type.")
+    campaign_id = _clean(campaign_id)
+    doctor_phone = _clean(doctor_phone)
+    phone_normalized = normalize_phone(doctor_phone)
+    reason = _clean(reason)
+    system_name = _clean(system_name) or "inclinic"
+    doctor_name = _clean(doctor_name)
+    field_rep_brand_supplied_id = _clean(field_rep_brand_supplied_id)
+    expected_field_rep_brand_supplied_id = _clean(expected_field_rep_brand_supplied_id)
+    affected_field_rep_brand_supplied_ids = _clean(affected_field_rep_brand_supplied_ids)
+    created_by = _clean(created_by)
+    if not campaign_id:
+        raise ValueError("Campaign ID is required.")
+    if not phone_normalized:
+        raise ValueError("Doctor phone is required.")
+    if len(reason) < 8:
+        raise ValueError("A clear correction reason is required.")
+    if rule_type == RULE_KEEP_DOCTOR_WITH_REP and not expected_field_rep_brand_supplied_id:
+        raise ValueError("Expected ASM / brand-supplied field rep ID is required.")
+    if rule_type == RULE_EXCLUDE_INVALID_PHONE and not (field_rep_brand_supplied_id or doctor_name):
+        raise ValueError("For invalid-phone exclusions, provide Field Rep ID or Doctor Name to avoid a broad phone-only rule.")
+
+    campaign_key = normalize_key(campaign_id)
+    expected_key = normalize_key(expected_field_rep_brand_supplied_id)
+    field_rep_key = normalize_key(field_rep_brand_supplied_id)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT correction_id
+            FROM {_qident(CORRECTION_SCHEMA)}.{_qident(CORRECTION_TABLE)}
+            WHERE rule_type = %s
+              AND COALESCE(NULLIF(btrim(system_name), ''), 'inclinic') = %s
+              AND regexp_replace(lower(COALESCE(campaign_id, '')), '[^a-z0-9]+', '', 'g') = %s
+              AND doctor_phone_normalized = %s
+              AND regexp_replace(lower(COALESCE(expected_field_rep_brand_supplied_id, '')), '[^a-z0-9]+', '', 'g') = %s
+              AND regexp_replace(lower(COALESCE(field_rep_brand_supplied_id, '')), '[^a-z0-9]+', '', 'g') = %s
+            ORDER BY is_active DESC, updated_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            [rule_type, system_name, campaign_key, phone_normalized, expected_key, field_rep_key],
+        )
+        existing = cursor.fetchone()
+        if existing:
+            correction_id = existing[0]
+            cursor.execute(
+                f"""
+                UPDATE {_qident(CORRECTION_SCHEMA)}.{_qident(CORRECTION_TABLE)}
+                SET is_active = TRUE,
+                    doctor_phone = %s,
+                    doctor_phone_normalized = %s,
+                    doctor_name = %s,
+                    affected_field_rep_brand_supplied_ids = %s,
+                    reason = %s,
+                    created_by = %s,
+                    updated_at = NOW()
+                WHERE correction_id = %s
+                """,
+                [
+                    doctor_phone,
+                    phone_normalized,
+                    doctor_name,
+                    affected_field_rep_brand_supplied_ids,
+                    reason,
+                    created_by,
+                    correction_id,
+                ],
+            )
+            return correction_id, False
+
+        correction_id = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "|".join(
+                [
+                    "reporting_correction_rule",
+                    system_name,
+                    rule_type,
+                    campaign_key,
+                    phone_normalized,
+                    expected_key,
+                    field_rep_key,
+                ]
+            ),
+        ).hex
+        cursor.execute(
+            f"""
+            INSERT INTO {_qident(CORRECTION_SCHEMA)}.{_qident(CORRECTION_TABLE)}
+            (
+                correction_id, rule_type, system_name, campaign_id, doctor_phone, doctor_phone_normalized,
+                doctor_name, field_rep_brand_supplied_id, expected_field_rep_brand_supplied_id,
+                affected_field_rep_brand_supplied_ids, reason, created_by
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                correction_id,
+                rule_type,
+                system_name,
+                campaign_id,
+                doctor_phone,
+                phone_normalized,
+                doctor_name,
+                field_rep_brand_supplied_id,
+                expected_field_rep_brand_supplied_id,
+                affected_field_rep_brand_supplied_ids,
+                reason,
+                created_by,
+            ],
+        )
+    return correction_id, True
+
+
 def deactivate_reporting_correction_rule(correction_id: str) -> bool:
     ensure_reporting_correction_table()
     with connection.cursor() as cursor:
