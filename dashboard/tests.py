@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import os
+from collections import Counter
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -515,6 +516,7 @@ class DashboardAccessViewTests(SimpleTestCase):
                 "total_reps": 1,
                 "total_doctors_assigned": 2,
                 "doctors_sent": 2,
+                "off_roster_activity_doctors": 1,
                 "doctors_viewed": 1,
                 "doctors_video_played": 1,
                 "doctors_pdf_downloaded": 1,
@@ -584,8 +586,12 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("assigned_doctors_json", sql)
         self.assertIn("activity_doctor_rows AS", sql)
         self.assertIn("correction_accepted_doctors", sql)
+        self.assertIn("assigned_match_flag", sql)
+        self.assertIn("off_roster_activity_doctors", sql)
         self.assertIn("reporting_correction_rule", sql)
-        self.assertIn("COALESCE(ab.doctors_sent, 0) > COALESCE(ad.total_doctors_assigned, 0) + COALESCE(ab.correction_accepted_doctors, 0)", sql)
+        self.assertNotIn("COALESCE(ab.doctors_sent, 0) > COALESCE(ad.total_doctors_assigned, 0) + COALESCE(ab.correction_accepted_doctors, 0)", sql)
+        self.assertNotIn("Engagement exceeds campaign roster matches", sql)
+        self.assertIn("Unmapped or ambiguous field-rep activity; check source field-rep identity.", sql)
         self.assertIn("sent_doctors_json", sql)
         self.assertIn("viewed_doctors_json", sql)
         self.assertIn("video_doctors_json", sql)
@@ -633,6 +639,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(summary["total_reps"], 1)
         self.assertEqual(summary["total_doctors_assigned"], 2)
         self.assertEqual(summary["doctors_sent"], 3)
+        self.assertEqual(summary["off_roster_activity_doctors"], 0)
 
     def test_field_rep_insights_export_downloads_server_workbook(self):
         self._authenticated_campaign_session()
@@ -649,6 +656,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("field_rep_insights_demo_all_weeks_", response["Content-Disposition"])
         workbook = response.content.decode("utf-8")
         self.assertIn("Field Representative Summary", workbook)
+        self.assertIn("Off-roster Activity", workbook)
         self.assertIn("Doctor Details", workbook)
         self.assertIn("FR-101", workbook)
         self.assertIn("Dr Meera Rao", workbook)
@@ -689,7 +697,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("application/vnd.ms-excel", response["Content-Type"])
         workbook = response.content.decode("utf-8")
         self.assertIn("Doctors Requiring Manual Mapping", workbook)
-        self.assertIn("Activity doctor is not in assigned roster for this rep", workbook)
+        self.assertIn("Doctor name missing or unknown", workbook)
+        self.assertNotIn("Activity doctor is not in assigned roster for this rep", workbook)
         self.assertIn("8888888888", workbook)
 
     def test_campaign_pdf_export_downloads_server_pdf(self):
@@ -848,6 +857,25 @@ class DashboardAccessViewTests(SimpleTestCase):
                     '[{"name":"","phone":"7717491455","doctor_key":"doc-1",'
                     '"source_field_rep_id":"86","source_field_rep_email":"arvind-hp3997@apexlab.com",'
                     '"source_brand_rep_id":"3997","evidence_source":"collateral_transaction, reporting_correction_rule"}]'
+                ),
+                "viewed_doctors_json": "[]",
+                "video_doctors_json": "[]",
+                "pdf_doctors_json": "[]",
+            }
+        ]
+
+        self.assertEqual(dashboard.views._manual_mapping_export_rows(rows), [])
+
+    def test_manual_mapping_export_omits_named_off_roster_activity(self):
+        rows = [
+            {
+                "field_rep_id": "7277",
+                "field_rep_name": "Jaynandan Kumar",
+                "assigned_doctors_json": "[]",
+                "sent_doctors_json": (
+                    '[{"name":"Dr Off Roster","phone":"9900000000","doctor_key":"doc-off",'
+                    '"source_field_rep_id":"81","source_field_rep_email":"jaynandan@example.com",'
+                    '"source_brand_rep_id":"7277","evidence_source":"collateral_transaction"}]'
                 ),
                 "viewed_doctors_json": "[]",
                 "video_doctors_json": "[]",
@@ -1815,11 +1843,29 @@ class V2ReportingPreservationTests(SimpleTestCase):
         with preset.open("r", encoding="utf-8", newline="") as handle:
             rows = list(csv.DictReader(handle))
 
-        self.assertEqual(len(rows), 121)
+        self.assertEqual(len(rows), 112)
         self.assertEqual({row["campaign_id"] for row in rows}, {"83ce7fc7c965433ab2b9717394abe3c1"})
-        self.assertNotIn("30", {row["source_row"] for row in rows})
-        self.assertNotIn("123", {row["source_row"] for row in rows})
-        self.assertEqual(len({row["doctor_phone"] for row in rows}), 121)
+        self.assertEqual({row["recommended_action"] for row in rows}, {"SAFE_ACTIVITY_ONLY_MAPPING"})
+        self.assertEqual(len({row["doctor_phone"] for row in rows}), 112)
+        self.assertEqual(
+            Counter(row["expected_field_rep_brand_supplied_id"] for row in rows),
+            Counter(
+                {
+                    "3997": 29,
+                    "7277": 20,
+                    "1185": 18,
+                    "285": 14,
+                    "7908": 14,
+                    "3438": 6,
+                    "7019": 6,
+                    "FR10": 3,
+                    "2681": 1,
+                    "5816": 1,
+                }
+            ),
+        )
+        self.assertNotIn("week5:30", {row["source_row"] for row in rows})
+        self.assertNotIn("week5:123", {row["source_row"] for row in rows})
 
     def test_v2_source_safety_fails_before_blank_reporting_rebuild(self):
         source = {key: [{"id": "1"}] for key in v2_reporting.REQUIRED_V2_SOURCE_KEYS}

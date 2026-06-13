@@ -290,6 +290,34 @@ def deactivate_reporting_correction_rule(correction_id: str) -> bool:
         return cursor.rowcount > 0
 
 
+def deactivate_seeded_reporting_correction_rules(created_by_prefix: str, keep_correction_ids: set[str]) -> int:
+    ensure_reporting_correction_table()
+    prefix = _clean(created_by_prefix)
+    if not prefix:
+        raise ValueError("A created_by prefix is required for seeded correction cleanup.")
+
+    keep_ids = [_clean(correction_id) for correction_id in keep_correction_ids if _clean(correction_id)]
+    keep_sql = ""
+    params: list[Any] = [f"{prefix}%"]
+    if keep_ids:
+        keep_placeholders = ", ".join(["%s"] * len(keep_ids))
+        keep_sql = f"AND correction_id NOT IN ({keep_placeholders})"
+        params.extend(keep_ids)
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            UPDATE {_qident(CORRECTION_SCHEMA)}.{_qident(CORRECTION_TABLE)}
+            SET is_active = FALSE, updated_at = NOW()
+            WHERE is_active = TRUE
+              AND created_by LIKE %s
+              {keep_sql}
+            """,
+            params,
+        )
+        return cursor.rowcount
+
+
 def list_reporting_correction_rules(include_inactive: bool = True) -> list[dict[str, Any]]:
     ensure_reporting_correction_table()
     where_sql = "" if include_inactive else "WHERE is_active = TRUE"

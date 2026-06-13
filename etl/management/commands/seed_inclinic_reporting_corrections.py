@@ -5,7 +5,11 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
-from etl.reporting_corrections import RULE_KEEP_DOCTOR_WITH_REP, upsert_reporting_correction_rule
+from etl.reporting_corrections import (
+    RULE_KEEP_DOCTOR_WITH_REP,
+    deactivate_seeded_reporting_correction_rules,
+    upsert_reporting_correction_rule,
+)
 
 
 PRESET_FILES = {
@@ -38,6 +42,7 @@ class Command(BaseCommand):
         created = 0
         updated = 0
         skipped = 0
+        active_correction_ids: set[str] = set()
         with preset_path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
@@ -50,7 +55,7 @@ class Command(BaseCommand):
                 if options["dry_run"]:
                     updated += 1
                     continue
-                _correction_id, was_created = upsert_reporting_correction_rule(
+                correction_id, was_created = upsert_reporting_correction_rule(
                     rule_type=RULE_KEEP_DOCTOR_WITH_REP,
                     system_name="inclinic",
                     campaign_id=campaign_id,
@@ -61,6 +66,7 @@ class Command(BaseCommand):
                     reason=(row.get("reason") or "").strip(),
                     created_by=f"seed:{preset}:row:{(row.get('source_row') or '').strip()}",
                 )
+                active_correction_ids.add(correction_id)
                 if was_created:
                     created += 1
                 else:
@@ -73,8 +79,15 @@ class Command(BaseCommand):
                 )
             )
             return
+        deactivated = deactivate_seeded_reporting_correction_rules(
+            created_by_prefix=f"seed:{preset}:row:",
+            keep_correction_ids=active_correction_ids,
+        )
         self.stdout.write(
             self.style.SUCCESS(
-                f"Seeded correction preset {preset}: {created} created, {updated} updated/reactivated, {skipped} skipped."
+                (
+                    f"Seeded correction preset {preset}: {created} created, {updated} updated/reactivated, "
+                    f"{deactivated} stale deactivated, {skipped} skipped."
+                )
             )
         )

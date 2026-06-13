@@ -2087,6 +2087,7 @@ def _field_rep_insight_rows(
                 STRING_AGG(DISTINCT NULLIF(ma.source_brand_rep_id, ''), ', ' ORDER BY NULLIF(ma.source_brand_rep_id, '')) AS source_brand_rep_id,
                 STRING_AGG(DISTINCT NULLIF(ma.evidence_source, ''), ', ' ORDER BY NULLIF(ma.evidence_source, '')) AS evidence_source,
                 MAX(CASE WHEN position('reporting_correction_rule' in COALESCE(ma.evidence_source, '')) > 0 THEN 1 ELSE 0 END) AS correction_flag,
+                MAX(CASE WHEN ad.field_rep_id IS NOT NULL THEN 1 ELSE 0 END) AS assigned_match_flag,
                 MAX(ma.sent_flag) AS sent_flag,
                 MAX(ma.viewed_flag) AS viewed_flag,
                 MAX(ma.video_flag) AS video_flag,
@@ -2111,6 +2112,7 @@ def _field_rep_insight_rows(
                 COUNT(*) FILTER (WHERE video_flag = 1) AS doctors_video_played,
                 COUNT(*) FILTER (WHERE pdf_flag = 1) AS doctors_pdf_downloaded,
                 COUNT(*) FILTER (WHERE sent_flag = 1 AND correction_flag = 1) AS correction_accepted_doctors,
+                COUNT(*) FILTER (WHERE sent_flag = 1 AND assigned_match_flag = 0) AS off_roster_activity_doctors,
                 {activity_doctors_json_sql}
             FROM activity_doctor_rows
             GROUP BY field_rep_id
@@ -2130,18 +2132,16 @@ def _field_rep_insight_rows(
             COALESCE(ab.doctors_pdf_downloaded, 0)::int AS doctors_pdf_downloaded,
             COALESCE(ab.pdf_doctors_json, '[]'::jsonb)::text AS pdf_doctors_json,
             COALESCE(ab.correction_accepted_doctors, 0)::int AS correction_accepted_doctors,
+            COALESCE(ab.off_roster_activity_doctors, 0)::int AS off_roster_activity_doctors,
             CASE
-                WHEN COALESCE(ad.total_doctors_assigned, 0) = 0
+                WHEN ar.field_rep_id = '{UNMAPPED_ACTIVITY_FIELD_REP_ID}'
                  AND (
                     COALESCE(ab.doctors_sent, 0) > 0
                     OR COALESCE(ab.doctors_viewed, 0) > 0
                     OR COALESCE(ab.doctors_video_played, 0) > 0
                     OR COALESCE(ab.doctors_pdf_downloaded, 0) > 0
                  )
-                 AND COALESCE(ab.correction_accepted_doctors, 0) = 0
-                THEN 'No campaign doctor roster match; engagement comes from consolidated doctor action metrics.'
-                WHEN COALESCE(ab.doctors_sent, 0) > COALESCE(ad.total_doctors_assigned, 0) + COALESCE(ab.correction_accepted_doctors, 0)
-                THEN 'Engagement exceeds campaign roster matches; check doctor roster or rep mapping.'
+                THEN 'Unmapped or ambiguous field-rep activity; check source field-rep identity.'
                 ELSE ''
             END AS assignment_note,
             (ar.field_rep_id = '{UNMAPPED_ACTIVITY_FIELD_REP_ID}') AS is_unmapped_activity
@@ -2520,6 +2520,7 @@ def _format_field_rep_summary(field_rep_insights: list[dict[str, Any]], total_do
         "total_reps": len(assigned_rep_rows),
         "total_doctors_assigned": sum(_to_int(row.get("total_doctors_assigned")) for row in field_rep_insights),
         "doctors_sent": sum(_to_int(row.get("doctors_sent")) for row in field_rep_insights),
+        "off_roster_activity_doctors": sum(_to_int(row.get("off_roster_activity_doctors")) for row in field_rep_insights),
         "doctors_viewed": sum(_to_int(row.get("doctors_viewed")) for row in field_rep_insights),
         "doctors_video_played": sum(_to_int(row.get("doctors_video_played")) for row in field_rep_insights),
         "doctors_pdf_downloaded": sum(_to_int(row.get("doctors_pdf_downloaded")) for row in field_rep_insights),
@@ -2633,6 +2634,7 @@ FIELD_REP_SUMMARY_EXPORT_HEADERS = [
     "State",
     "Doctors Assigned",
     "Collateral Sent",
+    "Off-roster Activity",
     "Viewed",
     "Video Played",
     "PDF / Collateral Saved",
@@ -2723,6 +2725,7 @@ def _field_rep_summary_export_rows(field_rep_insights: list[dict[str, Any]]) -> 
             row.get("state_normalized", "UNKNOWN") or "UNKNOWN",
             _to_int(row.get("total_doctors_assigned")),
             _to_int(row.get("doctors_sent")),
+            _to_int(row.get("off_roster_activity_doctors")),
             _to_int(row.get("doctors_viewed")),
             _to_int(row.get("doctors_video_played")),
             _to_int(row.get("doctors_pdf_downloaded")),
@@ -2781,7 +2784,6 @@ def _is_missing_doctor_name(value: Any) -> bool:
 
 
 def _manual_mapping_export_rows(field_rep_insights: list[dict[str, Any]]) -> list[list[Any]]:
-    assigned_keys_by_rep: dict[str, set[str]] = {}
     detail_records: list[dict[str, Any]] = []
     for row in field_rep_insights:
         rep_id = str(row.get("field_rep_id") or "")
@@ -2790,7 +2792,6 @@ def _manual_mapping_export_rows(field_rep_insights: list[dict[str, Any]]) -> lis
             for doctor in _json_list(row.get(json_key)):
                 doctor_key = str(doctor.get("doctor_key") or "")
                 doctor_phone = str(doctor.get("phone") or "")
-                effective_key = doctor_key or doctor_phone
                 record = {
                     "rep_id": rep_id,
                     "rep_name": rep_name,
@@ -2798,38 +2799,30 @@ def _manual_mapping_export_rows(field_rep_insights: list[dict[str, Any]]) -> lis
                     "doctor_name": doctor.get("name", ""),
                     "doctor_phone": doctor_phone,
                     "doctor_key": doctor_key,
-                    "effective_key": effective_key,
                     "source_field_rep_id": doctor.get("source_field_rep_id", ""),
                     "source_field_rep_email": doctor.get("source_field_rep_email", ""),
                     "source_brand_rep_id": doctor.get("source_brand_rep_id", ""),
                     "evidence_source": doctor.get("evidence_source", ""),
                 }
                 detail_records.append(record)
-                if metric_label == "Doctors Assigned" and effective_key:
-                    assigned_keys_by_rep.setdefault(rep_id, set()).add(effective_key)
 
     correction_rows_by_key: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for record in detail_records:
         rep_id = record["rep_id"]
         doctor_key = record["doctor_key"]
         doctor_phone = record["doctor_phone"]
-        effective_key = record["effective_key"]
-        assigned_keys = assigned_keys_by_rep.get(rep_id, set())
         is_unmapped_rep = rep_id in {"UNMAPPED_ACTIVITY", UNMAPPED_ACTIVITY_FIELD_REP_ID}
         is_activity_metric = record["metric"] != "Doctors Assigned"
-        is_outside_roster = is_activity_metric and not is_unmapped_rep and bool(effective_key) and effective_key not in assigned_keys
         is_unknown_name = _is_missing_doctor_name(record["doctor_name"])
         is_accepted_correction = "reporting_correction_rule" in str(record.get("evidence_source") or "")
         if is_activity_metric and is_accepted_correction:
             continue
-        if not is_unmapped_rep and not is_unknown_name and not is_outside_roster:
+        if not is_unmapped_rep and not is_unknown_name:
             continue
 
         issue = "Doctor name missing or unknown"
         if is_unmapped_rep:
             issue = "Unmapped or ambiguous field-rep activity"
-        elif is_outside_roster:
-            issue = "Activity doctor is not in assigned roster for this rep"
 
         key = (rep_id, doctor_key, doctor_phone, issue)
         existing = correction_rows_by_key.setdefault(
@@ -3012,12 +3005,13 @@ def _campaign_pdf_lines(context: dict[str, Any]) -> list[str]:
             f"Field Reps: {summary.get('total_reps', 0)}",
             f"Doctors Assigned: {summary.get('total_doctors_assigned', 0)}",
             f"Collateral Sent: {summary.get('doctors_sent', 0)}",
+            f"Off-roster Activity: {summary.get('off_roster_activity_doctors', 0)}",
             f"Viewed: {summary.get('doctors_viewed', 0)}",
             f"Video Played: {summary.get('doctors_video_played', 0)}",
             f"PDF / Collateral Saved: {summary.get('doctors_pdf_downloaded', 0)}",
             "",
             "Field Rep Breakdown",
-            "Field Rep ID | Name | State | Assigned | Sent | Viewed | Video | Saved",
+            "Field Rep ID | Name | State | Assigned | Sent | Off-roster | Viewed | Video | Saved",
         ]
     )
     for row in context.get("field_rep_insights") or []:
@@ -3029,6 +3023,7 @@ def _campaign_pdf_lines(context: dict[str, Any]) -> list[str]:
                     str(row.get("state_normalized", "UNKNOWN") or "UNKNOWN"),
                     str(_to_int(row.get("total_doctors_assigned"))),
                     str(_to_int(row.get("doctors_sent"))),
+                    str(_to_int(row.get("off_roster_activity_doctors"))),
                     str(_to_int(row.get("doctors_viewed"))),
                     str(_to_int(row.get("doctors_video_played"))),
                     str(_to_int(row.get("doctors_pdf_downloaded"))),

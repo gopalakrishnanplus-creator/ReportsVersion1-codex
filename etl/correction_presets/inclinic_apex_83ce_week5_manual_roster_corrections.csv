@@ -1,122 +1,113 @@
-source_row,campaign_id,doctor_phone,expected_field_rep_brand_supplied_id,affected_field_rep_brand_supplied_ids,doctor_name,reason
-1,83ce7fc7c965433ab2b9717394abe3c1,7717491455,3997,,,Reviewed manual mapping sheet row 1: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-2,83ce7fc7c965433ab2b9717394abe3c1,8866438665,3997,,,Reviewed manual mapping sheet row 2: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-3,83ce7fc7c965433ab2b9717394abe3c1,8901347465,3997,,,Reviewed manual mapping sheet row 3: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-4,83ce7fc7c965433ab2b9717394abe3c1,9050589955,3997,,,Reviewed manual mapping sheet row 4: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-5,83ce7fc7c965433ab2b9717394abe3c1,9354077000,3997,,,Reviewed manual mapping sheet row 5: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-6,83ce7fc7c965433ab2b9717394abe3c1,9416145200,3997,,,Reviewed manual mapping sheet row 6: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-7,83ce7fc7c965433ab2b9717394abe3c1,9416281376,3997,,,Reviewed manual mapping sheet row 7: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-8,83ce7fc7c965433ab2b9717394abe3c1,9461066680,3997,,,Reviewed manual mapping sheet row 8: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-9,83ce7fc7c965433ab2b9717394abe3c1,9646594470,3997,,,Reviewed manual mapping sheet row 9: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-10,83ce7fc7c965433ab2b9717394abe3c1,9728829993,3997,,,Reviewed manual mapping sheet row 10: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-11,83ce7fc7c965433ab2b9717394abe3c1,9728916898,3997,,,Reviewed manual mapping sheet row 11: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-12,83ce7fc7c965433ab2b9717394abe3c1,9812005546,3997,,,Reviewed manual mapping sheet row 12: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-13,83ce7fc7c965433ab2b9717394abe3c1,9812012271,3997,,,Reviewed manual mapping sheet row 13: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-14,83ce7fc7c965433ab2b9717394abe3c1,9812025440,3997,,,Reviewed manual mapping sheet row 14: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-15,83ce7fc7c965433ab2b9717394abe3c1,9812077302,3997,,,Reviewed manual mapping sheet row 15: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-16,83ce7fc7c965433ab2b9717394abe3c1,9812156123,3997,,,Reviewed manual mapping sheet row 16: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-17,83ce7fc7c965433ab2b9717394abe3c1,9812398565,3997,,,Reviewed manual mapping sheet row 17: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-18,83ce7fc7c965433ab2b9717394abe3c1,9813200375,3997,,,Reviewed manual mapping sheet row 18: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-19,83ce7fc7c965433ab2b9717394abe3c1,9815133329,3997,,,Reviewed manual mapping sheet row 19: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-20,83ce7fc7c965433ab2b9717394abe3c1,9815830019,3997,,,Reviewed manual mapping sheet row 20: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-21,83ce7fc7c965433ab2b9717394abe3c1,9816154282,3997,,,Reviewed manual mapping sheet row 21: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-22,83ce7fc7c965433ab2b9717394abe3c1,9872474781,3997,,,Reviewed manual mapping sheet row 22: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-23,83ce7fc7c965433ab2b9717394abe3c1,9878947001,3997,,,Reviewed manual mapping sheet row 23: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-24,83ce7fc7c965433ab2b9717394abe3c1,9896138905,3997,,,Reviewed manual mapping sheet row 24: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-25,83ce7fc7c965433ab2b9717394abe3c1,9896327777,3997,,,Reviewed manual mapping sheet row 25: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-26,83ce7fc7c965433ab2b9717394abe3c1,9896400860,3997,,,Reviewed manual mapping sheet row 26: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-27,83ce7fc7c965433ab2b9717394abe3c1,9996130222,3997,,,Reviewed manual mapping sheet row 27: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-28,83ce7fc7c965433ab2b9717394abe3c1,9996222023,3997,,,Reviewed manual mapping sheet row 28: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-29,83ce7fc7c965433ab2b9717394abe3c1,9996370999,3997,,,Reviewed manual mapping sheet row 29: accept activity doctor phone for field rep 3997; excludes caution rows 30 and 123.
-31,83ce7fc7c965433ab2b9717394abe3c1,8460849800,7019,,,Reviewed manual mapping sheet row 31: accept activity doctor phone for field rep 7019; excludes caution rows 30 and 123.
-32,83ce7fc7c965433ab2b9717394abe3c1,9560734666,7019,,,Reviewed manual mapping sheet row 32: accept activity doctor phone for field rep 7019; excludes caution rows 30 and 123.
-33,83ce7fc7c965433ab2b9717394abe3c1,9712977939,7019,,,Reviewed manual mapping sheet row 33: accept activity doctor phone for field rep 7019; excludes caution rows 30 and 123.
-34,83ce7fc7c965433ab2b9717394abe3c1,9821033597,7019,,,Reviewed manual mapping sheet row 34: accept activity doctor phone for field rep 7019; excludes caution rows 30 and 123.
-35,83ce7fc7c965433ab2b9717394abe3c1,9825292444,7019,,,Reviewed manual mapping sheet row 35: accept activity doctor phone for field rep 7019; excludes caution rows 30 and 123.
-36,83ce7fc7c965433ab2b9717394abe3c1,9964856814,7019,,,Reviewed manual mapping sheet row 36: accept activity doctor phone for field rep 7019; excludes caution rows 30 and 123.
-37,83ce7fc7c965433ab2b9717394abe3c1,7005307782,285,,,Reviewed manual mapping sheet row 37: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-38,83ce7fc7c965433ab2b9717394abe3c1,8014506882,285,,,Reviewed manual mapping sheet row 38: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-39,83ce7fc7c965433ab2b9717394abe3c1,8131959227,285,,,Reviewed manual mapping sheet row 39: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-40,83ce7fc7c965433ab2b9717394abe3c1,8416004488,285,,,Reviewed manual mapping sheet row 40: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-41,83ce7fc7c965433ab2b9717394abe3c1,8731812695,285,,,Reviewed manual mapping sheet row 41: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-42,83ce7fc7c965433ab2b9717394abe3c1,8732829474,285,,,Reviewed manual mapping sheet row 42: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-43,83ce7fc7c965433ab2b9717394abe3c1,8893474951,285,,,Reviewed manual mapping sheet row 43: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-44,83ce7fc7c965433ab2b9717394abe3c1,8974857982,285,,,Reviewed manual mapping sheet row 44: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-45,83ce7fc7c965433ab2b9717394abe3c1,8974933106,285,,,Reviewed manual mapping sheet row 45: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-46,83ce7fc7c965433ab2b9717394abe3c1,9359169225,285,,,Reviewed manual mapping sheet row 46: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-47,83ce7fc7c965433ab2b9717394abe3c1,9436111760,285,,,Reviewed manual mapping sheet row 47: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-48,83ce7fc7c965433ab2b9717394abe3c1,9774764418,285,,,Reviewed manual mapping sheet row 48: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-49,83ce7fc7c965433ab2b9717394abe3c1,9856562687,285,,,Reviewed manual mapping sheet row 49: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-50,83ce7fc7c965433ab2b9717394abe3c1,9862549887,285,,,Reviewed manual mapping sheet row 50: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-51,83ce7fc7c965433ab2b9717394abe3c1,9862205748,285,,Dr A Barindra Sharma,Reviewed manual mapping sheet row 51: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-52,83ce7fc7c965433ab2b9717394abe3c1,9366021880,285,,Dr Minakshi Devi,Reviewed manual mapping sheet row 52: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-53,83ce7fc7c965433ab2b9717394abe3c1,9862484959,285,,Dr N Golmei,Reviewed manual mapping sheet row 53: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-54,83ce7fc7c965433ab2b9717394abe3c1,8837201381,285,,Dr Ningthoujam Anilbala Devi,Reviewed manual mapping sheet row 54: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-55,83ce7fc7c965433ab2b9717394abe3c1,9436024622,285,,Dr N Kameshore,Reviewed manual mapping sheet row 55: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-56,83ce7fc7c965433ab2b9717394abe3c1,8414880122,285,,Dr Rameshwor yengkhom,Reviewed manual mapping sheet row 56: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-57,83ce7fc7c965433ab2b9717394abe3c1,8974727216,285,,Dr Thokchom Devaraj Singh,Reviewed manual mapping sheet row 57: accept activity doctor phone for field rep 285; excludes caution rows 30 and 123.
-58,83ce7fc7c965433ab2b9717394abe3c1,9819448779,2681,,,Reviewed manual mapping sheet row 58: accept activity doctor phone for field rep 2681; excludes caution rows 30 and 123.
-59,83ce7fc7c965433ab2b9717394abe3c1,7002635597,1185,,,Reviewed manual mapping sheet row 59: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-60,83ce7fc7c965433ab2b9717394abe3c1,7005175030,1185,,,Reviewed manual mapping sheet row 60: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-61,83ce7fc7c965433ab2b9717394abe3c1,7005281658,1185,,,Reviewed manual mapping sheet row 61: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-62,83ce7fc7c965433ab2b9717394abe3c1,8093660620,1185,,,Reviewed manual mapping sheet row 62: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-63,83ce7fc7c965433ab2b9717394abe3c1,8414991460,1185,,,Reviewed manual mapping sheet row 63: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-64,83ce7fc7c965433ab2b9717394abe3c1,8638775964,1185,,,Reviewed manual mapping sheet row 64: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-65,83ce7fc7c965433ab2b9717394abe3c1,8837097613,1185,,,Reviewed manual mapping sheet row 65: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-66,83ce7fc7c965433ab2b9717394abe3c1,9340722590,1185,,,Reviewed manual mapping sheet row 66: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-67,83ce7fc7c965433ab2b9717394abe3c1,9366375116,1185,,,Reviewed manual mapping sheet row 67: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-68,83ce7fc7c965433ab2b9717394abe3c1,9435071293,1185,,,Reviewed manual mapping sheet row 68: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-69,83ce7fc7c965433ab2b9717394abe3c1,9435071294,1185,,,Reviewed manual mapping sheet row 69: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-70,83ce7fc7c965433ab2b9717394abe3c1,9435071452,1185,,,Reviewed manual mapping sheet row 70: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-71,83ce7fc7c965433ab2b9717394abe3c1,9436141285,1185,,,Reviewed manual mapping sheet row 71: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-72,83ce7fc7c965433ab2b9717394abe3c1,9436144186,1185,,,Reviewed manual mapping sheet row 72: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-73,83ce7fc7c965433ab2b9717394abe3c1,9862311243,1185,,,Reviewed manual mapping sheet row 73: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-74,83ce7fc7c965433ab2b9717394abe3c1,9864440247,1185,,,Reviewed manual mapping sheet row 74: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-75,83ce7fc7c965433ab2b9717394abe3c1,9954092133,1185,,,Reviewed manual mapping sheet row 75: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-76,83ce7fc7c965433ab2b9717394abe3c1,9954362899,1185,,,Reviewed manual mapping sheet row 76: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-77,83ce7fc7c965433ab2b9717394abe3c1,7002185290,1185,,Dr. Anowar Hussain,Reviewed manual mapping sheet row 77: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-78,83ce7fc7c965433ab2b9717394abe3c1,7002435849,1185,,Dr. D.j.Nath,Reviewed manual mapping sheet row 78: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-79,83ce7fc7c965433ab2b9717394abe3c1,8553831246,1185,,Dr. Hameed Uddin Ahmed,Reviewed manual mapping sheet row 79: accept activity doctor phone for field rep 1185; excludes caution rows 30 and 123.
-80,83ce7fc7c965433ab2b9717394abe3c1,7043876947,7277,,,Reviewed manual mapping sheet row 80: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-81,83ce7fc7c965433ab2b9717394abe3c1,7567379699,7277,,,Reviewed manual mapping sheet row 81: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-82,83ce7fc7c965433ab2b9717394abe3c1,8980963023,7277,,,Reviewed manual mapping sheet row 82: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-83,83ce7fc7c965433ab2b9717394abe3c1,8980975752,7277,,,Reviewed manual mapping sheet row 83: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-84,83ce7fc7c965433ab2b9717394abe3c1,9425673000,7277,,,Reviewed manual mapping sheet row 84: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-85,83ce7fc7c965433ab2b9717394abe3c1,9426703970,7277,,,Reviewed manual mapping sheet row 85: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-86,83ce7fc7c965433ab2b9717394abe3c1,9429842100,7277,,,Reviewed manual mapping sheet row 86: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-87,83ce7fc7c965433ab2b9717394abe3c1,9510043612,7277,,,Reviewed manual mapping sheet row 87: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-88,83ce7fc7c965433ab2b9717394abe3c1,9527257738,7277,,,Reviewed manual mapping sheet row 88: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-89,83ce7fc7c965433ab2b9717394abe3c1,9537567853,7277,,,Reviewed manual mapping sheet row 89: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-90,83ce7fc7c965433ab2b9717394abe3c1,9702013062,7277,,,Reviewed manual mapping sheet row 90: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-91,83ce7fc7c965433ab2b9717394abe3c1,9824051798,7277,,,Reviewed manual mapping sheet row 91: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-92,83ce7fc7c965433ab2b9717394abe3c1,9824267564,7277,,,Reviewed manual mapping sheet row 92: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-93,83ce7fc7c965433ab2b9717394abe3c1,9824858914,7277,,,Reviewed manual mapping sheet row 93: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-94,83ce7fc7c965433ab2b9717394abe3c1,9825210829,7277,,,Reviewed manual mapping sheet row 94: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-95,83ce7fc7c965433ab2b9717394abe3c1,9825919959,7277,,,Reviewed manual mapping sheet row 95: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-96,83ce7fc7c965433ab2b9717394abe3c1,9879639421,7277,,,Reviewed manual mapping sheet row 96: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-97,83ce7fc7c965433ab2b9717394abe3c1,9930368554,7277,,,Reviewed manual mapping sheet row 97: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-98,83ce7fc7c965433ab2b9717394abe3c1,9979860659,7277,,,Reviewed manual mapping sheet row 98: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-99,83ce7fc7c965433ab2b9717394abe3c1,9998572076,7277,,,Reviewed manual mapping sheet row 99: accept activity doctor phone for field rep 7277; excludes caution rows 30 and 123.
-100,83ce7fc7c965433ab2b9717394abe3c1,9417653578,3438,,,Reviewed manual mapping sheet row 100: accept activity doctor phone for field rep 3438; excludes caution rows 30 and 123.
-101,83ce7fc7c965433ab2b9717394abe3c1,9463233238,3438,,,Reviewed manual mapping sheet row 101: accept activity doctor phone for field rep 3438; excludes caution rows 30 and 123.
-102,83ce7fc7c965433ab2b9717394abe3c1,9814628431,3438,,,Reviewed manual mapping sheet row 102: accept activity doctor phone for field rep 3438; excludes caution rows 30 and 123.
-103,83ce7fc7c965433ab2b9717394abe3c1,7010415889,7908,,,Reviewed manual mapping sheet row 103: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-104,83ce7fc7c965433ab2b9717394abe3c1,8508953474,7908,,,Reviewed manual mapping sheet row 104: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-105,83ce7fc7c965433ab2b9717394abe3c1,8569532147,7908,,,Reviewed manual mapping sheet row 105: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-106,83ce7fc7c965433ab2b9717394abe3c1,8760210390,7908,,,Reviewed manual mapping sheet row 106: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-107,83ce7fc7c965433ab2b9717394abe3c1,9003649367,7908,,,Reviewed manual mapping sheet row 107: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-108,83ce7fc7c965433ab2b9717394abe3c1,9566977942,7908,,,Reviewed manual mapping sheet row 108: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-109,83ce7fc7c965433ab2b9717394abe3c1,9585959738,7908,,,Reviewed manual mapping sheet row 109: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-110,83ce7fc7c965433ab2b9717394abe3c1,9597597562,7908,,,Reviewed manual mapping sheet row 110: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-111,83ce7fc7c965433ab2b9717394abe3c1,9786775887,7908,,,Reviewed manual mapping sheet row 111: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-112,83ce7fc7c965433ab2b9717394abe3c1,9865246874,7908,,,Reviewed manual mapping sheet row 112: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-113,83ce7fc7c965433ab2b9717394abe3c1,9894700123,7908,,,Reviewed manual mapping sheet row 113: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-114,83ce7fc7c965433ab2b9717394abe3c1,9894806656,7908,,,Reviewed manual mapping sheet row 114: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-115,83ce7fc7c965433ab2b9717394abe3c1,9944365639,7908,,,Reviewed manual mapping sheet row 115: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-116,83ce7fc7c965433ab2b9717394abe3c1,9965325896,7908,,,Reviewed manual mapping sheet row 116: accept activity doctor phone for field rep 7908; excludes caution rows 30 and 123.
-117,83ce7fc7c965433ab2b9717394abe3c1,9639249453,FR10,,,Reviewed manual mapping sheet row 117: accept activity doctor phone for field rep FR10; excludes caution rows 30 and 123.
-118,83ce7fc7c965433ab2b9717394abe3c1,9825281118,FR10,,,Reviewed manual mapping sheet row 118: accept activity doctor phone for field rep FR10; excludes caution rows 30 and 123.
-119,83ce7fc7c965433ab2b9717394abe3c1,9852594664,FR10,,,Reviewed manual mapping sheet row 119: accept activity doctor phone for field rep FR10; excludes caution rows 30 and 123.
-120,83ce7fc7c965433ab2b9717394abe3c1,9979354031,FR10,,,Reviewed manual mapping sheet row 120: accept activity doctor phone for field rep FR10; excludes caution rows 30 and 123.
-121,83ce7fc7c965433ab2b9717394abe3c1,9488788756,1498,,LAKSHMI KANTH R,Reviewed manual mapping sheet row 121: accept activity doctor phone for field rep 1498; excludes caution rows 30 and 123.
-122,83ce7fc7c965433ab2b9717394abe3c1,9824236152,5816,,,Reviewed manual mapping sheet row 122: accept activity doctor phone for field rep 5816; excludes caution rows 30 and 123.
+source_row,campaign_id,doctor_phone,doctor_name,expected_field_rep_brand_supplied_id,affected_field_rep_brand_supplied_ids,recommended_action,reason
+week5:59,83ce7fc7c965433ab2b9717394abe3c1,7002635597,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:60,83ce7fc7c965433ab2b9717394abe3c1,7005175030,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:61,83ce7fc7c965433ab2b9717394abe3c1,7005281658,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:62,83ce7fc7c965433ab2b9717394abe3c1,8093660620,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:63,83ce7fc7c965433ab2b9717394abe3c1,8414991460,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:64,83ce7fc7c965433ab2b9717394abe3c1,8638775964,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:65,83ce7fc7c965433ab2b9717394abe3c1,8837097613,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:66,83ce7fc7c965433ab2b9717394abe3c1,9340722590,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:67,83ce7fc7c965433ab2b9717394abe3c1,9366375116,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:68,83ce7fc7c965433ab2b9717394abe3c1,9435071293,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:69,83ce7fc7c965433ab2b9717394abe3c1,9435071294,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:70,83ce7fc7c965433ab2b9717394abe3c1,9435071452,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:71,83ce7fc7c965433ab2b9717394abe3c1,9436141285,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:72,83ce7fc7c965433ab2b9717394abe3c1,9436144186,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:73,83ce7fc7c965433ab2b9717394abe3c1,9862311243,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:74,83ce7fc7c965433ab2b9717394abe3c1,9864440247,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:75,83ce7fc7c965433ab2b9717394abe3c1,9954092133,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:76,83ce7fc7c965433ab2b9717394abe3c1,9954362899,,1185,1185,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tapas Das (1185); do not add to assigned doctor roster.
+week5:58,83ce7fc7c965433ab2b9717394abe3c1,9819448779,,2681,2681,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Mahesh Kumar Pandey (2681); do not add to assigned doctor roster.
+week5:37,83ce7fc7c965433ab2b9717394abe3c1,7005307782,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:38,83ce7fc7c965433ab2b9717394abe3c1,8014506882,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:39,83ce7fc7c965433ab2b9717394abe3c1,8131959227,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:40,83ce7fc7c965433ab2b9717394abe3c1,8416004488,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:41,83ce7fc7c965433ab2b9717394abe3c1,8731812695,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:42,83ce7fc7c965433ab2b9717394abe3c1,8732829474,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:43,83ce7fc7c965433ab2b9717394abe3c1,8893474951,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:44,83ce7fc7c965433ab2b9717394abe3c1,8974857982,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:45,83ce7fc7c965433ab2b9717394abe3c1,8974933106,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:46,83ce7fc7c965433ab2b9717394abe3c1,9359169225,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:47,83ce7fc7c965433ab2b9717394abe3c1,9436111760,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:48,83ce7fc7c965433ab2b9717394abe3c1,9774764418,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:49,83ce7fc7c965433ab2b9717394abe3c1,9856562687,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+week5:50,83ce7fc7c965433ab2b9717394abe3c1,9862549887,,285,285,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Tarak Maity (285); do not add to assigned doctor roster.
+all_weeks:2,83ce7fc7c965433ab2b9717394abe3c1,9814251770,,3438,3438,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Balwinder Singh (3438); do not add to assigned doctor roster.
+all_weeks:3,83ce7fc7c965433ab2b9717394abe3c1,9814741166,,3438,3438,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Balwinder Singh (3438); do not add to assigned doctor roster.
+all_weeks:4,83ce7fc7c965433ab2b9717394abe3c1,9855445632,,3438,3438,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Balwinder Singh (3438); do not add to assigned doctor roster.
+week5:100,83ce7fc7c965433ab2b9717394abe3c1,9417653578,,3438,3438,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Balwinder Singh (3438); do not add to assigned doctor roster.
+week5:101,83ce7fc7c965433ab2b9717394abe3c1,9463233238,,3438,3438,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Balwinder Singh (3438); do not add to assigned doctor roster.
+week5:102,83ce7fc7c965433ab2b9717394abe3c1,9814628431,,3438,3438,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Balwinder Singh (3438); do not add to assigned doctor roster.
+week5:1,83ce7fc7c965433ab2b9717394abe3c1,7717491455,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:10,83ce7fc7c965433ab2b9717394abe3c1,9728829993,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:11,83ce7fc7c965433ab2b9717394abe3c1,9728916898,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:12,83ce7fc7c965433ab2b9717394abe3c1,9812005546,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:13,83ce7fc7c965433ab2b9717394abe3c1,9812012271,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:14,83ce7fc7c965433ab2b9717394abe3c1,9812025440,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:15,83ce7fc7c965433ab2b9717394abe3c1,9812077302,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:16,83ce7fc7c965433ab2b9717394abe3c1,9812156123,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:17,83ce7fc7c965433ab2b9717394abe3c1,9812398565,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:18,83ce7fc7c965433ab2b9717394abe3c1,9813200375,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:19,83ce7fc7c965433ab2b9717394abe3c1,9815133329,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:2,83ce7fc7c965433ab2b9717394abe3c1,8866438665,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:20,83ce7fc7c965433ab2b9717394abe3c1,9815830019,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:21,83ce7fc7c965433ab2b9717394abe3c1,9816154282,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:22,83ce7fc7c965433ab2b9717394abe3c1,9872474781,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:23,83ce7fc7c965433ab2b9717394abe3c1,9878947001,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:24,83ce7fc7c965433ab2b9717394abe3c1,9896138905,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:25,83ce7fc7c965433ab2b9717394abe3c1,9896327777,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:26,83ce7fc7c965433ab2b9717394abe3c1,9896400860,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:27,83ce7fc7c965433ab2b9717394abe3c1,9996130222,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:28,83ce7fc7c965433ab2b9717394abe3c1,9996222023,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:29,83ce7fc7c965433ab2b9717394abe3c1,9996370999,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:3,83ce7fc7c965433ab2b9717394abe3c1,8901347465,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:4,83ce7fc7c965433ab2b9717394abe3c1,9050589955,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:5,83ce7fc7c965433ab2b9717394abe3c1,9354077000,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:6,83ce7fc7c965433ab2b9717394abe3c1,9416145200,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:7,83ce7fc7c965433ab2b9717394abe3c1,9416281376,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:8,83ce7fc7c965433ab2b9717394abe3c1,9461066680,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:9,83ce7fc7c965433ab2b9717394abe3c1,9646594470,,3997,3997,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Arvind Kumar (3997); do not add to assigned doctor roster.
+week5:122,83ce7fc7c965433ab2b9717394abe3c1,9824236152,,5816,5816,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Rajesh Kumar Pandey (5816); do not add to assigned doctor roster.
+week5:31,83ce7fc7c965433ab2b9717394abe3c1,8460849800,,7019,7019,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Rajesh Kumar (7019); do not add to assigned doctor roster.
+week5:32,83ce7fc7c965433ab2b9717394abe3c1,9560734666,,7019,7019,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Rajesh Kumar (7019); do not add to assigned doctor roster.
+week5:33,83ce7fc7c965433ab2b9717394abe3c1,9712977939,,7019,7019,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Rajesh Kumar (7019); do not add to assigned doctor roster.
+week5:34,83ce7fc7c965433ab2b9717394abe3c1,9821033597,,7019,7019,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Rajesh Kumar (7019); do not add to assigned doctor roster.
+week5:35,83ce7fc7c965433ab2b9717394abe3c1,9825292444,,7019,7019,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Rajesh Kumar (7019); do not add to assigned doctor roster.
+week5:36,83ce7fc7c965433ab2b9717394abe3c1,9964856814,,7019,7019,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Rajesh Kumar (7019); do not add to assigned doctor roster.
+week5:80,83ce7fc7c965433ab2b9717394abe3c1,7043876947,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:81,83ce7fc7c965433ab2b9717394abe3c1,7567379699,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:82,83ce7fc7c965433ab2b9717394abe3c1,8980963023,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:83,83ce7fc7c965433ab2b9717394abe3c1,8980975752,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:84,83ce7fc7c965433ab2b9717394abe3c1,9425673000,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:85,83ce7fc7c965433ab2b9717394abe3c1,9426703970,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:86,83ce7fc7c965433ab2b9717394abe3c1,9429842100,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:87,83ce7fc7c965433ab2b9717394abe3c1,9510043612,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:88,83ce7fc7c965433ab2b9717394abe3c1,9527257738,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:89,83ce7fc7c965433ab2b9717394abe3c1,9537567853,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:90,83ce7fc7c965433ab2b9717394abe3c1,9702013062,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:91,83ce7fc7c965433ab2b9717394abe3c1,9824051798,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:92,83ce7fc7c965433ab2b9717394abe3c1,9824267564,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:93,83ce7fc7c965433ab2b9717394abe3c1,9824858914,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:94,83ce7fc7c965433ab2b9717394abe3c1,9825210829,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:95,83ce7fc7c965433ab2b9717394abe3c1,9825919959,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:96,83ce7fc7c965433ab2b9717394abe3c1,9879639421,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:97,83ce7fc7c965433ab2b9717394abe3c1,9930368554,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:98,83ce7fc7c965433ab2b9717394abe3c1,9979860659,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:99,83ce7fc7c965433ab2b9717394abe3c1,9998572076,,7277,7277,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Jaynandan Kumar (7277); do not add to assigned doctor roster.
+week5:103,83ce7fc7c965433ab2b9717394abe3c1,7010415889,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:104,83ce7fc7c965433ab2b9717394abe3c1,8508953474,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:105,83ce7fc7c965433ab2b9717394abe3c1,8569532147,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:106,83ce7fc7c965433ab2b9717394abe3c1,8760210390,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:107,83ce7fc7c965433ab2b9717394abe3c1,9003649367,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:108,83ce7fc7c965433ab2b9717394abe3c1,9566977942,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:109,83ce7fc7c965433ab2b9717394abe3c1,9585959738,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:110,83ce7fc7c965433ab2b9717394abe3c1,9597597562,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:111,83ce7fc7c965433ab2b9717394abe3c1,9786775887,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:112,83ce7fc7c965433ab2b9717394abe3c1,9865246874,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:113,83ce7fc7c965433ab2b9717394abe3c1,9894700123,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:114,83ce7fc7c965433ab2b9717394abe3c1,9894806656,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:115,83ce7fc7c965433ab2b9717394abe3c1,9944365639,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:116,83ce7fc7c965433ab2b9717394abe3c1,9965325896,,7908,7908,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Ravivarma R (7908); do not add to assigned doctor roster.
+week5:118,83ce7fc7c965433ab2b9717394abe3c1,9825281118,,FR10,FR10,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Chitra Godiwala (FR10); do not add to assigned doctor roster.
+week5:119,83ce7fc7c965433ab2b9717394abe3c1,9852594664,,FR10,FR10,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Chitra Godiwala (FR10); do not add to assigned doctor roster.
+week5:120,83ce7fc7c965433ab2b9717394abe3c1,9979354031,,FR10,FR10,SAFE_ACTIVITY_ONLY_MAPPING,Reviewed activity-only attribution for Chitra Godiwala (FR10); do not add to assigned doctor roster.
