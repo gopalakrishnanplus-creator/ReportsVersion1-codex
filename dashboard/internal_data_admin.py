@@ -188,7 +188,7 @@ SYSTEM_PROFILES = {
         short_label="Inclinic",
         description="In-clinic sharing campaign data from MySQL source copies through RAW, BRONZE, SILVER, and campaign GOLD schemas.",
         cleanup_summary="Usually delete source/raw rows first, then rerun Inclinic ETL. Do not chase every derived row unless you are clearing stale report output before a rebuild.",
-        source_guidance="Start with raw_server2 campaign, collateral, share, and transaction tables; use raw_server1 only for campaign and field-rep mapping rows.",
+        source_guidance="Start with raw_v2_inclinic/raw_v2_master for current campaign, collateral, share, transaction, doctor, and field-rep records; use raw_server1/raw_server2 for legacy source copies.",
         cleanup_steps=[
             "Remove campaign identity rows from raw_server2.campaign_management_campaign and raw_server1.campaign_campaign.",
             "Remove engagement rows from raw_server2.sharing_management_collateraltransaction and raw_server2.sharing_management_sharelog.",
@@ -216,7 +216,7 @@ SYSTEM_PROFILES = {
         short_label="PE",
         description="Patient Education campaign data across raw_pe_*, bronze_pe, silver_pe, gold_pe_global, and gold_pe_campaign_* schemas.",
         cleanup_summary="Prefer deleting raw PE campaign/share/playback rows and rerunning PE ETL; derived PE schemas should normally be rebuilt.",
-        source_guidance="Use raw_pe_master for campaign, enrollment, doctor, brand, field-rep, trigger, and catalog records; use raw_pe_portal for share, playback, and banner-click activity.",
+        source_guidance="Use raw_pe_master for campaign, enrollment, doctor, brand, field-rep, trigger, and catalog records; use raw_pe_portal and raw_v2_pe_portal for share, playback, banner-click, and V2 portal activity.",
         cleanup_steps=[
             "Remove campaign and enrollment records from raw_pe_master when retiring a dummy PE campaign.",
             "Remove share, playback, and banner-click activity from raw_pe_portal for that test campaign.",
@@ -278,11 +278,11 @@ def _is_managed_table(schema: str, table: str) -> bool:
 
 
 def _system_key_for_schema(schema: str) -> str:
-    if schema in {"raw_server1", "raw_server2", "bronze", "silver", "gold_global"} or schema.startswith("gold_campaign_"):
+    if schema in {"raw_server1", "raw_server2", "raw_v2_master", "raw_v2_inclinic", "bronze", "silver", "gold_global"} or schema.startswith("gold_campaign_"):
         return "inclinic"
     if schema in {"raw_sapa_mysql", "raw_sapa_api", "bronze_sapa", "silver_sapa", "gold_sapa", "gold_sapa_stage"}:
         return "sapa"
-    if schema in {"raw_pe_master", "raw_pe_portal", "bronze_pe", "silver_pe", "gold_pe_global"} or schema.startswith("gold_pe_campaign_"):
+    if schema in {"raw_pe_master", "raw_pe_portal", "raw_v2_pe_portal", "bronze_pe", "silver_pe", "gold_pe_global"} or schema.startswith("gold_pe_campaign_"):
         return "pe"
     if schema in {"control", "ops", "archive"}:
         return "shared"
@@ -2445,6 +2445,7 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
                             system_key=system_key,
                             schema_name=schema_name,
                             table_name=table_name,
+                            identifier_column=request.POST.get("identifier_column", ""),
                             record_identifier=record_identifier,
                             reason=request.POST.get("reason", ""),
                             created_by=actor,

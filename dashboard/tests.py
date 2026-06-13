@@ -19,6 +19,7 @@ from etl.sapa_growth import silver as sapa_silver
 from etl.reporting_privacy import (
     campaign_allowed_by_allowlist,
     filter_rows_by_campaign_fields,
+    list_raw_visibility_table_options,
     normalize_campaign_id,
     normalize_record_identifier,
     raw_visibility_entity_ids,
@@ -240,9 +241,12 @@ class DashboardRoutingTests(SimpleTestCase):
 
     def test_internal_data_admin_system_mapping(self):
         self.assertEqual(_system_key_for_schema("raw_server1"), "inclinic")
+        self.assertEqual(_system_key_for_schema("raw_v2_master"), "inclinic")
+        self.assertEqual(_system_key_for_schema("raw_v2_inclinic"), "inclinic")
         self.assertEqual(_system_key_for_schema("gold_campaign_demo"), "inclinic")
         self.assertEqual(_system_key_for_schema("gold_sapa"), "sapa")
         self.assertEqual(_system_key_for_schema("raw_pe_portal"), "pe")
+        self.assertEqual(_system_key_for_schema("raw_v2_pe_portal"), "pe")
         self.assertEqual(_system_key_for_schema("control"), "shared")
         self.assertEqual(_system_key_for_schema("archive"), "shared")
 
@@ -264,6 +268,8 @@ class DashboardRoutingTests(SimpleTestCase):
         info = TableInfo("raw_server2", "sharing_management_sharelog", columns, [])
 
         self.assertTrue(_is_raw_table_ref("raw_server2", "sharing_management_sharelog"))
+        self.assertTrue(_is_raw_table_ref("raw_v2_inclinic", "inclinic_collateral_v2"))
+        self.assertTrue(_is_raw_table_ref("raw_v2_pe_portal", "pe_share_event_v2"))
         self.assertFalse(_is_raw_table_ref("bronze", "sharing_management_sharelog"))
         self.assertIn("_record_hash", RAW_AUDIT_COLUMN_NAMES)
         self.assertEqual(_source_fingerprint_columns(info), ["id", "campaign_id"])
@@ -513,6 +519,14 @@ class DashboardRoutingTests(SimpleTestCase):
 
         self.assertEqual(normalize_record_identifier(" COL-001 "), "col001")
         self.assertEqual(raw_visibility_entity_ids(rules, "collateral", system_key="inclinic"), {"col001"})
+
+    def test_raw_visibility_table_options_include_identifier_columns(self):
+        options = list_raw_visibility_table_options("inclinic")
+        collateral = next(option for option in options if option["table_name"] == "inclinic_collateral_v2")
+
+        self.assertEqual(collateral["value"], "inclinic||raw_v2_inclinic||inclinic_collateral_v2")
+        self.assertIn({"value": "old_id", "label": "old_id", "table_ref": collateral["value"]}, collateral["column_options"])
+        self.assertIn({"value": "collateral_uuid", "label": "collateral_uuid", "table_ref": collateral["value"]}, collateral["column_options"])
 
 
 class DashboardAccessViewTests(SimpleTestCase):
@@ -1038,6 +1052,8 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "schema_name": "raw_v2_inclinic",
                     "table_name": "inclinic_collateral_v2",
                     "table_label": "InClinic collateral master",
+                    "identifier_column": "old_id",
+                    "identifier_column_label": "old_id",
                     "record_identifier": "COL-1",
                     "record_identifier_normalized": "col1",
                     "entity_type": "collateral",
@@ -1058,6 +1074,7 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "schema_name": "raw_v2_inclinic",
                     "table_name": "inclinic_collateral_v2",
                     "entity_label": "Collateral / content",
+                    "column_options": [{"value": "old_id", "label": "old_id"}],
                 }
             ],
         ), patch(
@@ -1097,6 +1114,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reporting Privacy Controls")
         self.assertContains(response, "1 active RAW visibility rule")
+        self.assertContains(response, "Identifier column")
+        self.assertContains(response, "old_id")
         self.assertContains(response, "COL-1")
         self.assertContains(response, "1 active person visibility rule")
         self.assertContains(response, "test.user@example.com")
@@ -1117,6 +1136,7 @@ class DashboardAccessViewTests(SimpleTestCase):
                 {
                     "privacy_action": "add_raw_visibility",
                     "table_ref": "inclinic||raw_v2_inclinic||inclinic_collateral_v2",
+                    "identifier_column": "old_id",
                     "record_identifiers": "COL-1\nCOL-2",
                     "reason": "Source collateral deleted from source",
                 },
@@ -1129,6 +1149,7 @@ class DashboardAccessViewTests(SimpleTestCase):
             system_key="inclinic",
             schema_name="raw_v2_inclinic",
             table_name="inclinic_collateral_v2",
+            identifier_column="old_id",
             record_identifier="COL-1",
             reason="Source collateral deleted from source",
             created_by="internal_admin",
@@ -1137,6 +1158,7 @@ class DashboardAccessViewTests(SimpleTestCase):
             system_key="inclinic",
             schema_name="raw_v2_inclinic",
             table_name="inclinic_collateral_v2",
+            identifier_column="old_id",
             record_identifier="COL-2",
             reason="Source collateral deleted from source",
             created_by="internal_admin",
@@ -1274,6 +1296,52 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Duplicate rows")
         self.assertContains(response, "sharing_management_sharelog")
         self.assertContains(response, "Download CSV")
+
+    def test_internal_data_admin_raw_downloads_include_v2_tables_in_source_system_filter(self):
+        with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
+            "dashboard.internal_data_admin._raw_summary_cards",
+            return_value=[
+                {
+                    "schema": "raw_v2_inclinic",
+                    "name": "inclinic_collateral_v2",
+                    "system_key": "inclinic",
+                    "system_label": "Inclinic",
+                    "layer": "RAW source copy",
+                    "view_href": "/_internal/data-admin/raw_v2_inclinic/inclinic_collateral_v2/",
+                    "download_href": "/_internal/data-admin/raw-downloads/raw_v2_inclinic/inclinic_collateral_v2/download/",
+                    "error": None,
+                    "total_rows": 3,
+                    "unique_rows": 3,
+                    "duplicate_rows": 0,
+                    "duplicate_groups": 0,
+                    "largest_duplicate_group": 1,
+                    "latest_ingested_at": "2026-06-13T09:30:00+00:00",
+                    "has_duplicates": False,
+                },
+                {
+                    "schema": "raw_v2_pe_portal",
+                    "name": "pe_share_event_v2",
+                    "system_key": "pe",
+                    "system_label": "PE",
+                    "layer": "RAW source copy",
+                    "view_href": "/_internal/data-admin/raw_v2_pe_portal/pe_share_event_v2/",
+                    "download_href": "/_internal/data-admin/raw-downloads/raw_v2_pe_portal/pe_share_event_v2/download/",
+                    "error": None,
+                    "total_rows": 5,
+                    "unique_rows": 5,
+                    "duplicate_rows": 0,
+                    "duplicate_groups": 0,
+                    "largest_duplicate_group": 1,
+                    "latest_ingested_at": "2026-06-13T09:30:00+00:00",
+                    "has_duplicates": False,
+                },
+            ],
+        ):
+            response = self.client.get("/_internal/data-admin/raw-downloads/?system=inclinic")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "raw_v2_inclinic.inclinic_collateral_v2")
+        self.assertNotContains(response, "raw_v2_pe_portal.pe_share_event_v2")
 
     def test_internal_data_admin_raw_download_streams_csv(self):
         info = TableInfo(

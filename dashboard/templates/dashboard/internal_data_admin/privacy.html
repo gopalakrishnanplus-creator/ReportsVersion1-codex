@@ -11,7 +11,7 @@
 <section class="ida-band">
   <div>
     <h2>Hide RAW records from reporting</h2>
-    <p class="ida-muted">Select the system and RAW table, paste the exact record IDs to hide, then rerun ETL. The selected records and their downstream reporting rows are excluded from dashboards without deleting RAW data.</p>
+    <p class="ida-muted">Select the system, RAW table, and exact identifier column, then paste values from that column. The selected records and their downstream reporting rows are excluded from dashboards without deleting RAW data.</p>
   </div>
   <div class="ida-safety-note">
     <strong>No RAW deletion</strong>
@@ -38,18 +38,29 @@
     <div class="ida-field-grid">
       <label class="ida-field ida-field-wide">
         <span>System and RAW table</span>
-        <select name="table_ref" required>
+        <select name="table_ref" id="raw-visibility-table-ref" required>
           <option value="">Select a system and RAW table</option>
           {% for option in raw_visibility_table_options %}
           <option value="{{ option.value }}">{{ option.system_label }} - {{ option.schema_name }}.{{ option.table_name }} - {{ option.entity_label }}</option>
           {% endfor %}
         </select>
-        <small>Use IDs from the table's identifier columns shown in the downloaded RAW CSV.</small>
       </label>
       <label class="ida-field ida-field-wide">
-        <span>Record IDs to hide</span>
-        <textarea name="record_identifiers" rows="4" placeholder="One or more IDs, comma-separated or one per line" required></textarea>
-        <small>Examples: collateral ID, campaign ID, doctor ID, share public ID, video code, or field rep ID depending on the selected RAW table.</small>
+        <span>Identifier column</span>
+        <select name="identifier_column" id="raw-visibility-identifier-column" required disabled>
+          <option value="">Select a RAW table first</option>
+          {% for option in raw_visibility_table_options %}
+            {% for column in option.column_options %}
+            <option value="{{ column.value }}" data-table-ref="{{ option.value }}">{{ column.label }}</option>
+            {% endfor %}
+          {% endfor %}
+        </select>
+        <small>Typed values must come from this selected RAW column.</small>
+      </label>
+      <label class="ida-field ida-field-wide">
+        <span>Values from selected column</span>
+        <textarea name="record_identifiers" rows="4" placeholder="One or more values, comma-separated or one per line" required></textarea>
+        <small>Paste only values from the selected identifier column.</small>
       </label>
       <label class="ida-field ida-field-wide">
         <span>Reason</span>
@@ -69,8 +80,9 @@
           <th>Status</th>
           <th>System</th>
           <th>RAW table</th>
+          <th>Column</th>
           <th>Entity</th>
-          <th>Record ID</th>
+          <th>Value</th>
           <th>Downstream effect</th>
           <th>Reason</th>
           <th>Action</th>
@@ -82,6 +94,7 @@
           <td>{% if rule.is_active %}<strong>Active</strong>{% else %}Inactive{% endif %}</td>
           <td>{{ rule.system_label }}</td>
           <td><code>{{ rule.schema_name }}.{{ rule.table_name }}</code><br><span>{{ rule.table_label }}</span></td>
+          <td><code>{{ rule.identifier_column_label }}</code></td>
           <td>{{ rule.entity_label }}</td>
           <td><code>{{ rule.record_identifier }}</code></td>
           <td>{{ rule.downstream_effect }}</td>
@@ -100,12 +113,36 @@
           </td>
         </tr>
         {% empty %}
-        <tr><td colspan="8">No RAW visibility rules have been created.</td></tr>
+        <tr><td colspan="9">No RAW visibility rules have been created.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </section>
+
+<script>
+  (() => {
+    const tableSelect = document.getElementById("raw-visibility-table-ref");
+    const columnSelect = document.getElementById("raw-visibility-identifier-column");
+    if (!tableSelect || !columnSelect) {
+      return;
+    }
+    const allOptions = Array.from(columnSelect.querySelectorAll("option[data-table-ref]"));
+    const resetColumns = () => {
+      const tableRef = tableSelect.value;
+      columnSelect.value = "";
+      columnSelect.disabled = !tableRef;
+      columnSelect.querySelector("option[value='']").textContent = tableRef ? "Select identifier column" : "Select a RAW table first";
+      allOptions.forEach((option) => {
+        const visible = option.dataset.tableRef === tableRef;
+        option.hidden = !visible;
+        option.disabled = !visible;
+      });
+    };
+    tableSelect.addEventListener("change", resetColumns);
+    resetColumns();
+  })();
+</script>
 
 <section class="ida-panel">
   <p class="ida-eyebrow">Person Rule Status</p>

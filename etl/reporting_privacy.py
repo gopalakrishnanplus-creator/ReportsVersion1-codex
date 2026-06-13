@@ -355,6 +355,10 @@ def list_raw_visibility_table_options(system_key: str | None = None) -> list[dic
         enriched["entity_label"] = RAW_VISIBILITY_ENTITY_LABELS.get(enriched["entity_type"], enriched["entity_type"])
         enriched["identifier_help"] = ", ".join(enriched["identifier_fields"])
         enriched["value"] = f"{enriched['system_key']}||{enriched['schema_name']}||{enriched['table_name']}"
+        enriched["column_options"] = [
+            {"value": field, "label": field, "table_ref": enriched["value"]}
+            for field in enriched["identifier_fields"]
+        ]
         options.append(enriched)
     return sorted(options, key=lambda item: (item["system_label"], item["label"]))
 
@@ -416,6 +420,7 @@ def ensure_campaign_privacy_table() -> None:
                 system_key TEXT NOT NULL,
                 schema_name TEXT NOT NULL,
                 table_name TEXT NOT NULL,
+                identifier_column TEXT NOT NULL DEFAULT '',
                 record_identifier TEXT NOT NULL,
                 record_identifier_normalized TEXT NOT NULL,
                 entity_type TEXT NOT NULL,
@@ -429,9 +434,15 @@ def ensure_campaign_privacy_table() -> None:
         )
         cursor.execute(
             f"""
+            ALTER TABLE {_qident(PRIVACY_SCHEMA)}.{_qident(RAW_VISIBILITY_TABLE)}
+            ADD COLUMN IF NOT EXISTS identifier_column TEXT NOT NULL DEFAULT ''
+            """
+        )
+        cursor.execute(
+            f"""
             CREATE INDEX IF NOT EXISTS reporting_raw_visibility_rule_active_idx
             ON {_qident(PRIVACY_SCHEMA)}.{_qident(RAW_VISIBILITY_TABLE)}
-            (is_active, system_key, entity_type, record_identifier_normalized)
+            (is_active, system_key, entity_type, identifier_column, record_identifier_normalized)
             """
         )
 
@@ -591,6 +602,7 @@ def create_raw_visibility_rule(
     system_key: str,
     schema_name: str,
     table_name: str,
+    identifier_column: str,
     record_identifier: str,
     reason: str,
     created_by: str,
@@ -599,6 +611,11 @@ def create_raw_visibility_rule(
     option = _raw_visibility_option(system_key, schema_name, table_name)
     if option is None:
         raise ValueError("Select a supported RAW table for reporting visibility.")
+    identifier_column = _clean(identifier_column)
+    if not identifier_column:
+        raise ValueError("Select the RAW table column that contains these values.")
+    if identifier_column not in option["identifier_fields"]:
+        raise ValueError("Selected column is not a supported identifier for this RAW table.")
     record_identifier = _clean(record_identifier)
     normalized = normalize_record_identifier(record_identifier)
     reason = _clean(reason)
@@ -612,15 +629,16 @@ def create_raw_visibility_rule(
         cursor.execute(
             f"""
             INSERT INTO {_qident(PRIVACY_SCHEMA)}.{_qident(RAW_VISIBILITY_TABLE)}
-            (rule_id, system_key, schema_name, table_name, record_identifier,
+            (rule_id, system_key, schema_name, table_name, identifier_column, record_identifier,
              record_identifier_normalized, entity_type, reason, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             [
                 rule_id,
                 option["system_key"],
                 option["schema_name"],
                 option["table_name"],
+                identifier_column,
                 record_identifier,
                 normalized,
                 option["entity_type"],
@@ -651,7 +669,7 @@ def list_raw_visibility_rules(include_inactive: bool = True) -> list[dict[str, A
     with connection.cursor() as cursor:
         cursor.execute(
             f"""
-            SELECT rule_id, system_key, schema_name, table_name, record_identifier,
+            SELECT rule_id, system_key, schema_name, table_name, identifier_column, record_identifier,
                    record_identifier_normalized, entity_type, reason, is_active, created_by,
                    created_at::text AS created_at, updated_at::text AS updated_at
             FROM {_qident(PRIVACY_SCHEMA)}.{_qident(RAW_VISIBILITY_TABLE)}
@@ -670,6 +688,7 @@ def list_raw_visibility_rules(include_inactive: bool = True) -> list[dict[str, A
         option = labels_by_table.get((row["system_key"], row["schema_name"], row["table_name"]), {})
         row["system_label"] = SYSTEM_LABELS.get(row["system_key"], row["system_key"])
         row["table_label"] = option.get("label") or f"{row['schema_name']}.{row['table_name']}"
+        row["identifier_column_label"] = row.get("identifier_column") or "Any supported identifier"
         row["entity_label"] = RAW_VISIBILITY_ENTITY_LABELS.get(row["entity_type"], row["entity_type"])
         row["downstream_effect"] = option.get("downstream_effect", "")
     return rows
