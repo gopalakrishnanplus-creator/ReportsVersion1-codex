@@ -9,6 +9,18 @@ from django.conf import settings
 from sapa_growth.logic import COURSE_STATUS_LABELS, clean_text, map_course_status, parse_date
 
 
+def _normalized_key(value: Any) -> str:
+    return "".join(ch.lower() for ch in (clean_text(value) or "") if ch.isalnum())
+
+
+def _same_campaign_key(left: Any, right: Any) -> bool:
+    left_text = clean_text(left)
+    right_text = clean_text(right)
+    if not left_text or not right_text:
+        return False
+    return left_text == right_text or _normalized_key(left_text) == _normalized_key(right_text)
+
+
 def filter_rows(rows: list[dict[str, Any]], filters: dict[str, str | None], city_field: str = "city") -> list[dict[str, Any]]:
     campaign_key = clean_text(filters.get("campaign_key"))
     state = clean_text(filters.get("state"))
@@ -17,7 +29,7 @@ def filter_rows(rows: list[dict[str, Any]], filters: dict[str, str | None], city
     city = clean_text(filters.get("city"))
     filtered = rows
     if campaign_key:
-        filtered = [row for row in filtered if clean_text(row.get("campaign_key")) == campaign_key]
+        filtered = [row for row in filtered if _same_campaign_key(row.get("campaign_key"), campaign_key)]
     if state:
         filtered = [row for row in filtered if clean_text(row.get("state")) == state]
     if field_rep_id:

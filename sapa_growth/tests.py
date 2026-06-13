@@ -16,10 +16,11 @@ from etl.sapa_growth import silver as sapa_silver
 from etl.sapa_growth import storage as sapa_storage
 from etl.sapa_growth import gold as sapa_gold
 from etl.sapa_growth.mysql import extract_rows
-from etl.sapa_growth.silver import _activity_events_as_legacy_rows, _best_dim_for_event, _doctor_indexes, _doctor_matches_for_api
+from etl.sapa_growth.silver import _activity_events_as_legacy_rows, _best_dim_for_event, _doctor_indexes, _doctor_matches_for_api, _merge_legacy_rows
 from etl.sapa_growth.specs import RAW_AUDIT_COLUMNS
 from sapa_growth import services as sapa_services
 from sapa_growth.logic import classify_metric_event, explode_followup_schedule, map_course_status, normalize_phone, webinar_effective_date
+from sapa_growth.reporting import filter_rows
 from sapa_growth.services import _derived_certified_rows, _enrich_video_rows, dashboard_context, detail_context, export_dashboard_pdf
 from sapa_growth.video_metadata import resolve_video_metadata
 
@@ -159,6 +160,48 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(converted["redflags_patientsubmission"][0]["record_id"], "sub-1")
         self.assertEqual(converted["redflags_patientsubmission"][0]["doctor_id"], "DOC001")
         self.assertEqual(converted["redflags_submissionredflag"][0]["red_flag_id"], "RF001")
+
+    def test_rfa_activity_v2_payloads_fall_back_to_bridge_columns(self):
+        converted = _activity_events_as_legacy_rows(
+            [
+                {
+                    "source_table": "redflags_metricevent",
+                    "source_pk_value": "login-1",
+                    "event_at": "2026-06-11 10:51:11",
+                    "doctor_uuid": "",
+                    "campaign_uuid": "1151a492-947b-4c91-83ac-5a224b2d07b1",
+                    "field_rep_uuid_at_event_time": "44228",
+                    "event_payload_json": json.dumps({"event_type": "field_rep_login", "meta": {"device_type": "desktop"}}),
+                }
+            ]
+        )
+
+        login = converted["redflags_metricevent"][0]
+        self.assertEqual(login["event_type"], "field_rep_login")
+        self.assertEqual(login["action_key"], "44228")
+        self.assertEqual(login["campaign_id"], "1151a492-947b-4c91-83ac-5a224b2d07b1")
+        self.assertEqual(login["field_rep_id"], "44228")
+
+    def test_activity_bridge_rows_merge_with_direct_metric_source_rows(self):
+        merged = _merge_legacy_rows(
+            [{"id": "login-1", "event_type": "field_rep_login", "action_key": "44228", "ts": "2026-06-11 10:51:11"}],
+            [{"id": "login-1", "campaign_id": "1151a492-947b-4c91-83ac-5a224b2d07b1", "field_rep_id": "44228"}],
+            ("id",),
+        )
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["event_type"], "field_rep_login")
+        self.assertEqual(merged[0]["campaign_id"], "1151a492-947b-4c91-83ac-5a224b2d07b1")
+
+    def test_filter_rows_matches_normalized_campaign_route_keys(self):
+        rows = [
+            {"campaign_key": "1151a492-947b-4c91-83ac-5a224b2d07b1", "value": "match"},
+            {"campaign_key": "599a2023-3ab9-427d-82c5-f0a1bc36579", "value": "skip"},
+        ]
+
+        filtered = filter_rows(rows, {"campaign_key": "1151a492947b4c9183ac5a224b2d07b1"})
+
+        self.assertEqual([row["value"] for row in filtered], ["match"])
 
     def test_map_course_status(self):
         self.assertEqual(map_course_status("In Progress"), "In Progress")
