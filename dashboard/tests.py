@@ -132,6 +132,34 @@ class DashboardRoutingTests(SimpleTestCase):
             ["May 10, 2026 - Jun 10, 2026", "Apr 08, 2026 - May 09, 2026"],
         )
 
+    def test_collateral_options_dedupe_title_and_schedule_variants(self):
+        rows = [
+            {
+                "collateral_id": "21",
+                "collateral_title": "Mini CME Post-COVID Immune Lag in Children",
+                "schedule_start_date": "2026-05-10 00:00:00",
+                "schedule_end_date": "2026-06-15 00:00:00",
+            },
+            {
+                "collateral_id": "22",
+                "collateral_title": "mini cme post covid immune lag in children",
+                "schedule_start_date": "2026-05-10",
+                "schedule_end_date": "2026-06-15",
+            },
+            {
+                "collateral_id": "23",
+                "collateral_title": "Mini CME Hidden Hunger",
+                "schedule_start_date": "2026-05-10",
+                "schedule_end_date": "2026-06-15",
+            },
+        ]
+
+        options = dashboard.views._format_collateral_options(rows, "demo", "22")
+
+        self.assertEqual(len(options), 2)
+        self.assertEqual(options[0]["collateral_id"], "22")
+        self.assertEqual(options[0]["status_label"], "Selected")
+
     def test_campaign_collateral_merge_prefers_live_operational_update(self):
         v2_rows = [
             {
@@ -542,7 +570,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("action_dates AS", sql)
         self.assertIn("campaign_roster_matches AS", sql)
         self.assertIn("silver.bridge_brand_campaign_doctor_base", sql)
-        self.assertIn("ark.key_type = 'campaign_fieldrep_id'", sql)
+        self.assertIn("external_rep_key AS rep_key, 'brand_field_id'::text AS key_type", sql)
+        self.assertNotIn("AND ark.key_type = 'campaign_fieldrep_id'", sql)
         self.assertIn("activity_key_candidates AS", sql)
         self.assertIn("activity_candidate_matches AS", sql)
         self.assertIn("unambiguous_activity_matches AS", sql)
@@ -769,6 +798,41 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(len(card_rows), 3)
         self.assertEqual([row["state"] for row in card_rows], ["Andhra Pradesh", "Bihar", "Delhi"])
         self.assertNotIn("Karnataka", [row["state"] for row in card_rows])
+
+    def test_state_attention_falls_back_to_field_rep_insight_rows(self):
+        rows = [
+            {
+                "field_rep_id": "3997",
+                "state_normalized": "DELHI",
+                "total_doctors_assigned": 8,
+                "doctors_sent": 2,
+                "doctors_viewed": 1,
+                "doctors_video_played": 1,
+                "doctors_pdf_downloaded": 0,
+            },
+            {
+                "field_rep_id": "48741",
+                "state_normalized": "New Delhi",
+                "total_doctors_assigned": 4,
+                "doctors_sent": 1,
+                "doctors_viewed": 0,
+                "doctors_video_played": 0,
+                "doctors_pdf_downloaded": 0,
+            },
+            {
+                "field_rep_id": "UNMAPPED_ACTIVITY",
+                "state_normalized": "UNKNOWN",
+                "doctors_sent": 9,
+                "is_unmapped_activity": True,
+            },
+        ]
+
+        state_attention = dashboard.views._state_attention_from_field_rep_insights(rows)
+
+        self.assertEqual([row["state"] for row in state_attention], ["Delhi"])
+        self.assertEqual(state_attention[0]["reached_pct"], 100.0)
+        self.assertEqual(state_attention[0]["open_pct"], 33.3)
+        self.assertEqual(state_attention[0]["consumed_pct"], 100.0)
 
     def test_united_kingdom_state_is_grouped_as_unknown(self):
         self.assertEqual(dashboard.views._display_state_name("United Kingdom"), "Unknown")
@@ -2254,6 +2318,8 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertIn("FROM rule_corrected_activity", sql)
         self.assertIn("transaction_doctor_lookup AS", sql)
         self.assertIn("rep_evidence_latest AS", sql)
+        self.assertIn("campaign_roster_matches AS", sql)
+        self.assertNotIn("AND ark.key_type = 'campaign_fieldrep_id'", sql)
         self.assertNotIn("FROM silver.fact_collateral_transaction tx\n                    WHERE", sql)
 
     def test_field_rep_insights_state_preserves_display_value_and_prefers_known_over_unknown(self):
