@@ -707,7 +707,29 @@ def _campaign_display_name(selected_campaign: str, brand_campaign_variants: list
 def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list[str]) -> int:
     brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
     candidate_cte = _candidate_campaign_ids_cte(brand_placeholders)
-    alias_joins, alias_selects, _alias_key_columns = _field_rep_alias_sql_parts()
+    alias_joins, alias_selects, alias_key_columns = _field_rep_alias_sql_parts()
+    alias_key_rank = {
+        "auth_email_key": 10,
+        "local_email_key": 10,
+        "legacy_email_key": 10,
+        "legacy_gmail_key": 10,
+        "local_user_id_key": 30,
+        "legacy_rep_id_key": 35,
+        "local_field_id_key": 50,
+        "legacy_field_id_key": 50,
+        "auth_username_key": 60,
+        "local_username_key": 60,
+        "legacy_whatsapp_key": 70,
+    }
+    alias_key_unions = "\n            ".join(
+        f"""
+            UNION
+            SELECT field_rep_id, {column} AS rep_key, {alias_key_rank.get(column, 90)} AS match_rank
+            FROM assigned_reps
+            WHERE {column} <> ''
+        """.rstrip()
+        for column in alias_key_columns
+    )
     params = [selected_campaign, *brand_keys, *brand_keys, _normalize_lookup_key(selected_campaign)]
     rows = _fetch_dicts(
         f"""
@@ -729,6 +751,11 @@ def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list
             SELECT field_rep_id, internal_rep_key AS rep_key, 40 AS match_rank
             FROM assigned_reps
             WHERE internal_rep_key <> ''
+            UNION
+            SELECT field_rep_id, external_rep_key AS rep_key, 45 AS match_rank
+            FROM assigned_reps
+            WHERE external_rep_key <> ''
+            {alias_key_unions}
         ),
         campaign_roster_doctors AS (
             SELECT DISTINCT ark.field_rep_id, b.doctor_identity_key
@@ -739,10 +766,11 @@ def _assigned_doctor_count(selected_campaign: str, brand_campaign_variants: list
               AND COALESCE(NULLIF(b.doctor_identity_key, ''), '') <> ''
         ),
         global_assigned_doctors AS (
-            SELECT DISTINCT ar.field_rep_id, d.doctor_identity_key
-            FROM assigned_reps ar
+            SELECT DISTINCT ark.field_rep_id, d.doctor_identity_key
+            FROM assigned_rep_keys ark
             JOIN silver.dim_doctor d
-              ON d.field_rep_id_resolved = ar.field_rep_id
+              ON {_normalized_sql('d.field_rep_id_resolved')} = ark.rep_key
+              OR {_normalized_sql('d.rep_id_normalized')} = ark.rep_key
             WHERE COALESCE(NULLIF(d.doctor_identity_key, ''), '') <> ''
         ),
         assigned_doctors AS (
@@ -1328,7 +1356,6 @@ def _field_rep_insight_rows(
             FROM silver.bridge_brand_campaign_doctor_base b
             JOIN assigned_rep_keys ark
               ON {_normalized_sql('b.field_rep_id_resolved')} = ark.rep_key
-             AND ark.key_type = 'campaign_fieldrep_id'
             JOIN assigned_reps ar_rule
               ON ar_rule.field_rep_id = ark.field_rep_id
             LEFT JOIN doctor_identity_lookup d_identity
@@ -2523,6 +2550,47 @@ def _format_field_rep_summary(field_rep_insights: list[dict[str, Any]], total_do
     }
 
 
+def _state_attention_from_field_rep_insights(field_rep_insights: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    state_buckets: dict[str, dict[str, float]] = {}
+    for row in field_rep_insights:
+        if row.get("is_unmapped_activity"):
+            continue
+        state = _display_state_name(row.get("state_normalized"))
+        bucket = state_buckets.setdefault(state, {"reached": 0.0, "opened": 0.0, "consumed": 0.0, "total_state": 0.0})
+        bucket["reached"] += _to_float(row.get("doctors_sent"))
+        bucket["opened"] += _to_float(row.get("doctors_viewed"))
+        bucket["consumed"] += max(
+            _to_float(row.get("doctors_video_played")),
+            _to_float(row.get("doctors_pdf_downloaded")),
+        )
+        bucket["total_state"] += _to_float(row.get("total_doctors_assigned"))
+
+    state_attention: list[dict[str, Any]] = []
+    for state, counts in state_buckets.items():
+        reached = counts["reached"]
+        opened = counts["opened"]
+        consumed = counts["consumed"]
+        total_state = counts["total_state"] or reached
+        if not any((reached, opened, consumed, total_state)):
+            continue
+        reached_pct = _capped_pct(reached, _weekly_doctor_base(total_state))
+        open_pct = _capped_pct(opened, reached)
+        consumed_pct = _capped_pct(consumed, opened)
+        state_health = _state_weekly_health_score(reached, opened, consumed, total_state)
+        state_attention.append(
+            {
+                "state": state,
+                "open_pct": round(open_pct, 1),
+                "reached_pct": round(reached_pct, 1),
+                "consumed_pct": round(consumed_pct, 1),
+                "health_score": round(state_health, 1),
+                "label": _health_label(state_health),
+            }
+        )
+    state_attention.sort(key=_state_attention_rank_key)
+    return state_attention
+
+
 def _safe_filename_part(value: Any, fallback: str = "download") -> str:
     text = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(value or "").strip()).strip("_")
     return text or fallback
@@ -3004,6 +3072,14 @@ def _collateral_display_end(row: dict[str, Any]) -> Any:
     return row.get("schedule_end_date") or row.get("campaign_end_date")
 
 
+def _collateral_dedupe_key(row: dict[str, Any], name: str) -> tuple[str, str, str]:
+    start = _parse_schedule_date(_collateral_display_start(row))
+    end = _parse_schedule_date(_collateral_display_end(row))
+    start_key = start.isoformat() if start else _normalize_lookup_key(_format_schedule_date(_collateral_display_start(row)))
+    end_key = end.isoformat() if end else _normalize_lookup_key(_format_schedule_date(_collateral_display_end(row)))
+    return (_normalize_lookup_key(name), start_key, end_key)
+
+
 def _collateral_status_label(row: dict[str, Any]) -> str:
     start = _parse_schedule_date(_collateral_display_start(row))
     end = _parse_schedule_date(_collateral_display_end(row))
@@ -3021,9 +3097,9 @@ def _format_collateral_options(
     current_collateral_id: str | None,
     selected_week: int | None = None,
 ) -> list[dict[str, str]]:
-    options: list[dict[str, str]] = []
+    options_by_key: dict[tuple[str, str, str], tuple[int, dict[str, str]]] = {}
     seen_ids: set[str] = set()
-    seen_display_keys: set[tuple[str, str, str]] = set()
+    selected_id = str(current_collateral_id or "")
     for row in schedule_rows:
         collateral_id = str(row.get("collateral_id") or "").strip()
         if not collateral_id or collateral_id in seen_ids:
@@ -3034,25 +3110,28 @@ def _format_collateral_options(
         name = _collateral_display_name(row, f"Collateral {collateral_id}")
         start = _format_schedule_date(_collateral_display_start(row))
         end = _format_schedule_date(_collateral_display_end(row))
-        display_key = (name.casefold(), start, end)
-        if display_key in seen_display_keys:
-            continue
         seen_ids.add(collateral_id)
-        seen_display_keys.add(display_key)
         params = {"collateral_id": collateral_id}
         if selected_week:
             params["week"] = str(selected_week)
-        options.append(
-            {
-                "collateral_id": collateral_id,
-                "name": name,
-                "schedule_text": f"{start} - {end}" if start and end else "Schedule unavailable",
-                "url": f"{reverse('campaign-overview-specific', kwargs={'brand_campaign_id': selected_campaign})}?{urlencode(params)}",
-                "status_label": "Selected" if collateral_id == str(current_collateral_id or "") else status_label,
-                "is_selected": "true" if collateral_id == str(current_collateral_id or "") else "false",
-            }
-        )
+        is_selected = collateral_id == selected_id
+        option_status = "Selected" if is_selected else status_label
+        option = {
+            "collateral_id": collateral_id,
+            "name": name,
+            "schedule_text": f"{start} - {end}" if start and end else "Schedule unavailable",
+            "url": f"{reverse('campaign-overview-specific', kwargs={'brand_campaign_id': selected_campaign})}?{urlencode(params)}",
+            "status_label": option_status,
+            "is_selected": "true" if is_selected else "false",
+        }
+        option_rank = {"Selected": -1, "Current": 0, "Past": 1}.get(option_status, 9)
+        display_key = _collateral_dedupe_key(row, name)
+        existing = options_by_key.get(display_key)
+        if existing and existing[0] <= option_rank:
+            continue
+        options_by_key[display_key] = (option_rank, option)
     status_order = {"Selected": -1, "Current": 0, "Past": 1}
+    options = [option for _rank, option in options_by_key.values()]
     return sorted(options, key=lambda item: (status_order.get(item["status_label"], 9), item["name"].lower()))
 
 
@@ -4204,6 +4283,10 @@ def _build_report_context(
 
     except Exception as exc:
         error_message = str(exc)
+
+    if include_state_attention and not state_attention and field_rep_insights:
+        state_attention = _state_attention_from_field_rep_insights(field_rep_insights)
+        state_attention_card = _state_attention_card_rows(state_attention)
 
     trend_source_rows = weekly_rows if week_filter else data_weekly_rows
     trend_labels = [f"Week {r.get('week_index')}" for r in trend_source_rows]
