@@ -28,6 +28,40 @@ RUN_PE_REPORTS_ETL_CONTINUE_ON_ERROR=${RUN_PE_REPORTS_ETL_CONTINUE_ON_ERROR:-0}
 
 BACKUP_REPORTING_DB_ON_DEPLOY=${BACKUP_REPORTING_DB_ON_DEPLOY:-1}
 ENABLE_SOURCE_TRANSFER_DELETE_CLEANUP=${ENABLE_SOURCE_TRANSFER_DELETE_CLEANUP:-0}
+DEPLOY_HEARTBEAT_SECONDS=${DEPLOY_HEARTBEAT_SECONDS:-60}
+
+run_with_heartbeat() {
+  local label="$1"
+  shift
+  local status_file
+  status_file="$(mktemp)"
+
+  (
+    set +e
+    "$@"
+    echo "$?" > "$status_file"
+  ) &
+  local cmd_pid=$!
+
+  while [ ! -s "$status_file" ]; do
+    sleep "$DEPLOY_HEARTBEAT_SECONDS"
+    if [ -s "$status_file" ]; then
+      break
+    fi
+    if ! kill -0 "$cmd_pid" 2>/dev/null; then
+      wait "$cmd_pid" || true
+      rm -f "$status_file"
+      return 1
+    fi
+    echo "[deploy] Still running: $label ($(date -Is))"
+  done
+
+  wait "$cmd_pid" || true
+  local status
+  status="$(cat "$status_file")"
+  rm -f "$status_file"
+  return "$status"
+}
 
 cd "$PROJECT_DIR"
 
@@ -132,7 +166,7 @@ fi
 
 if [ "$RUN_ETL_ON_DEPLOY" = "1" ]; then
   echo "[deploy] Running InClinic reporting ETL..."
-  if ! "$PYTHON" manage.py run_etl; then
+  if ! run_with_heartbeat "InClinic reporting ETL" "$PYTHON" manage.py run_etl; then
     if [ "$RUN_ETL_CONTINUE_ON_ERROR" = "1" ]; then
       echo "[deploy] WARNING: run_etl failed, continuing because RUN_ETL_CONTINUE_ON_ERROR=1"
     else
@@ -146,7 +180,7 @@ fi
 
 if [ "$RUN_SAPA_GROWTH_ETL_ON_DEPLOY" = "1" ]; then
   echo "[deploy] Running SAPA Growth ETL..."
-  if ! "$PYTHON" manage.py run_sapa_growth_etl; then
+  if ! run_with_heartbeat "SAPA Growth ETL" "$PYTHON" manage.py run_sapa_growth_etl; then
     if [ "$RUN_SAPA_GROWTH_ETL_CONTINUE_ON_ERROR" = "1" ]; then
       echo "[deploy] WARNING: run_sapa_growth_etl failed, continuing because RUN_SAPA_GROWTH_ETL_CONTINUE_ON_ERROR=1"
     else
@@ -160,7 +194,7 @@ fi
 
 if [ "$RUN_PE_REPORTS_ETL_ON_DEPLOY" = "1" ]; then
   echo "[deploy] Running PE Reports ETL..."
-  if ! "$PYTHON" manage.py run_pe_reports_etl; then
+  if ! run_with_heartbeat "PE Reports ETL" "$PYTHON" manage.py run_pe_reports_etl; then
     if [ "$RUN_PE_REPORTS_ETL_CONTINUE_ON_ERROR" = "1" ]; then
       echo "[deploy] WARNING: run_pe_reports_etl failed, continuing because RUN_PE_REPORTS_ETL_CONTINUE_ON_ERROR=1"
     else
