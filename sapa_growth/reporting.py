@@ -6,7 +6,7 @@ from typing import Any
 
 from django.conf import settings
 
-from sapa_growth.logic import clean_text, map_course_status, parse_date
+from sapa_growth.logic import COURSE_STATUS_LABELS, clean_text, map_course_status, parse_date
 
 
 def filter_rows(rows: list[dict[str, Any]], filters: dict[str, str | None], city_field: str = "city") -> list[dict[str, Any]]:
@@ -30,10 +30,10 @@ def filter_rows(rows: list[dict[str, Any]], filters: dict[str, str | None], city
 
 
 def course_status_counts(course_rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
-    counts: dict[str, dict[str, int]] = defaultdict(lambda: {"Started": 0, "Completed": 0, "Pending": 0, "Total": 0})
+    counts: dict[str, dict[str, int]] = defaultdict(lambda: {**{status: 0 for status in COURSE_STATUS_LABELS}, "Total": 0})
     for row in course_rows:
         audience = clean_text(row.get("course_audience")) or "unknown"
-        status = clean_text(row.get("dashboard_status")) or map_course_status(row.get("progress_status")) or ""
+        status = map_course_status(row.get("dashboard_status")) or map_course_status(row.get("progress_status")) or ""
         if status:
             counts[audience][status] += 1
             counts[audience]["Total"] += 1
@@ -52,6 +52,7 @@ def compute_dashboard_metrics(
     followup_rows: list[dict[str, Any]],
     reminder_rows: list[dict[str, Any]],
     course_rows: list[dict[str, Any]],
+    field_rep_login_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     weekly_start = as_of_date - timedelta(days=6)
     previous_start = as_of_date - timedelta(days=13)
@@ -88,6 +89,21 @@ def compute_dashboard_metrics(
                 keys.add(doctor_key)
         return len(keys)
 
+    def distinct_field_rep_count(rows: list[dict[str, Any]], field_name: str, start: date | None = None, end: date | None = None) -> int:
+        keys: set[str] = set()
+        for row in rows:
+            row_date = parse_date(row.get(field_name))
+            if row_date is None:
+                continue
+            if start and row_date < start:
+                continue
+            if end and row_date > end:
+                continue
+            key = clean_text(row.get("source_field_rep_id")) or clean_text(row.get("field_rep_id"))
+            if key:
+                keys.add(key)
+        return len(keys)
+
     current_active = len({row["doctor_key"] for row in doctor_status_current_rows if row.get("is_active") == "true"})
     current_inactive = len({row["doctor_key"] for row in doctor_status_current_rows if row.get("is_inactive") == "true"})
     previous_snapshot_date = (as_of_date - timedelta(days=1)).isoformat()
@@ -113,8 +129,10 @@ def compute_dashboard_metrics(
         cumulative_certified = len(historical_active_keys & enrolled_keys)
 
     course_counts = course_status_counts(course_rows)
-    doctor_course = course_counts.get("doctor", {"Started": 0, "Completed": 0, "Pending": 0, "Total": 0})
-    paramedic_course = course_counts.get("paramedic", {"Started": 0, "Completed": 0, "Pending": 0, "Total": 0})
+    empty_course_counts = {**{status: 0 for status in COURSE_STATUS_LABELS}, "Total": 0}
+    doctor_course = course_counts.get("doctor", empty_course_counts)
+    paramedic_course = course_counts.get("paramedic", empty_course_counts)
+    field_rep_login_rows = field_rep_login_rows or []
 
     return {
         "as_of_date": as_of_date.isoformat(),
@@ -125,6 +143,9 @@ def compute_dashboard_metrics(
         "webinar_registrations_weekly": event_count(webinar_rows, "registration_effective_date", start=weekly_start, end=as_of_date),
         "webinar_registrations_cumulative": event_count(webinar_rows, "registration_effective_date"),
         "webinar_registrations_previous": event_count(webinar_rows, "registration_effective_date", start=previous_start, end=previous_end),
+        "field_rep_logins_weekly": distinct_field_rep_count(field_rep_login_rows, "login_ts", start=weekly_start, end=as_of_date),
+        "field_rep_logins_cumulative": distinct_field_rep_count(field_rep_login_rows, "login_ts"),
+        "field_rep_logins_previous": distinct_field_rep_count(field_rep_login_rows, "login_ts", start=previous_start, end=previous_end),
         "onboarded_doctors_weekly": distinct_doctor_count(
             doctor_rows,
             "first_seen_at",
@@ -156,30 +177,30 @@ def compute_dashboard_metrics(
         "red_tags_weekly": event_count(
             screening_rows,
             "submitted_at",
-            predicate=lambda row: clean_text(row.get("overall_flag_code")) == "red",
+            predicate=lambda row: (clean_text(row.get("overall_flag_code")) or "").lower() == "red",
             start=weekly_start,
             end=as_of_date,
         ),
-        "red_tags_cumulative": event_count(screening_rows, "submitted_at", predicate=lambda row: clean_text(row.get("overall_flag_code")) == "red"),
+        "red_tags_cumulative": event_count(screening_rows, "submitted_at", predicate=lambda row: (clean_text(row.get("overall_flag_code")) or "").lower() == "red"),
         "red_tags_previous": event_count(
             screening_rows,
             "submitted_at",
-            predicate=lambda row: clean_text(row.get("overall_flag_code")) == "red",
+            predicate=lambda row: (clean_text(row.get("overall_flag_code")) or "").lower() == "red",
             start=previous_start,
             end=previous_end,
         ),
         "yellow_tags_weekly": event_count(
             screening_rows,
             "submitted_at",
-            predicate=lambda row: clean_text(row.get("overall_flag_code")) == "yellow",
+            predicate=lambda row: (clean_text(row.get("overall_flag_code")) or "").lower() == "yellow",
             start=weekly_start,
             end=as_of_date,
         ),
-        "yellow_tags_cumulative": event_count(screening_rows, "submitted_at", predicate=lambda row: clean_text(row.get("overall_flag_code")) == "yellow"),
+        "yellow_tags_cumulative": event_count(screening_rows, "submitted_at", predicate=lambda row: (clean_text(row.get("overall_flag_code")) or "").lower() == "yellow"),
         "yellow_tags_previous": event_count(
             screening_rows,
             "submitted_at",
-            predicate=lambda row: clean_text(row.get("overall_flag_code")) == "yellow",
+            predicate=lambda row: (clean_text(row.get("overall_flag_code")) or "").lower() == "yellow",
             start=previous_start,
             end=previous_end,
         ),
@@ -189,13 +210,13 @@ def compute_dashboard_metrics(
         "reminders_sent_weekly": event_count(reminder_rows, "ts", start=weekly_start, end=as_of_date),
         "reminders_sent_cumulative": event_count(reminder_rows, "ts"),
         "reminders_sent_previous": event_count(reminder_rows, "ts", start=previous_start, end=previous_end),
-        "doctor_course_started": doctor_course["Started"],
+        "doctor_course_started": doctor_course["In Progress"],
         "doctor_course_completed": doctor_course["Completed"],
-        "doctor_course_pending": doctor_course["Pending"],
+        "doctor_course_pending": doctor_course["Not Started"],
         "doctor_course_total": doctor_course["Total"],
-        "paramedic_course_started": paramedic_course["Started"],
+        "paramedic_course_started": paramedic_course["In Progress"],
         "paramedic_course_completed": paramedic_course["Completed"],
-        "paramedic_course_pending": paramedic_course["Pending"],
+        "paramedic_course_pending": paramedic_course["Not Started"],
         "paramedic_course_total": paramedic_course["Total"],
     }
 

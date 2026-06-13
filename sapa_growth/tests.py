@@ -161,9 +161,11 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(converted["redflags_submissionredflag"][0]["red_flag_id"], "RF001")
 
     def test_map_course_status(self):
-        self.assertEqual(map_course_status("In Progress"), "Started")
+        self.assertEqual(map_course_status("In Progress"), "In Progress")
         self.assertEqual(map_course_status("Completed"), "Completed")
-        self.assertEqual(map_course_status("Not Started"), "Pending")
+        self.assertEqual(map_course_status("Not Started"), "Not Started")
+        self.assertEqual(map_course_status("Started"), "In Progress")
+        self.assertEqual(map_course_status("Pending"), "Not Started")
         self.assertIsNone(map_course_status("Archived"))
 
     def test_webinar_effective_date_prefers_registration_timestamp(self):
@@ -463,7 +465,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
                         {
                             "campaign_key": "growth-clinic",
                             "course_audience": "paramedic",
-                            "dashboard_status": "Pending",
+                            "dashboard_status": "Not Started",
                             "doctor_key": "DOC-1",
                             "enrolled_at": "",
                         }
@@ -496,6 +498,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
         completed_row = next(row for row in cards[0]["rows"] if row["label"] == "Completed")
         self.assertIn("details/doctor_course_completed/", completed_row["href"])
         self.assertIn("window=cumulative", completed_row["href"])
+        self.assertEqual([row["label"] for row in cards[0]["rows"]], ["Not Started", "In Progress", "Completed"])
 
     def test_onboarded_doctors_detail_uses_business_columns(self):
         columns = sapa_services.DETAIL_SPECS["onboarded_doctors"]["columns"]
@@ -562,6 +565,17 @@ class SapaGrowthLogicTests(SimpleTestCase):
                         {"campaign_key": "growth-clinic", "doctor_key": "DOC-1", "state": "Delhi"},
                         {"campaign_key": "growth-clinic", "doctor_key": "DOC-2", "state": "Maharashtra"},
                     ]
+                if table == "rpt_field_rep_login_detail":
+                    return [
+                        {
+                            "campaign_key": "growth-clinic",
+                            "source_field_rep_id": "FR-1",
+                            "field_rep_id": "FR001",
+                            "field_rep_name": "Rep One",
+                            "state": "Delhi",
+                            "login_ts": "2026-04-27 09:00:00",
+                        }
+                    ]
                 return []
 
             gold_rows_mock.side_effect = fake_gold_rows
@@ -570,9 +584,11 @@ class SapaGrowthLogicTests(SimpleTestCase):
         doctor_login_tile = next(tile for tile in context["tiles"]["clinic"] if tile["title"] == "Doctor Logins")
         self.assertEqual(doctor_login_tile["value"], 1)
         self.assertIn("window=cumulative", doctor_login_tile["href"])
+        field_rep_login_tile = next(tile for tile in context["tiles"]["field_rep"] if tile["title"] == "Field Rep Logins")
+        self.assertEqual(field_rep_login_tile["value"], 1)
         self.assertEqual(
-            [(row["state"], row["onboarded_doctors"], row["screenings"]) for row in context["state_performance"]],
-            [("Delhi", 1, 2), ("Maharashtra", 1, 1)],
+            [(row["state"], row["onboarded_doctors"], row["screenings"], row["field_rep_logins"]) for row in context["state_performance"]],
+            [("Delhi", 1, 2, 1), ("Maharashtra", 1, 1, 0)],
         )
 
     def test_campaign_rows_are_read_from_registered_campaign_schema(self):

@@ -413,7 +413,7 @@ select:focus {
 .state-performance-head,
 .state-performance-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1.1fr) minmax(180px, 1fr) minmax(180px, 1fr);
+  grid-template-columns: minmax(150px, 1.05fr) repeat(3, minmax(160px, 1fr));
   gap: 14px;
   align-items: center;
 }
@@ -463,6 +463,10 @@ select:focus {
 
 .state-bar__fill--screenings {
   background: linear-gradient(90deg, var(--lime), var(--lime-dark));
+}
+
+.state-bar__fill--field-reps {
+  background: linear-gradient(90deg, #f7eab0, #d2a83f);
 }
 
 .course-card {

@@ -120,6 +120,7 @@
           <span>State</span>
           <span>Onboarded Doctors</span>
           <span>Screenings</span>
+          <span>Field Rep Logins</span>
         </div>
         {% for row in state_performance %}
         <div class="state-performance-row">
@@ -131,6 +132,10 @@
           <div class="state-bar-cell">
             <span>{{ row.screenings }}</span>
             <div class="state-bar"><div class="state-bar__fill state-bar__fill--screenings" style="width: {{ row.screenings_pct }}%"></div></div>
+          </div>
+          <div class="state-bar-cell">
+            <span>{{ row.field_rep_logins }}</span>
+            <div class="state-bar"><div class="state-bar__fill state-bar__fill--field-reps" style="width: {{ row.field_rep_logins_pct }}%"></div></div>
           </div>
         </div>
         {% empty %}

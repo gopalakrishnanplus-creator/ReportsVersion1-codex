@@ -15,7 +15,7 @@ from reportlab.pdfgen import canvas as pdf_canvas
 from etl.sapa_growth.control import log_export
 from etl.sapa_growth.specs import GOLD_GLOBAL_SCHEMA, GOLD_SCHEMA
 from etl.sapa_growth.storage import fetch_table, table_exists
-from sapa_growth.logic import clean_text, parse_date
+from sapa_growth.logic import clean_text, map_course_status, parse_date
 from sapa_growth.reporting import build_red_flag_rankings, build_video_rankings, compute_dashboard_metrics, course_status_counts, filter_rows
 from sapa_growth.video_metadata import resolve_video_metadata, supported_video_link
 
@@ -23,6 +23,9 @@ SUMMARY_FIELDS = [
     "webinar_registrations_weekly",
     "webinar_registrations_cumulative",
     "webinar_registrations_previous",
+    "field_rep_logins_weekly",
+    "field_rep_logins_cumulative",
+    "field_rep_logins_previous",
     "onboarded_doctors_weekly",
     "onboarded_doctors_cumulative",
     "onboarded_doctors_previous",
@@ -95,6 +98,15 @@ DETAIL_SPECS = {
             "registered_at",
         ],
     },
+    "field_rep_logins": {
+        "table": "rpt_field_rep_login_detail",
+        "date_field": "login_ts",
+        "summary_date_field": "login_ts",
+        "summary_unique_field": "source_field_rep_id",
+        "title": "Field Rep Logins",
+        "weekly": True,
+        "columns": ["field_rep_name", "field_rep_id", "state", "login_ts"],
+    },
     "active_clinics": {
         "table": "rpt_doctor_status_current",
         "title": "Active Clinics",
@@ -140,7 +152,7 @@ DETAIL_SPECS = {
         "summary_date_field": "submitted_at",
         "title": "Red Tags",
         "weekly": True,
-        "predicate": lambda row: clean_text(row.get("tag_color")) == "red",
+        "predicate": lambda row: (clean_text(row.get("tag_color")) or "").lower() == "red",
         "columns": ["doctor_display_name", "patient_id", "submitted_at", "tag_color", "individual_red_flag_count", "state", "field_rep_id"],
     },
     "yellow_tags": {
@@ -149,7 +161,7 @@ DETAIL_SPECS = {
         "summary_date_field": "submitted_at",
         "title": "Yellow Tags",
         "weekly": True,
-        "predicate": lambda row: clean_text(row.get("tag_color")) == "yellow",
+        "predicate": lambda row: (clean_text(row.get("tag_color")) or "").lower() == "yellow",
         "columns": ["doctor_display_name", "patient_id", "submitted_at", "tag_color", "state", "field_rep_id"],
     },
     "followups_scheduled": {
@@ -170,10 +182,10 @@ DETAIL_SPECS = {
     },
     "doctor_course_started": {
         "table": "rpt_course_detail",
-        "title": "Doctor Course Started",
+        "title": "Doctor Course In Progress",
         "weekly": False,
         "summary_date_field": "started_at",
-        "predicate": lambda row: clean_text(row.get("course_audience")) == "doctor" and clean_text(row.get("dashboard_status")) == "Started",
+        "predicate": lambda row: clean_text(row.get("course_audience")) == "doctor" and map_course_status(row.get("dashboard_status") or row.get("progress_status")) == "In Progress",
         "columns": ["display_name", "user_email", "phone", "progress_status", "enrolled_at", "started_at", "doctor_display_name", "state", "field_rep_id"],
     },
     "doctor_course_completed": {
@@ -181,23 +193,23 @@ DETAIL_SPECS = {
         "title": "Doctor Course Completed",
         "weekly": False,
         "summary_date_field": "completed_at",
-        "predicate": lambda row: clean_text(row.get("course_audience")) == "doctor" and clean_text(row.get("dashboard_status")) == "Completed",
+        "predicate": lambda row: clean_text(row.get("course_audience")) == "doctor" and map_course_status(row.get("dashboard_status") or row.get("progress_status")) == "Completed",
         "columns": ["display_name", "user_email", "phone", "progress_status", "completed_at", "doctor_display_name", "state", "field_rep_id"],
     },
     "doctor_course_pending": {
         "table": "rpt_course_detail",
-        "title": "Doctor Course Pending",
+        "title": "Doctor Course Not Started",
         "weekly": False,
         "summary_date_field": "enrolled_at",
-        "predicate": lambda row: clean_text(row.get("course_audience")) == "doctor" and clean_text(row.get("dashboard_status")) == "Pending",
+        "predicate": lambda row: clean_text(row.get("course_audience")) == "doctor" and map_course_status(row.get("dashboard_status") or row.get("progress_status")) == "Not Started",
         "columns": ["display_name", "user_email", "phone", "progress_status", "enrolled_at", "doctor_display_name", "state", "field_rep_id"],
     },
     "paramedic_course_started": {
         "table": "rpt_course_detail",
-        "title": "Paramedic Course Started",
+        "title": "Paramedic Course In Progress",
         "weekly": False,
         "summary_date_field": "started_at",
-        "predicate": lambda row: clean_text(row.get("course_audience")) == "paramedic" and clean_text(row.get("dashboard_status")) == "Started",
+        "predicate": lambda row: clean_text(row.get("course_audience")) == "paramedic" and map_course_status(row.get("dashboard_status") or row.get("progress_status")) == "In Progress",
         "columns": ["display_name", "user_email", "phone", "progress_status", "enrolled_at", "started_at", "doctor_display_name", "state", "field_rep_id"],
     },
     "paramedic_course_completed": {
@@ -205,15 +217,15 @@ DETAIL_SPECS = {
         "title": "Paramedic Course Completed",
         "weekly": False,
         "summary_date_field": "completed_at",
-        "predicate": lambda row: clean_text(row.get("course_audience")) == "paramedic" and clean_text(row.get("dashboard_status")) == "Completed",
+        "predicate": lambda row: clean_text(row.get("course_audience")) == "paramedic" and map_course_status(row.get("dashboard_status") or row.get("progress_status")) == "Completed",
         "columns": ["display_name", "user_email", "phone", "progress_status", "completed_at", "doctor_display_name", "state", "field_rep_id"],
     },
     "paramedic_course_pending": {
         "table": "rpt_course_detail",
-        "title": "Paramedic Course Pending",
+        "title": "Paramedic Course Not Started",
         "weekly": False,
         "summary_date_field": "enrolled_at",
-        "predicate": lambda row: clean_text(row.get("course_audience")) == "paramedic" and clean_text(row.get("dashboard_status")) == "Pending",
+        "predicate": lambda row: clean_text(row.get("course_audience")) == "paramedic" and map_course_status(row.get("dashboard_status") or row.get("progress_status")) == "Not Started",
         "columns": ["display_name", "user_email", "phone", "progress_status", "enrolled_at", "doctor_display_name", "state", "field_rep_id"],
     },
     "patient_videos": {
@@ -541,6 +553,15 @@ def _dashboard_tiles(summary: dict[str, Any], filters: dict[str, str | None]) ->
                 "theme": "teal",
                 "supported": True,
             },
+            {
+                "title": "Field Rep Logins",
+                "value": summary.get("field_rep_logins_weekly", 0),
+                "cumulative": summary.get("field_rep_logins_cumulative", 0),
+                "delta": summary.get("field_rep_logins_weekly", 0) - summary.get("field_rep_logins_previous", 0),
+                "href": _metric_href("field_rep_logins", filters),
+                "theme": "teal",
+                "supported": True,
+            },
         ],
         "clinic": [
             {
@@ -634,11 +655,11 @@ def _course_cards(course_rows: list[dict[str, Any]], filters: dict[str, str | No
     counts = course_status_counts(course_rows)
     cards = []
     for audience, title in (("doctor", "Doctor Course"), ("paramedic", "Paramedic Course")):
-        summary = counts.get(audience, {"Started": 0, "Completed": 0, "Pending": 0, "Total": 0})
+        summary = counts.get(audience, {"Not Started": 0, "In Progress": 0, "Completed": 0, "Total": 0})
         total = summary["Total"] or 0
         rows = []
-        for status in ("Started", "Completed", "Pending"):
-            metric_key = f"{audience}_course_{status.lower()}"
+        for status, metric_suffix in (("Not Started", "pending"), ("In Progress", "started"), ("Completed", "completed")):
+            metric_key = f"{audience}_course_{metric_suffix}"
             rows.append(
                 {
                     "label": status,
@@ -668,12 +689,15 @@ def _state_label(row: dict[str, Any]) -> str:
 def _state_performance_rows(
     doctor_rows: list[dict[str, Any]],
     screening_rows: list[dict[str, Any]],
+    field_rep_login_rows: list[dict[str, Any]],
     filters: dict[str, str | None],
 ) -> list[dict[str, Any]]:
     filtered_doctors = filter_rows(doctor_rows, filters)
     filtered_screenings = filter_rows(screening_rows, filters)
+    filtered_field_rep_logins = filter_rows(field_rep_login_rows, filters)
     onboarded_by_state: dict[str, set[str]] = {}
     screenings_by_state: dict[str, int] = {}
+    field_rep_logins_by_state: dict[str, set[str]] = {}
     for row in filtered_doctors:
         if clean_text(row.get("onboarding_flag")) != "true":
             continue
@@ -684,16 +708,24 @@ def _state_performance_rows(
     for row in filtered_screenings:
         state = _state_label(row)
         screenings_by_state[state] = screenings_by_state.get(state, 0) + 1
-    states = sorted(set(onboarded_by_state) | set(screenings_by_state), key=lambda value: (value == "Unknown", value.lower()))
+    for row in filtered_field_rep_logins:
+        state = _state_label(row)
+        field_rep_key = clean_text(row.get("source_field_rep_id")) or clean_text(row.get("field_rep_id"))
+        if field_rep_key:
+            field_rep_logins_by_state.setdefault(state, set()).add(field_rep_key)
+    states = sorted(set(onboarded_by_state) | set(screenings_by_state) | set(field_rep_logins_by_state), key=lambda value: (value == "Unknown", value.lower()))
     max_onboarded = max((len(onboarded_by_state.get(state, set())) for state in states), default=0) or 1
     max_screenings = max((screenings_by_state.get(state, 0) for state in states), default=0) or 1
+    max_field_rep_logins = max((len(field_rep_logins_by_state.get(state, set())) for state in states), default=0) or 1
     return [
         {
             "state": state,
             "onboarded_doctors": len(onboarded_by_state.get(state, set())),
             "screenings": screenings_by_state.get(state, 0),
+            "field_rep_logins": len(field_rep_logins_by_state.get(state, set())),
             "onboarded_pct": round((len(onboarded_by_state.get(state, set())) / max_onboarded) * 100, 2),
             "screenings_pct": round((screenings_by_state.get(state, 0) / max_screenings) * 100, 2),
+            "field_rep_logins_pct": round((len(field_rep_logins_by_state.get(state, set())) / max_field_rep_logins) * 100, 2),
         }
         for state in states
     ]
@@ -807,6 +839,7 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
     raw_redflag_rows = _gold_rows("rpt_submission_redflag_detail", campaign_key)
     followup_rows = _gold_rows("rpt_followup_schedule_detail", campaign_key)
     reminder_rows = _gold_rows("rpt_reminder_sent_detail", campaign_key)
+    field_rep_login_rows = _gold_rows("rpt_field_rep_login_detail", campaign_key)
     webinar_rows = _gold_rows("rpt_webinar_registration_detail", campaign_key)
     course_rows = _gold_rows("rpt_course_detail", campaign_key)
     certified_rows = _derived_certified_rows(filters, doctor_rows, course_rows)
@@ -826,6 +859,7 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
             followup_rows=filter_rows(followup_rows, filters),
             reminder_rows=filter_rows(reminder_rows, filters),
             course_rows=filter_rows(course_rows, filters),
+            field_rep_login_rows=filter_rows(field_rep_login_rows, filters),
         )
         summary["published_at"] = refresh.get("published_at") or ""
 
@@ -835,6 +869,17 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
     filtered_redflag_rows = _enrich_red_flag_rows(filter_rows(raw_redflag_rows, filters))
     filtered_doctor_rows = filter_rows(doctor_rows, filters)
     summary["doctor_logins_current"] = _doctor_login_count(filtered_doctor_rows)
+    filtered_field_rep_login_rows = filter_rows(field_rep_login_rows, filters)
+    as_of_for_logins = parse_date(refresh.get("as_of_date")) or date.today()
+    field_rep_login_counts = _count_window(
+        filtered_field_rep_login_rows,
+        date_field="login_ts",
+        as_of=as_of_for_logins,
+        unique_field="source_field_rep_id",
+    )
+    summary["field_rep_logins_weekly"] = field_rep_login_counts["Last Week"]
+    summary["field_rep_logins_cumulative"] = field_rep_login_counts["Cumulative"]
+    summary["field_rep_logins_previous"] = max(summary.get("field_rep_logins_previous", 0), 0)
     certified_supported = True
     filters_query = current_filters_query(filters, include_campaign=not clean_text(filters.get("campaign_key")))
     campaign = selected_campaign or _default_campaign()
@@ -849,7 +894,7 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
         "dashboard_export_href": f"{_campaign_route_base(filters)}export/dashboard.pdf" + (f"?{filters_query}" if filters_query else ""),
         "tiles": _dashboard_tiles(summary, filters),
         "course_cards": _course_cards(filtered_course_rows, filters),
-        "state_performance": _state_performance_rows(doctor_rows, screening_rows, filters),
+        "state_performance": _state_performance_rows(doctor_rows, screening_rows, field_rep_login_rows, filters),
         "red_flag_rankings": build_red_flag_rankings(filtered_redflag_rows),
         "filters": filters,
         "filters_query": filters_query,
@@ -1287,6 +1332,7 @@ def export_dashboard_xlsx(filters: dict[str, str | None], request: HttpRequest) 
         ("Yellow Tags", _rows_for_metric("yellow_tags", filters)[1]),
         ("Followups", _rows_for_metric("followups_scheduled", filters)[1]),
         ("Reminders", _rows_for_metric("reminders_sent", filters)[1]),
+        ("Field Rep Logins", _rows_for_metric("field_rep_logins", filters)[1]),
         ("Doctor Course", _rows_for_metric("doctor_course_started", filters)[1] + _rows_for_metric("doctor_course_completed", filters)[1] + _rows_for_metric("doctor_course_pending", filters)[1]),
         ("Paramedic Course", _rows_for_metric("paramedic_course_started", filters)[1] + _rows_for_metric("paramedic_course_completed", filters)[1] + _rows_for_metric("paramedic_course_pending", filters)[1]),
         ("Webinar", _rows_for_metric("webinar_registrations", filters)[1]),
