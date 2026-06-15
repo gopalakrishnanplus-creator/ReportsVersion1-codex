@@ -121,16 +121,22 @@ COURSE_STATUS_LABELS = ("Not Started", "In Progress", "Completed")
 
 def map_course_status(progress_status: Any) -> str | None:
     status = clean_text(progress_status)
+    normalized = (status or "").replace("_", " ").replace("-", " ").strip().lower()
     mapping = {
         "started": "In Progress",
         "in progress": "In Progress",
+        "inprogress": "In Progress",
+        "incomplete": "In Progress",
+        "complete": "Completed",
         "completed": "Completed",
+        "course completed": "Completed",
         "pending": "Not Started",
         "not started": "Not Started",
+        "notstarted": "Not Started",
     }
     if status is None:
         return None
-    return mapping.get(status.lower())
+    return mapping.get(normalized)
 
 
 def webinar_effective_date(row: dict[str, Any]) -> date | None:

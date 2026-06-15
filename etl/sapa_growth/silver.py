@@ -53,12 +53,17 @@ def _doctor_indexes(dim_rows: list[dict[str, Any]]) -> tuple[dict[str, list[dict
     by_phone: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in dim_rows:
         doctor_id = clean_text(row.get("source_doctor_id"))
-        email = clean_text(row.get("canonical_email"))
+        email_values = [
+            clean_text(row.get("canonical_email")),
+            clean_text(row.get("clinic_user1_email")),
+            clean_text(row.get("clinic_user2_email")),
+        ]
         phone = normalize_phone(row.get("canonical_phone") or row.get("canonical_whatsapp_no"))
         if doctor_id:
             by_doctor_id[doctor_id].append(row)
-        if email:
-            by_email[email.lower()].append(row)
+        for email in email_values:
+            if email:
+                by_email[email.lower()].append(row)
         if phone:
             by_phone[phone].append(row)
     return by_doctor_id, by_email, by_phone
@@ -141,7 +146,7 @@ def _sapa_person_visible(row: dict[str, Any], person_rules: list[dict[str, Any]]
         row,
         person_rules,
         campaign_fields=("campaign_id", "campaign_key", "brand_campaign_id"),
-        email_fields=("canonical_email", "email", "user_email"),
+        email_fields=("canonical_email", "clinic_user1_email", "clinic_user2_email", "email", "user_email"),
         phone_fields=("canonical_phone", "canonical_whatsapp_no", "phone", "patient_whatsapp"),
     )
 
@@ -151,7 +156,7 @@ def _sapa_person_matches(row: dict[str, Any], person_rules: list[dict[str, Any]]
         person_privacy_matching_rules(
             row,
             person_rules,
-            email_fields=("canonical_email", "email", "user_email"),
+            email_fields=("canonical_email", "clinic_user1_email", "clinic_user2_email", "email", "user_email"),
             phone_fields=("canonical_phone", "canonical_whatsapp_no", "phone", "patient_whatsapp"),
         )
     )
@@ -271,6 +276,7 @@ def _campaign_ids_for_field_rep_login_event(
     row: dict[str, Any],
     rfa_campaigns: dict[str, dict[str, Any]],
     rep_campaign_ids: dict[str, set[str]],
+    rep_campaign_assignments: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[str]:
     campaign_hint = clean_text(row.get("campaign_id"))
     if campaign_hint:
@@ -288,7 +294,27 @@ def _campaign_ids_for_field_rep_login_event(
         return []
 
     source_rep_id = clean_text((rep or {}).get("id"))
-    candidate_campaigns = sorted(rep_campaign_ids.get(source_rep_id or "", set()) & set(rfa_campaigns.keys()))
+    if rep_campaign_assignments is not None:
+        login_date = parse_date(row.get("ts"))
+        candidates = []
+        for assignment in rep_campaign_assignments.get(source_rep_id or "", []):
+            campaign_id = clean_text(assignment.get("campaign_id"))
+            if campaign_id not in rfa_campaigns:
+                continue
+            assigned_at = parse_date(assignment.get("assigned_at"))
+            campaign = rfa_campaigns.get(campaign_id) or {}
+            campaign_start = parse_date(campaign.get("start_date"))
+            campaign_end = parse_date(campaign.get("end_date"))
+            if login_date and assigned_at and login_date < assigned_at:
+                continue
+            if login_date and campaign_start and login_date < campaign_start:
+                continue
+            if login_date and campaign_end and login_date > campaign_end:
+                continue
+            candidates.append(campaign_id)
+        candidate_campaigns = sorted(set(candidates))
+    else:
+        candidate_campaigns = sorted(rep_campaign_ids.get(source_rep_id or "", set()) & set(rfa_campaigns.keys()))
     return candidate_campaigns if len(candidate_campaigns) == 1 else []
 
 
@@ -593,6 +619,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
     }
     campaign_rep_ids: dict[str, set[str]] = defaultdict(set)
     rep_campaign_ids: dict[str, set[str]] = defaultdict(set)
+    rep_campaign_assignments: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in campaign_field_rep_rows:
         campaign_id = clean_text(row.get("campaign_id"))
         field_rep_id = clean_text(row.get("field_rep_id"))
@@ -602,6 +629,12 @@ def build_silver(run_id: str) -> dict[str, Any]:
             continue
         campaign_rep_ids[campaign_id].add(field_rep_id)
         rep_campaign_ids[field_rep_id].add(campaign_id)
+        rep_campaign_assignments[field_rep_id].append(
+            {
+                "campaign_id": campaign_id,
+                "assigned_at": row.get("created_at"),
+            }
+        )
 
     def campaign_meta(campaign_id: Any) -> tuple[str, str]:
         campaign = rfa_campaigns.get(clean_text(campaign_id)) or {}
@@ -990,6 +1023,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             row=row,
             rfa_campaigns=rfa_campaigns,
             rep_campaign_ids=rep_campaign_ids,
+            rep_campaign_assignments=rep_campaign_assignments,
         )
 
     def field_rep_display(rep: dict[str, Any] | None, raw_value: str) -> dict[str, str]:

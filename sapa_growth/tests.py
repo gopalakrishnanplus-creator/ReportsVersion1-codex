@@ -250,10 +250,59 @@ class SapaGrowthLogicTests(SimpleTestCase):
 
         self.assertEqual(matched, ["campaign-a"])
 
+    def test_field_rep_login_without_campaign_can_use_single_active_assignment(self):
+        matched = _campaign_ids_for_field_rep_login_event(
+            rep={"id": "rep-1"},
+            row={"ts": "2026-06-13 10:00:00"},
+            rfa_campaigns={
+                "old-campaign": {
+                    "id": "old-campaign",
+                    "name": "Old Campaign",
+                    "start_date": "2026-05-01",
+                    "end_date": "2026-06-01",
+                },
+                "current-campaign": {
+                    "id": "current-campaign",
+                    "name": "Current Campaign",
+                    "start_date": "2026-06-01",
+                    "end_date": "2026-06-30",
+                },
+            },
+            rep_campaign_ids={"rep-1": {"old-campaign", "current-campaign"}},
+            rep_campaign_assignments={
+                "rep-1": [
+                    {"campaign_id": "old-campaign", "assigned_at": "2026-05-01"},
+                    {"campaign_id": "current-campaign", "assigned_at": "2026-06-01"},
+                ]
+            },
+        )
+
+        self.assertEqual(matched, ["current-campaign"])
+
+    def test_course_user_can_match_clinic_staff_email_to_doctor_campaign(self):
+        dim_rows = [
+            {
+                "doctor_key": "doc-1",
+                "source_doctor_id": "DOC001",
+                "canonical_email": "doctor@example.com",
+                "canonical_phone": "",
+                "canonical_whatsapp_no": "",
+                "clinic_user1_email": "staff@example.com",
+                "campaign_key": "campaign-a",
+            }
+        ]
+        _by_doctor_id, by_email, by_phone = _doctor_indexes(dim_rows)
+
+        matches = _doctor_matches_for_api({"user_email": "staff@example.com"}, by_email, by_phone, "2026-06-13")
+
+        self.assertEqual(matches[0][0]["doctor_key"], "doc-1")
+
     def test_map_course_status(self):
         self.assertEqual(map_course_status("In Progress"), "In Progress")
         self.assertEqual(map_course_status("Completed"), "Completed")
         self.assertEqual(map_course_status("Not Started"), "Not Started")
+        self.assertEqual(map_course_status("course_completed"), "Completed")
+        self.assertEqual(map_course_status("not-started"), "Not Started")
         self.assertEqual(map_course_status("Started"), "In Progress")
         self.assertEqual(map_course_status("Pending"), "Not Started")
         self.assertIsNone(map_course_status("Archived"))
