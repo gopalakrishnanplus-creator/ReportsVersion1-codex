@@ -58,14 +58,19 @@ def _doctor_indexes(dim_rows: list[dict[str, Any]]) -> tuple[dict[str, list[dict
             clean_text(row.get("clinic_user1_email")),
             clean_text(row.get("clinic_user2_email")),
         ]
-        phone = normalize_phone(row.get("canonical_phone") or row.get("canonical_whatsapp_no"))
+        phone_values = [
+            normalize_phone(row.get("canonical_phone")),
+            normalize_phone(row.get("canonical_whatsapp_no")),
+            normalize_phone(row.get("receptionist_whatsapp_number")),
+        ]
         if doctor_id:
             by_doctor_id[doctor_id].append(row)
         for email in email_values:
             if email:
                 by_email[email.lower()].append(row)
-        if phone:
-            by_phone[phone].append(row)
+        for phone in phone_values:
+            if phone:
+                by_phone[phone].append(row)
     return by_doctor_id, by_email, by_phone
 
 
@@ -147,7 +152,7 @@ def _sapa_person_visible(row: dict[str, Any], person_rules: list[dict[str, Any]]
         person_rules,
         campaign_fields=("campaign_id", "campaign_key", "brand_campaign_id"),
         email_fields=("canonical_email", "clinic_user1_email", "clinic_user2_email", "email", "user_email"),
-        phone_fields=("canonical_phone", "canonical_whatsapp_no", "phone", "patient_whatsapp"),
+        phone_fields=("canonical_phone", "canonical_whatsapp_no", "receptionist_whatsapp_number", "phone", "patient_whatsapp"),
     )
 
 
@@ -157,7 +162,7 @@ def _sapa_person_matches(row: dict[str, Any], person_rules: list[dict[str, Any]]
             row,
             person_rules,
             email_fields=("canonical_email", "clinic_user1_email", "clinic_user2_email", "email", "user_email"),
-            phone_fields=("canonical_phone", "canonical_whatsapp_no", "phone", "patient_whatsapp"),
+            phone_fields=("canonical_phone", "canonical_whatsapp_no", "receptionist_whatsapp_number", "phone", "patient_whatsapp"),
         )
     )
 
@@ -313,8 +318,9 @@ def _campaign_ids_for_field_rep_login_event(
                 continue
             candidates.append(campaign_id)
         candidate_campaigns = sorted(set(candidates))
-    else:
-        candidate_campaigns = sorted(rep_campaign_ids.get(source_rep_id or "", set()) & set(rfa_campaigns.keys()))
+        return candidate_campaigns
+
+    candidate_campaigns = sorted(rep_campaign_ids.get(source_rep_id or "", set()) & set(rfa_campaigns.keys()))
     return candidate_campaigns if len(candidate_campaigns) == 1 else []
 
 
@@ -399,6 +405,27 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
     }
     for row in events:
         source_table = clean_text(row.get("source_table"))
+        activity_type = (clean_text(row.get("activity_type")) or "").lower().replace("-", "_")
+        activity_slug = "".join(ch for ch in activity_type if ch.isalnum())
+        if source_table not in legacy_rows:
+            if activity_slug in {"fieldreplogin", "fieldreploggedin"}:
+                source_table = "redflags_metricevent"
+            elif activity_slug in {
+                "patientsubmission",
+                "patientsubmitted",
+                "screeningsubmission",
+                "screeningsubmitted",
+                "patientscreening",
+                "formsubmission",
+                "formsubmitted",
+                "patientformsubmission",
+                "patientformsubmitted",
+                "formfilled",
+                "formfill",
+                "redflagspatientsubmission",
+                "gndgndpatientsubmission",
+            }:
+                source_table = "redflags_patientsubmission"
         if source_table not in legacy_rows:
             continue
         payload = _activity_payload(row)
@@ -460,7 +487,7 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
                 }
             )
         elif source_table == "redflags_metricevent":
-            event_type = _activity_value(row, payload, "event_type")
+            event_type = _activity_value(row, payload, "event_type") or activity_type
             legacy_rows[source_table].append(
                 {
                     "id": _activity_value(row, payload, "id", "source_event_id", "source_pk_value"),
@@ -789,6 +816,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     "canonical_email": _empty_text(campaign_row.get("email") or (doctor_row or {}).get("email")),
                     "canonical_phone": _empty_text(campaign_row.get("phone") or (doctor_row or {}).get("clinic_phone")),
                     "canonical_whatsapp_no": _empty_text((doctor_row or {}).get("whatsapp_no")),
+                    "receptionist_whatsapp_number": _empty_text((doctor_row or {}).get("receptionist_whatsapp_number")),
                     "clinic_name": _empty_text((doctor_row or {}).get("clinic_name")),
                     "clinic_password_set_at": _empty_text(iso_datetime((doctor_row or {}).get("clinic_password_set_at"))),
                     "special_instructions_uploaded_at": _empty_text(iso_datetime((doctor_row or {}).get("special_instructions_uploaded_at"))),
@@ -840,6 +868,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     "canonical_email": _empty_text(doctor_row.get("email")),
                     "canonical_phone": _empty_text(doctor_row.get("clinic_phone")),
                     "canonical_whatsapp_no": _empty_text(doctor_row.get("whatsapp_no")),
+                    "receptionist_whatsapp_number": _empty_text(doctor_row.get("receptionist_whatsapp_number")),
                     "clinic_name": _empty_text(doctor_row.get("clinic_name")),
                     "clinic_password_set_at": _empty_text(iso_datetime(doctor_row.get("clinic_password_set_at"))),
                     "special_instructions_uploaded_at": _empty_text(iso_datetime(doctor_row.get("special_instructions_uploaded_at"))),
@@ -891,6 +920,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
         "canonical_email",
         "canonical_phone",
         "canonical_whatsapp_no",
+        "receptionist_whatsapp_number",
         "clinic_name",
         "clinic_password_set_at",
         "special_instructions_uploaded_at",
