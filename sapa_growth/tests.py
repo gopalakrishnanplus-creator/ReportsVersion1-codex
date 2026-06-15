@@ -16,7 +16,14 @@ from etl.sapa_growth import silver as sapa_silver
 from etl.sapa_growth import storage as sapa_storage
 from etl.sapa_growth import gold as sapa_gold
 from etl.sapa_growth.mysql import extract_rows
-from etl.sapa_growth.silver import _activity_events_as_legacy_rows, _best_dim_for_event, _doctor_indexes, _doctor_matches_for_api, _merge_legacy_rows
+from etl.sapa_growth.silver import (
+    _activity_events_as_legacy_rows,
+    _best_dim_for_event,
+    _campaign_ids_for_field_rep_login_event,
+    _doctor_indexes,
+    _doctor_matches_for_api,
+    _merge_legacy_rows,
+)
 from etl.sapa_growth.specs import RAW_AUDIT_COLUMNS
 from sapa_growth import services as sapa_services
 from sapa_growth.logic import classify_metric_event, explode_followup_schedule, map_course_status, normalize_phone, webinar_effective_date
@@ -196,12 +203,52 @@ class SapaGrowthLogicTests(SimpleTestCase):
     def test_filter_rows_matches_normalized_campaign_route_keys(self):
         rows = [
             {"campaign_key": "1151a492-947b-4c91-83ac-5a224b2d07b1", "value": "match"},
-            {"campaign_key": "599a2023-3ab9-427d-82c5-f0a1bc36579", "value": "skip"},
+            {"campaign_key": "599a2023-3ab9-4227-b82c-5f0a1bc36579", "value": "skip"},
         ]
 
         filtered = filter_rows(rows, {"campaign_key": "1151a492947b4c9183ac5a224b2d07b1"})
 
         self.assertEqual([row["value"] for row in filtered], ["match"])
+
+    def test_field_rep_login_campaign_hint_is_not_expanded_to_other_campaigns(self):
+        campaigns = {
+            "1151a492-947b-4c91-83ac-5a224b2d07b1": {"id": "1151a492-947b-4c91-83ac-5a224b2d07b1", "name": "Portal"},
+            "599a2023-3ab9-4227-b82c-5f0a1bc36579": {"id": "599a2023-3ab9-4227-b82c-5f0a1bc36579", "name": "Abbott"},
+        }
+
+        matched = _campaign_ids_for_field_rep_login_event(
+            rep={"id": "rep-1"},
+            row={"campaign_id": "599a20233ab94227b82c5f0a1bc36579"},
+            rfa_campaigns=campaigns,
+            rep_campaign_ids={"rep-1": set(campaigns)},
+        )
+
+        self.assertEqual(matched, ["599a2023-3ab9-4227-b82c-5f0a1bc36579"])
+
+    def test_field_rep_login_without_campaign_is_not_copied_to_multiple_campaigns(self):
+        campaigns = {
+            "1151a492-947b-4c91-83ac-5a224b2d07b1": {"id": "1151a492-947b-4c91-83ac-5a224b2d07b1", "name": "Portal"},
+            "599a2023-3ab9-4227-b82c-5f0a1bc36579": {"id": "599a2023-3ab9-4227-b82c-5f0a1bc36579", "name": "Abbott"},
+        }
+
+        matched = _campaign_ids_for_field_rep_login_event(
+            rep={"id": "rep-1"},
+            row={},
+            rfa_campaigns=campaigns,
+            rep_campaign_ids={"rep-1": set(campaigns)},
+        )
+
+        self.assertEqual(matched, [])
+
+    def test_field_rep_login_without_campaign_can_use_single_campaign_assignment(self):
+        matched = _campaign_ids_for_field_rep_login_event(
+            rep={"id": "rep-1"},
+            row={},
+            rfa_campaigns={"campaign-a": {"id": "campaign-a", "name": "Only Campaign"}},
+            rep_campaign_ids={"rep-1": {"campaign-a"}},
+        )
+
+        self.assertEqual(matched, ["campaign-a"])
 
     def test_map_course_status(self):
         self.assertEqual(map_course_status("In Progress"), "In Progress")

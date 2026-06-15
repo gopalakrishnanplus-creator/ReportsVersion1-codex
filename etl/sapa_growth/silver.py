@@ -265,6 +265,33 @@ def _campaign_specific_doctor_key(base_key: str, campaign_key: str) -> str:
     return f"{base_key}::campaign:{campaign_key}"
 
 
+def _campaign_ids_for_field_rep_login_event(
+    *,
+    rep: dict[str, Any] | None,
+    row: dict[str, Any],
+    rfa_campaigns: dict[str, dict[str, Any]],
+    rep_campaign_ids: dict[str, set[str]],
+) -> list[str]:
+    campaign_hint = clean_text(row.get("campaign_id"))
+    if campaign_hint:
+        direct_match = clean_text((rfa_campaigns.get(campaign_hint) or {}).get("id"))
+        if direct_match:
+            return [direct_match]
+        hint_norm = _norm_id(campaign_hint)
+        normalized_matches = [
+            campaign_id
+            for campaign_id, campaign in rfa_campaigns.items()
+            if _norm_id(campaign_id) == hint_norm or _norm_id(campaign.get("name")) == hint_norm
+        ]
+        if normalized_matches:
+            return sorted(normalized_matches)
+        return []
+
+    source_rep_id = clean_text((rep or {}).get("id"))
+    candidate_campaigns = sorted(rep_campaign_ids.get(source_rep_id or "", set()) & set(rfa_campaigns.keys()))
+    return candidate_campaigns if len(candidate_campaigns) == 1 else []
+
+
 def _campaign_start_for_match(row: dict[str, Any]) -> date | None:
     return (
         parse_date(row.get("campaign_registered_at"))
@@ -958,21 +985,12 @@ def build_silver(run_id: str) -> dict[str, Any]:
         return rep, raw_value or ""
 
     def campaign_ids_for_field_rep_event(rep: dict[str, Any] | None, row: dict[str, Any]) -> list[str]:
-        campaign_hint = clean_text(row.get("campaign_id"))
-        if campaign_hint:
-            direct_match = clean_text((rfa_campaigns.get(campaign_hint) or {}).get("id"))
-            if direct_match:
-                return [direct_match]
-            hint_norm = _norm_id(campaign_hint)
-            normalized_matches = [
-                campaign_id
-                for campaign_id, campaign in rfa_campaigns.items()
-                if _norm_id(campaign_id) == hint_norm or _norm_id(campaign.get("name")) == hint_norm
-            ]
-            if normalized_matches:
-                return sorted(normalized_matches)
-        source_rep_id = clean_text((rep or {}).get("id"))
-        return sorted(rep_campaign_ids.get(source_rep_id or "", set()) & set(rfa_campaigns.keys()))
+        return _campaign_ids_for_field_rep_login_event(
+            rep=rep,
+            row=row,
+            rfa_campaigns=rfa_campaigns,
+            rep_campaign_ids=rep_campaign_ids,
+        )
 
     def field_rep_display(rep: dict[str, Any] | None, raw_value: str) -> dict[str, str]:
         source_id = clean_text((rep or {}).get("id")) or raw_value
