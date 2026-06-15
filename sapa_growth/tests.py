@@ -168,6 +168,29 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(converted["redflags_patientsubmission"][0]["doctor_id"], "DOC001")
         self.assertEqual(converted["redflags_submissionredflag"][0]["red_flag_id"], "RF001")
 
+    def test_native_rfa_patient_submission_activity_converts_without_legacy_source_table(self):
+        converted = _activity_events_as_legacy_rows(
+            [
+                {
+                    "activity_type": "patient_submission",
+                    "source_event_id": "sub-native-1",
+                    "event_at": "2026-06-13 09:55:00",
+                    "doctor_uuid": "DOC001",
+                    "campaign_uuid": "599a2023-3ab9-4227-b82c-5f0a1bc36579",
+                    "field_rep_uuid_at_event_time": "rep-599",
+                    "patient_id_raw": "PAT001",
+                    "form_id_raw": "FORM001",
+                    "overall_flag_code": "RED",
+                }
+            ]
+        )
+
+        submission = converted["redflags_patientsubmission"][0]
+        self.assertEqual(submission["record_id"], "sub-native-1")
+        self.assertEqual(submission["doctor_id"], "DOC001")
+        self.assertEqual(submission["campaign_id"], "599a2023-3ab9-4227-b82c-5f0a1bc36579")
+        self.assertEqual(submission["overall_flag_code"], "RED")
+
     def test_rfa_activity_v2_payloads_fall_back_to_bridge_columns(self):
         converted = _activity_events_as_legacy_rows(
             [
@@ -188,6 +211,27 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(login["action_key"], "44228")
         self.assertEqual(login["campaign_id"], "1151a492-947b-4c91-83ac-5a224b2d07b1")
         self.assertEqual(login["field_rep_id"], "44228")
+
+    def test_native_rfa_field_rep_login_activity_converts_without_legacy_source_table(self):
+        converted = _activity_events_as_legacy_rows(
+            [
+                {
+                    "activity_type": "field_rep_login",
+                    "activity_event_uuid": "activity-1",
+                    "source_pk_value": "activity-1",
+                    "event_at": "2026-06-13 10:51:11",
+                    "campaign_uuid": "599a2023-3ab9-4227-b82c-5f0a1bc36579",
+                    "field_rep_uuid_at_event_time": "rep-599",
+                    "event_payload_json": json.dumps({"meta": {"device_type": "mobile"}}),
+                }
+            ]
+        )
+
+        login = converted["redflags_metricevent"][0]
+        self.assertEqual(login["event_type"], "field_rep_login")
+        self.assertEqual(login["action_key"], "rep-599")
+        self.assertEqual(login["campaign_id"], "599a2023-3ab9-4227-b82c-5f0a1bc36579")
+        self.assertEqual(login["field_rep_id"], "rep-599")
 
     def test_activity_bridge_rows_merge_with_direct_metric_source_rows(self):
         merged = _merge_legacy_rows(
@@ -279,6 +323,42 @@ class SapaGrowthLogicTests(SimpleTestCase):
 
         self.assertEqual(matched, ["current-campaign"])
 
+    def test_field_rep_login_without_campaign_uses_all_active_assignments_when_metadata_is_available(self):
+        matched = _campaign_ids_for_field_rep_login_event(
+            rep={"id": "rep-1"},
+            row={"ts": "2026-06-13 10:00:00"},
+            rfa_campaigns={
+                "current-a": {
+                    "id": "current-a",
+                    "name": "Current A",
+                    "start_date": "2026-06-01",
+                    "end_date": "2026-06-30",
+                },
+                "current-b": {
+                    "id": "current-b",
+                    "name": "Current B",
+                    "start_date": "2026-06-01",
+                    "end_date": "2026-06-30",
+                },
+                "old-campaign": {
+                    "id": "old-campaign",
+                    "name": "Old Campaign",
+                    "start_date": "2026-05-01",
+                    "end_date": "2026-06-01",
+                },
+            },
+            rep_campaign_ids={"rep-1": {"current-a", "current-b", "old-campaign"}},
+            rep_campaign_assignments={
+                "rep-1": [
+                    {"campaign_id": "current-a", "assigned_at": "2026-06-01"},
+                    {"campaign_id": "current-b", "assigned_at": "2026-06-01"},
+                    {"campaign_id": "old-campaign", "assigned_at": "2026-05-01"},
+                ]
+            },
+        )
+
+        self.assertEqual(matched, ["current-a", "current-b"])
+
     def test_course_user_can_match_clinic_staff_email_to_doctor_campaign(self):
         dim_rows = [
             {
@@ -294,6 +374,24 @@ class SapaGrowthLogicTests(SimpleTestCase):
         _by_doctor_id, by_email, by_phone = _doctor_indexes(dim_rows)
 
         matches = _doctor_matches_for_api({"user_email": "staff@example.com"}, by_email, by_phone, "2026-06-13")
+
+        self.assertEqual(matches[0][0]["doctor_key"], "doc-1")
+
+    def test_course_user_can_match_receptionist_phone_to_doctor_campaign(self):
+        dim_rows = [
+            {
+                "doctor_key": "doc-1",
+                "source_doctor_id": "DOC001",
+                "canonical_email": "doctor@example.com",
+                "canonical_phone": "",
+                "canonical_whatsapp_no": "",
+                "receptionist_whatsapp_number": "98765 43210",
+                "campaign_key": "campaign-a",
+            }
+        ]
+        _by_doctor_id, by_email, by_phone = _doctor_indexes(dim_rows)
+
+        matches = _doctor_matches_for_api({"phone": "+91 98765 43210"}, by_email, by_phone, "2026-06-13")
 
         self.assertEqual(matches[0][0]["doctor_key"], "doc-1")
 
