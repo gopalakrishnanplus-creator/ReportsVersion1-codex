@@ -2437,6 +2437,7 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
             try:
                 system_key, schema_name, table_name = _parse_raw_visibility_table_ref(request.POST.get("table_ref", ""))
                 record_ids = _parse_raw_visibility_record_ids(request.POST.get("record_identifiers", ""))
+                rule_mode = (request.POST.get("rule_mode") or "hide").strip()
                 if not record_ids:
                     raise ValueError("Enter at least one record identifier.")
                 with transaction.atomic():
@@ -2447,12 +2448,14 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
                             table_name=table_name,
                             identifier_column=request.POST.get("identifier_column", ""),
                             record_identifier=record_identifier,
+                            rule_mode=rule_mode,
                             reason=request.POST.get("reason", ""),
                             created_by=actor,
                         )
+                action_label = "show-only" if rule_mode == "keep_only" else "hide"
                 messages.success(
                     request,
-                    f"Created {len(record_ids)} RAW visibility rule{'' if len(record_ids) == 1 else 's'}. Rerun ETL to refresh derived dashboards.",
+                    f"Created {len(record_ids)} RAW {action_label} visibility rule{'' if len(record_ids) == 1 else 's'}. Rerun ETL to refresh derived dashboards.",
                 )
                 return redirect("internal-data-admin-privacy")
             except Exception as exc:

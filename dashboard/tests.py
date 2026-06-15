@@ -23,6 +23,7 @@ from etl.reporting_privacy import (
     normalize_campaign_id,
     normalize_record_identifier,
     raw_visibility_entity_ids,
+    raw_visibility_keep_only_ids,
     row_visible_by_person_privacy,
 )
 from dashboard.internal_data_admin import (
@@ -515,18 +516,37 @@ class DashboardRoutingTests(SimpleTestCase):
                 "record_identifier_normalized": normalize_record_identifier("COL-002"),
                 "is_active": False,
             },
+            {
+                "system_key": "inclinic",
+                "entity_type": "collateral",
+                "record_identifier_normalized": normalize_record_identifier("COL-KEEP"),
+                "rule_mode": "keep_only",
+                "is_active": True,
+            },
         ]
 
         self.assertEqual(normalize_record_identifier(" COL-001 "), "col001")
         self.assertEqual(raw_visibility_entity_ids(rules, "collateral", system_key="inclinic"), {"col001"})
+        self.assertEqual(raw_visibility_keep_only_ids(rules, "collateral", system_key="inclinic"), {"colkeep"})
 
     def test_raw_visibility_table_options_include_identifier_columns(self):
         options = list_raw_visibility_table_options("inclinic")
         collateral = next(option for option in options if option["table_name"] == "inclinic_collateral_v2")
 
         self.assertEqual(collateral["value"], "inclinic||raw_v2_inclinic||inclinic_collateral_v2")
-        self.assertIn({"value": "old_id", "label": "old_id", "table_ref": collateral["value"]}, collateral["column_options"])
-        self.assertIn({"value": "collateral_uuid", "label": "collateral_uuid", "table_ref": collateral["value"]}, collateral["column_options"])
+        self.assertIn(
+            {"value": "old_id", "label": "old_id", "table_ref": collateral["value"], "keep_only_supported": True},
+            collateral["column_options"],
+        )
+        self.assertIn(
+            {
+                "value": "collateral_uuid",
+                "label": "collateral_uuid",
+                "table_ref": collateral["value"],
+                "keep_only_supported": True,
+            },
+            collateral["column_options"],
+        )
 
 
 class DashboardAccessViewTests(SimpleTestCase):
@@ -1054,6 +1074,8 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "table_label": "InClinic collateral master",
                     "identifier_column": "old_id",
                     "identifier_column_label": "old_id",
+                    "rule_mode": "hide",
+                    "rule_mode_label": "Hide matched values",
                     "record_identifier": "COL-1",
                     "record_identifier_normalized": "col1",
                     "entity_type": "collateral",
@@ -1115,6 +1137,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Reporting Privacy Controls")
         self.assertContains(response, "1 active RAW visibility rule")
         self.assertContains(response, "Identifier column")
+        self.assertContains(response, "Visibility action")
+        self.assertContains(response, "Hide matched values")
         self.assertContains(response, "old_id")
         self.assertContains(response, "COL-1")
         self.assertContains(response, "1 active person visibility rule")
@@ -1137,6 +1161,7 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "privacy_action": "add_raw_visibility",
                     "table_ref": "inclinic||raw_v2_inclinic||inclinic_collateral_v2",
                     "identifier_column": "old_id",
+                    "rule_mode": "keep_only",
                     "record_identifiers": "COL-1\nCOL-2",
                     "reason": "Source collateral deleted from source",
                 },
@@ -1151,6 +1176,7 @@ class DashboardAccessViewTests(SimpleTestCase):
             table_name="inclinic_collateral_v2",
             identifier_column="old_id",
             record_identifier="COL-1",
+            rule_mode="keep_only",
             reason="Source collateral deleted from source",
             created_by="internal_admin",
         )
@@ -1160,6 +1186,7 @@ class DashboardAccessViewTests(SimpleTestCase):
             table_name="inclinic_collateral_v2",
             identifier_column="old_id",
             record_identifier="COL-2",
+            rule_mode="keep_only",
             reason="Source collateral deleted from source",
             created_by="internal_admin",
         )
@@ -2178,6 +2205,62 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_campaign_collateral_v2"]], ["COL-2"])
         self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_collateral_transaction_v2"]], ["COL-2"])
         self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_share_event_v2"]], ["COL-2"])
+
+    def test_raw_visibility_filter_keep_only_inclinic_collateral_hierarchy(self):
+        rules = [
+            {
+                "system_key": "inclinic",
+                "entity_type": "collateral",
+                "record_identifier_normalized": normalize_record_identifier("COL-1"),
+                "rule_mode": "keep_only",
+                "is_active": True,
+            },
+            {
+                "system_key": "inclinic",
+                "entity_type": "collateral",
+                "record_identifier_normalized": normalize_record_identifier("COL-3"),
+                "rule_mode": "keep_only",
+                "is_active": True,
+            },
+            {
+                "system_key": "inclinic",
+                "entity_type": "collateral",
+                "record_identifier_normalized": normalize_record_identifier("COL-1"),
+                "rule_mode": "hide",
+                "is_active": True,
+            },
+        ]
+        source = {
+            "inclinic_collateral_v2": [{"old_id": "COL-1"}, {"old_id": "COL-2"}, {"old_id": "COL-3"}],
+            "inclinic_campaign_collateral_v2": [
+                {"old_collateral_id": "COL-1"},
+                {"old_collateral_id": "COL-2"},
+                {"old_collateral_id": "COL-3"},
+            ],
+            "inclinic_collateral_transaction_v2": [
+                {"old_collateral_id": "COL-1"},
+                {"old_collateral_id": "COL-2"},
+                {"old_collateral_id": "COL-3"},
+            ],
+            "inclinic_share_event_v2": [
+                {"old_collateral_id": "COL-1"},
+                {"old_collateral_id": "COL-2"},
+                {"old_collateral_id": "COL-3"},
+            ],
+        }
+
+        filtered = v2_reporting._apply_raw_visibility_to_source(source, rules)
+
+        self.assertEqual([row["old_id"] for row in filtered["inclinic_collateral_v2"]], ["COL-1", "COL-3"])
+        self.assertEqual(
+            [row["old_collateral_id"] for row in filtered["inclinic_campaign_collateral_v2"]],
+            ["COL-1", "COL-3"],
+        )
+        self.assertEqual(
+            [row["old_collateral_id"] for row in filtered["inclinic_collateral_transaction_v2"]],
+            ["COL-1", "COL-3"],
+        )
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_share_event_v2"]], ["COL-1", "COL-3"])
 
     def test_raw_visibility_filter_hides_pe_content_hierarchy(self):
         rules = [

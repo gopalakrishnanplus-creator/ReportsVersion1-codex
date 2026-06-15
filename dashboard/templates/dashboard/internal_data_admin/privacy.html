@@ -10,8 +10,8 @@
 
 <section class="ida-band">
   <div>
-    <h2>Hide RAW records from reporting</h2>
-    <p class="ida-muted">Select the system, RAW table, and exact identifier column, then paste values from that column. The selected records and their downstream reporting rows are excluded from dashboards without deleting RAW data.</p>
+    <h2>Control RAW record reporting visibility</h2>
+    <p class="ida-muted">Select the system, RAW table, exact identifier column, and action, then paste values from that column. Rules are applied to derived dashboards without deleting RAW data.</p>
   </div>
   <div class="ida-safety-note">
     <strong>No RAW deletion</strong>
@@ -31,7 +31,7 @@
 </section>
 
 <section class="ida-panel">
-  <p class="ida-eyebrow">Add RAW Records To Hide</p>
+  <p class="ida-eyebrow">Add RAW Visibility Rule</p>
   <form class="ida-form ida-record-form" method="post">
     {% csrf_token %}
     <input type="hidden" name="privacy_action" value="add_raw_visibility">
@@ -51,11 +51,19 @@
           <option value="">Select a RAW table first</option>
           {% for option in raw_visibility_table_options %}
             {% for column in option.column_options %}
-            <option value="{{ column.value }}" data-table-ref="{{ option.value }}">{{ column.label }}</option>
+            <option value="{{ column.value }}" data-table-ref="{{ option.value }}" data-keep-only="{{ column.keep_only_supported|yesno:'true,false' }}">{{ column.label }}</option>
             {% endfor %}
           {% endfor %}
         </select>
         <small>Typed values must come from this selected RAW column.</small>
+      </label>
+      <label class="ida-field ida-field-wide">
+        <span>Visibility action</span>
+        <select name="rule_mode" id="raw-visibility-rule-mode" required>
+          <option value="hide">Hide pasted values from reports</option>
+          <option value="keep_only">Show only pasted values for this collateral/content table</option>
+        </select>
+        <small>Use show-only for cases like active collaterals where every other value should be excluded.</small>
       </label>
       <label class="ida-field ida-field-wide">
         <span>Values from selected column</span>
@@ -64,10 +72,10 @@
       </label>
       <label class="ida-field ida-field-wide">
         <span>Reason</span>
-        <input type="text" name="reason" placeholder="Source record deleted or test record must not show in reports" required>
+        <input type="text" name="reason" placeholder="Source record deleted, test record hidden, or active collateral allowlist" required>
       </label>
     </div>
-    <button class="ida-button" type="submit">Hide RAW Records</button>
+    <button class="ida-button" type="submit">Save RAW Visibility Rules</button>
   </form>
 </section>
 
@@ -81,6 +89,7 @@
           <th>System</th>
           <th>RAW table</th>
           <th>Column</th>
+          <th>Mode</th>
           <th>Entity</th>
           <th>Value</th>
           <th>Downstream effect</th>
@@ -95,6 +104,7 @@
           <td>{{ rule.system_label }}</td>
           <td><code>{{ rule.schema_name }}.{{ rule.table_name }}</code><br><span>{{ rule.table_label }}</span></td>
           <td><code>{{ rule.identifier_column_label }}</code></td>
+          <td>{{ rule.rule_mode_label }}</td>
           <td>{{ rule.entity_label }}</td>
           <td><code>{{ rule.record_identifier }}</code></td>
           <td>{{ rule.downstream_effect }}</td>
@@ -113,7 +123,7 @@
           </td>
         </tr>
         {% empty %}
-        <tr><td colspan="9">No RAW visibility rules have been created.</td></tr>
+        <tr><td colspan="10">No RAW visibility rules have been created.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -124,22 +134,29 @@
   (() => {
     const tableSelect = document.getElementById("raw-visibility-table-ref");
     const columnSelect = document.getElementById("raw-visibility-identifier-column");
+    const modeSelect = document.getElementById("raw-visibility-rule-mode");
     if (!tableSelect || !columnSelect) {
       return;
     }
     const allOptions = Array.from(columnSelect.querySelectorAll("option[data-table-ref]"));
     const resetColumns = () => {
       const tableRef = tableSelect.value;
-      columnSelect.value = "";
+      const keepOnlyMode = modeSelect && modeSelect.value === "keep_only";
+      const currentValue = columnSelect.value;
       columnSelect.disabled = !tableRef;
       columnSelect.querySelector("option[value='']").textContent = tableRef ? "Select identifier column" : "Select a RAW table first";
       allOptions.forEach((option) => {
-        const visible = option.dataset.tableRef === tableRef;
+        const visible = option.dataset.tableRef === tableRef && (!keepOnlyMode || option.dataset.keepOnly === "true");
         option.hidden = !visible;
         option.disabled = !visible;
       });
+      const selectedOption = allOptions.find((option) => option.value === currentValue && option.dataset.tableRef === tableRef);
+      columnSelect.value = selectedOption && !selectedOption.disabled ? currentValue : "";
     };
     tableSelect.addEventListener("change", resetColumns);
+    if (modeSelect) {
+      modeSelect.addEventListener("change", resetColumns);
+    }
     resetColumns();
   })();
 </script>

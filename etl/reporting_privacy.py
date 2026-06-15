@@ -30,6 +30,14 @@ RAW_VISIBILITY_ENTITY_LABELS = {
     "transaction": "Transaction",
 }
 
+RAW_VISIBILITY_RULE_MODE_HIDE = "hide"
+RAW_VISIBILITY_RULE_MODE_KEEP_ONLY = "keep_only"
+RAW_VISIBILITY_RULE_MODE_LABELS = {
+    RAW_VISIBILITY_RULE_MODE_HIDE: "Hide matched values",
+    RAW_VISIBILITY_RULE_MODE_KEEP_ONLY: "Show only matched values",
+}
+RAW_VISIBILITY_RULE_MODES = frozenset(RAW_VISIBILITY_RULE_MODE_LABELS)
+
 RAW_VISIBILITY_TABLE_OPTIONS: tuple[dict[str, Any], ...] = (
     {
         "system_key": "inclinic",
@@ -38,6 +46,7 @@ RAW_VISIBILITY_TABLE_OPTIONS: tuple[dict[str, Any], ...] = (
         "label": "InClinic collateral master",
         "entity_type": "collateral",
         "identifier_fields": ("old_id", "collateral_uuid", "source_pk_value"),
+        "keep_only_identifier_fields": ("old_id", "collateral_uuid", "source_pk_value"),
         "downstream_effect": "Hides collateral tiles, campaign collateral schedule rows, share rows, transaction rows, and first-seen actions.",
     },
     {
@@ -47,6 +56,7 @@ RAW_VISIBILITY_TABLE_OPTIONS: tuple[dict[str, Any], ...] = (
         "label": "Legacy InClinic collateral master",
         "entity_type": "collateral",
         "identifier_fields": ("id",),
+        "keep_only_identifier_fields": ("id",),
         "downstream_effect": "Hides the collateral and linked InClinic schedules, shares, and transactions.",
     },
     {
@@ -56,6 +66,7 @@ RAW_VISIBILITY_TABLE_OPTIONS: tuple[dict[str, Any], ...] = (
         "label": "InClinic campaign-to-collateral link",
         "entity_type": "collateral",
         "identifier_fields": ("old_collateral_id", "collateral_uuid", "source_pk_value"),
+        "keep_only_identifier_fields": ("old_collateral_id", "collateral_uuid"),
         "downstream_effect": "Hides linked campaign schedule rows plus downstream share and transaction rows for that collateral.",
     },
     {
@@ -65,6 +76,7 @@ RAW_VISIBILITY_TABLE_OPTIONS: tuple[dict[str, Any], ...] = (
         "label": "Legacy campaign-to-collateral link",
         "entity_type": "collateral",
         "identifier_fields": ("collateral_id", "id"),
+        "keep_only_identifier_fields": ("collateral_id",),
         "downstream_effect": "Hides linked campaign schedule rows plus downstream share and transaction rows for that collateral.",
     },
     {
@@ -330,6 +342,11 @@ def normalize_record_identifier(value: Any) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "", _clean(value)).lower()
 
 
+def _raw_visibility_rule_mode(row: dict[str, Any]) -> str:
+    mode = _clean(row.get("rule_mode") or RAW_VISIBILITY_RULE_MODE_HIDE).lower()
+    return mode if mode in RAW_VISIBILITY_RULE_MODES else RAW_VISIBILITY_RULE_MODE_HIDE
+
+
 def _raw_visibility_option(system_key: str, schema_name: str, table_name: str) -> dict[str, Any] | None:
     system_key = _clean(system_key).lower()
     schema_name = _clean(schema_name)
@@ -356,7 +373,12 @@ def list_raw_visibility_table_options(system_key: str | None = None) -> list[dic
         enriched["identifier_help"] = ", ".join(enriched["identifier_fields"])
         enriched["value"] = f"{enriched['system_key']}||{enriched['schema_name']}||{enriched['table_name']}"
         enriched["column_options"] = [
-            {"value": field, "label": field, "table_ref": enriched["value"]}
+            {
+                "value": field,
+                "label": field,
+                "table_ref": enriched["value"],
+                "keep_only_supported": field in enriched.get("keep_only_identifier_fields", ()),
+            }
             for field in enriched["identifier_fields"]
         ]
         options.append(enriched)
@@ -421,6 +443,7 @@ def ensure_campaign_privacy_table() -> None:
                 schema_name TEXT NOT NULL,
                 table_name TEXT NOT NULL,
                 identifier_column TEXT NOT NULL DEFAULT '',
+                rule_mode TEXT NOT NULL DEFAULT 'hide',
                 record_identifier TEXT NOT NULL,
                 record_identifier_normalized TEXT NOT NULL,
                 entity_type TEXT NOT NULL,
@@ -440,9 +463,15 @@ def ensure_campaign_privacy_table() -> None:
         )
         cursor.execute(
             f"""
+            ALTER TABLE {_qident(PRIVACY_SCHEMA)}.{_qident(RAW_VISIBILITY_TABLE)}
+            ADD COLUMN IF NOT EXISTS rule_mode TEXT NOT NULL DEFAULT 'hide'
+            """
+        )
+        cursor.execute(
+            f"""
             CREATE INDEX IF NOT EXISTS reporting_raw_visibility_rule_active_idx
             ON {_qident(PRIVACY_SCHEMA)}.{_qident(RAW_VISIBILITY_TABLE)}
-            (is_active, system_key, entity_type, identifier_column, record_identifier_normalized)
+            (is_active, system_key, entity_type, rule_mode, identifier_column, record_identifier_normalized)
             """
         )
 
@@ -604,6 +633,7 @@ def create_raw_visibility_rule(
     table_name: str,
     identifier_column: str,
     record_identifier: str,
+    rule_mode: str = RAW_VISIBILITY_RULE_MODE_HIDE,
     reason: str,
     created_by: str,
 ) -> str:
@@ -616,6 +646,19 @@ def create_raw_visibility_rule(
         raise ValueError("Select the RAW table column that contains these values.")
     if identifier_column not in option["identifier_fields"]:
         raise ValueError("Selected column is not a supported identifier for this RAW table.")
+    rule_mode = _clean(rule_mode or RAW_VISIBILITY_RULE_MODE_HIDE).lower()
+    if rule_mode not in RAW_VISIBILITY_RULE_MODES:
+        raise ValueError("Select whether these RAW values should be hidden or kept visible.")
+    if rule_mode == RAW_VISIBILITY_RULE_MODE_KEEP_ONLY and (
+        option["system_key"] != "inclinic" or option["entity_type"] != "collateral"
+    ):
+        raise ValueError("Show-only rules are currently supported for InClinic collateral/content records.")
+    if (
+        rule_mode == RAW_VISIBILITY_RULE_MODE_KEEP_ONLY
+        and identifier_column not in option.get("keep_only_identifier_fields", ())
+    ):
+        keep_only_fields = ", ".join(option.get("keep_only_identifier_fields", ()))
+        raise ValueError(f"Show-only rules for collaterals must use a collateral identity column: {keep_only_fields}.")
     record_identifier = _clean(record_identifier)
     normalized = normalize_record_identifier(record_identifier)
     reason = _clean(reason)
@@ -629,9 +672,9 @@ def create_raw_visibility_rule(
         cursor.execute(
             f"""
             INSERT INTO {_qident(PRIVACY_SCHEMA)}.{_qident(RAW_VISIBILITY_TABLE)}
-            (rule_id, system_key, schema_name, table_name, identifier_column, record_identifier,
+            (rule_id, system_key, schema_name, table_name, identifier_column, rule_mode, record_identifier,
              record_identifier_normalized, entity_type, reason, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             [
                 rule_id,
@@ -639,6 +682,7 @@ def create_raw_visibility_rule(
                 option["schema_name"],
                 option["table_name"],
                 identifier_column,
+                rule_mode,
                 record_identifier,
                 normalized,
                 option["entity_type"],
@@ -669,7 +713,7 @@ def list_raw_visibility_rules(include_inactive: bool = True) -> list[dict[str, A
     with connection.cursor() as cursor:
         cursor.execute(
             f"""
-            SELECT rule_id, system_key, schema_name, table_name, identifier_column, record_identifier,
+            SELECT rule_id, system_key, schema_name, table_name, identifier_column, rule_mode, record_identifier,
                    record_identifier_normalized, entity_type, reason, is_active, created_by,
                    created_at::text AS created_at, updated_at::text AS updated_at
             FROM {_qident(PRIVACY_SCHEMA)}.{_qident(RAW_VISIBILITY_TABLE)}
@@ -689,8 +733,16 @@ def list_raw_visibility_rules(include_inactive: bool = True) -> list[dict[str, A
         row["system_label"] = SYSTEM_LABELS.get(row["system_key"], row["system_key"])
         row["table_label"] = option.get("label") or f"{row['schema_name']}.{row['table_name']}"
         row["identifier_column_label"] = row.get("identifier_column") or "Any supported identifier"
+        row["rule_mode"] = _raw_visibility_rule_mode(row)
+        row["rule_mode_label"] = RAW_VISIBILITY_RULE_MODE_LABELS.get(row["rule_mode"], row["rule_mode"])
         row["entity_label"] = RAW_VISIBILITY_ENTITY_LABELS.get(row["entity_type"], row["entity_type"])
-        row["downstream_effect"] = option.get("downstream_effect", "")
+        if row["rule_mode"] == RAW_VISIBILITY_RULE_MODE_KEEP_ONLY:
+            entity_label = row["entity_label"].lower()
+            row["downstream_effect"] = (
+                f"Only matching {entity_label} values remain visible; non-matching downstream rows are excluded."
+            )
+        else:
+            row["downstream_effect"] = option.get("downstream_effect", "")
     return rows
 
 
@@ -707,20 +759,37 @@ def raw_visibility_entity_ids(
     entity_type: str,
     *,
     system_key: str | None = None,
+    rule_mode: str = RAW_VISIBILITY_RULE_MODE_HIDE,
 ) -> set[str]:
     selected_system = _clean(system_key).lower()
     selected_entity = _clean(entity_type).lower()
+    selected_mode = _clean(rule_mode or RAW_VISIBILITY_RULE_MODE_HIDE).lower()
     return {
         normalized
         for row in rules
         if row.get("is_active", True)
         and _clean(row.get("entity_type")).lower() == selected_entity
         and (not selected_system or _clean(row.get("system_key")).lower() == selected_system)
+        and _raw_visibility_rule_mode(row) == selected_mode
         for normalized in [
             normalize_record_identifier(row.get("record_identifier_normalized") or row.get("record_identifier"))
         ]
         if normalized
     }
+
+
+def raw_visibility_keep_only_ids(
+    rules: list[dict[str, Any]],
+    entity_type: str,
+    *,
+    system_key: str | None = None,
+) -> set[str]:
+    return raw_visibility_entity_ids(
+        rules,
+        entity_type,
+        system_key=system_key,
+        rule_mode=RAW_VISIBILITY_RULE_MODE_KEEP_ONLY,
+    )
 
 
 def row_matches_raw_visibility_ids(
