@@ -269,6 +269,50 @@ class SapaGrowthLogicTests(SimpleTestCase):
 
         self.assertEqual(matched, ["599a2023-3ab9-4227-b82c-5f0a1bc36579"])
 
+    def test_field_rep_login_campaign_hint_can_come_from_metric_meta(self):
+        campaigns = {
+            "1151a492-947b-4c91-83ac-5a224b2d07b1": {"id": "1151a492-947b-4c91-83ac-5a224b2d07b1", "name": "Portal"},
+            "599a2023-3ab9-4227-b82c-5f0a1bc36579": {"id": "599a2023-3ab9-4227-b82c-5f0a1bc36579", "name": "Abbott"},
+        }
+
+        matched = _campaign_ids_for_field_rep_login_event(
+            rep={"id": "rep-599"},
+            row={
+                "event_type": "field_rep_login",
+                "action_key": "rep-599",
+                "meta": json.dumps(
+                    {
+                        "campaign_id": "599a20233ab94227b82c5f0a1bc36579",
+                        "brand_supplied_field_rep_id": "FR599",
+                        "field_rep_name": "Rep 599",
+                    }
+                ),
+            },
+            rfa_campaigns=campaigns,
+            rep_campaign_ids={"rep-599": set(campaigns)},
+            campaign_rep_ids={
+                "1151a492-947b-4c91-83ac-5a224b2d07b1": {"other-rep"},
+                "599a2023-3ab9-4227-b82c-5f0a1bc36579": {"rep-599"},
+            },
+        )
+
+        self.assertEqual(matched, ["599a2023-3ab9-4227-b82c-5f0a1bc36579"])
+
+    def test_field_rep_login_meta_campaign_requires_campaign_assignment(self):
+        matched = _campaign_ids_for_field_rep_login_event(
+            rep={"id": "rep-599"},
+            row={
+                "event_type": "field_rep_login",
+                "action_key": "rep-599",
+                "meta": json.dumps({"campaign_id": "campaign-a"}),
+            },
+            rfa_campaigns={"campaign-a": {"id": "campaign-a", "name": "Campaign A"}},
+            rep_campaign_ids={"rep-599": {"campaign-a"}},
+            campaign_rep_ids={"campaign-a": {"different-rep"}},
+        )
+
+        self.assertEqual(matched, [])
+
     def test_field_rep_login_without_campaign_is_not_copied_to_multiple_campaigns(self):
         campaigns = {
             "1151a492-947b-4c91-83ac-5a224b2d07b1": {"id": "1151a492-947b-4c91-83ac-5a224b2d07b1", "name": "Portal"},
