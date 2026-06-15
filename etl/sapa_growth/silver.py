@@ -282,23 +282,33 @@ def _campaign_ids_for_field_rep_login_event(
     rfa_campaigns: dict[str, dict[str, Any]],
     rep_campaign_ids: dict[str, set[str]],
     campaign_rep_ids: dict[str, set[str]] | None = None,
+    campaign_rep_membership_ids: dict[str, set[str]] | None = None,
     rep_campaign_assignments: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[str]:
     meta = _json_object(row.get("meta"))
     campaign_hint = clean_text(row.get("campaign_id")) or clean_text(meta.get("campaign_id"))
-    source_rep_id = (
-        clean_text((rep or {}).get("id"))
-        or clean_text(row.get("action_key"))
-        or clean_text(row.get("field_rep_id"))
-        or clean_text(meta.get("field_rep_id"))
-    )
+    rep_identity_values = {
+        clean_text((rep or {}).get("id")),
+        clean_text((rep or {}).get("brand_supplied_field_rep_id")),
+        clean_text(row.get("action_key")),
+        clean_text(row.get("field_rep_id")),
+        clean_text(meta.get("field_rep_id")),
+        clean_text(meta.get("brand_supplied_field_rep_id")),
+    }
+    rep_identity_values = {value for value in rep_identity_values if value}
+    source_rep_id = clean_text((rep or {}).get("id")) or clean_text(row.get("action_key")) or clean_text(row.get("field_rep_id")) or clean_text(meta.get("field_rep_id"))
 
     def rep_is_assigned(campaign_id: str) -> bool:
-        if not source_rep_id:
+        if not rep_identity_values:
             return False
+        if campaign_rep_membership_ids is not None:
+            campaign_values = campaign_rep_membership_ids.get(campaign_id, set())
+            normalized_campaign_values = {_norm_id(value) for value in campaign_values}
+            return any(value in campaign_values or _norm_id(value) in normalized_campaign_values for value in rep_identity_values)
         if campaign_rep_ids is not None:
-            return source_rep_id in campaign_rep_ids.get(campaign_id, set())
-        return campaign_id in rep_campaign_ids.get(source_rep_id, set())
+            campaign_values = campaign_rep_ids.get(campaign_id, set())
+            return any(value in campaign_values for value in rep_identity_values)
+        return bool(source_rep_id and campaign_id in rep_campaign_ids.get(source_rep_id, set()))
 
     if campaign_hint:
         hint_norm = _norm_id(campaign_hint)
@@ -657,6 +667,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
         if _norm_id(row.get("brand_supplied_field_rep_id"))
     }
     campaign_rep_ids: dict[str, set[str]] = defaultdict(set)
+    campaign_rep_membership_ids: dict[str, set[str]] = defaultdict(set)
     rep_campaign_ids: dict[str, set[str]] = defaultdict(set)
     rep_campaign_assignments: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in campaign_field_rep_rows:
@@ -667,6 +678,11 @@ def build_silver(run_id: str) -> dict[str, Any]:
         if privacy_allowlist and campaign_id not in rfa_campaigns:
             continue
         campaign_rep_ids[campaign_id].add(field_rep_id)
+        campaign_rep_membership_ids[campaign_id].add(field_rep_id)
+        assigned_rep = field_rep_by_id.get(field_rep_id)
+        assigned_rep_brand_id = clean_text((assigned_rep or {}).get("brand_supplied_field_rep_id"))
+        if assigned_rep_brand_id:
+            campaign_rep_membership_ids[campaign_id].add(assigned_rep_brand_id)
         rep_campaign_ids[field_rep_id].add(campaign_id)
         rep_campaign_assignments[field_rep_id].append(
             {
@@ -1072,6 +1088,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             rfa_campaigns=rfa_campaigns,
             rep_campaign_ids=rep_campaign_ids,
             campaign_rep_ids=campaign_rep_ids,
+            campaign_rep_membership_ids=campaign_rep_membership_ids,
             rep_campaign_assignments=rep_campaign_assignments,
         )
 
