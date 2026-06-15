@@ -29,6 +29,7 @@ from etl.reporting_privacy import (
     filter_rows_by_campaign_fields,
     person_privacy_allowed_campaigns_for_row,
     raw_visibility_entity_ids,
+    raw_visibility_keep_only_ids,
     row_matches_raw_visibility_ids,
     row_visible_by_person_privacy,
 )
@@ -1154,6 +1155,13 @@ def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw
             row for row in output.get(source_key, []) if not row_matches_raw_visibility_ids(row, hidden_ids, fields)
         ]
 
+    def retain_visible(source_key: str, keep_ids: set[str], fields: tuple[str, ...]) -> None:
+        if not keep_ids:
+            return
+        output[source_key] = [
+            row for row in output.get(source_key, []) if row_matches_raw_visibility_ids(row, keep_ids, fields)
+        ]
+
     campaign_ids = raw_visibility_entity_ids(raw_visibility_rules, "campaign", system_key="inclinic")
     if campaign_ids:
         for source_key, fields in {
@@ -1243,16 +1251,13 @@ def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw
         }.items():
             remove_hidden(source_key, doctor_ids, fields)
 
-    collateral_ids = raw_visibility_entity_ids(raw_visibility_rules, "collateral", system_key="inclinic")
-    if collateral_ids:
+    collateral_keep_ids = raw_visibility_keep_only_ids(raw_visibility_rules, "collateral", system_key="inclinic")
+    if collateral_keep_ids:
         for source_key, fields in {
             "inclinic_collateral_v2": ("old_id", "collateral_uuid", "source_pk_value"),
             "inclinic_campaign_collateral_v2": (
                 "old_collateral_id",
                 "collateral_uuid",
-                "old_id",
-                "campaign_collateral_uuid",
-                "source_pk_value",
             ),
             "inclinic_collateral_transaction_v2": (
                 "old_collateral_id",
@@ -1267,7 +1272,33 @@ def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw
                 "source_pk_value",
             ),
         }.items():
-            remove_hidden(source_key, collateral_ids, fields)
+            retain_visible(source_key, collateral_keep_ids, fields)
+    else:
+        collateral_ids = raw_visibility_entity_ids(raw_visibility_rules, "collateral", system_key="inclinic")
+        if collateral_ids:
+            for source_key, fields in {
+                "inclinic_collateral_v2": ("old_id", "collateral_uuid", "source_pk_value"),
+                "inclinic_campaign_collateral_v2": (
+                    "old_collateral_id",
+                    "collateral_uuid",
+                    "old_id",
+                    "campaign_collateral_uuid",
+                    "source_pk_value",
+                ),
+                "inclinic_collateral_transaction_v2": (
+                    "old_collateral_id",
+                    "collateral_uuid",
+                    "collateral_id",
+                    "source_pk_value",
+                ),
+                "inclinic_share_event_v2": (
+                    "old_collateral_id",
+                    "collateral_uuid",
+                    "collateral_id",
+                    "source_pk_value",
+                ),
+            }.items():
+                remove_hidden(source_key, collateral_ids, fields)
 
     share_ids = raw_visibility_entity_ids(raw_visibility_rules, "share", system_key="inclinic")
     remove_hidden("inclinic_share_event_v2", share_ids, ("old_id", "share_event_uuid", "source_pk_value"))
