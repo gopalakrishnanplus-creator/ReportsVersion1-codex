@@ -298,6 +298,32 @@ class SapaGrowthLogicTests(SimpleTestCase):
 
         self.assertEqual(matched, ["599a2023-3ab9-4227-b82c-5f0a1bc36579"])
 
+    def test_field_rep_login_meta_campaign_accepts_assigned_brand_supplied_id(self):
+        matched = _campaign_ids_for_field_rep_login_event(
+            rep=None,
+            row={
+                "event_type": "field_rep_login",
+                "action_key": "44228",
+                "meta": json.dumps(
+                    {
+                        "campaign_id": "1151a492947b4c9183ac5a224b2d07b1",
+                        "brand_supplied_field_rep_id": "44228",
+                    }
+                ),
+            },
+            rfa_campaigns={
+                "1151a492-947b-4c91-83ac-5a224b2d07b1": {
+                    "id": "1151a492-947b-4c91-83ac-5a224b2d07b1",
+                    "name": "Portal",
+                }
+            },
+            rep_campaign_ids={},
+            campaign_rep_ids={"1151a492-947b-4c91-83ac-5a224b2d07b1": {"internal-fr-1"}},
+            campaign_rep_membership_ids={"1151a492-947b-4c91-83ac-5a224b2d07b1": {"internal-fr-1", "44228"}},
+        )
+
+        self.assertEqual(matched, ["1151a492-947b-4c91-83ac-5a224b2d07b1"])
+
     def test_field_rep_login_meta_campaign_requires_campaign_assignment(self):
         matched = _campaign_ids_for_field_rep_login_event(
             rep={"id": "rep-599"},
@@ -309,6 +335,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
             rfa_campaigns={"campaign-a": {"id": "campaign-a", "name": "Campaign A"}},
             rep_campaign_ids={"rep-599": {"campaign-a"}},
             campaign_rep_ids={"campaign-a": {"different-rep"}},
+            campaign_rep_membership_ids={"campaign-a": {"different-rep", "FR-DIFFERENT"}},
         )
 
         self.assertEqual(matched, [])
