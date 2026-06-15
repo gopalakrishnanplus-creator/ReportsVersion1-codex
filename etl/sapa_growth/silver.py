@@ -281,24 +281,34 @@ def _campaign_ids_for_field_rep_login_event(
     row: dict[str, Any],
     rfa_campaigns: dict[str, dict[str, Any]],
     rep_campaign_ids: dict[str, set[str]],
+    campaign_rep_ids: dict[str, set[str]] | None = None,
     rep_campaign_assignments: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[str]:
-    campaign_hint = clean_text(row.get("campaign_id"))
+    meta = _json_object(row.get("meta"))
+    campaign_hint = clean_text(row.get("campaign_id")) or clean_text(meta.get("campaign_id"))
+    source_rep_id = (
+        clean_text((rep or {}).get("id"))
+        or clean_text(row.get("action_key"))
+        or clean_text(row.get("field_rep_id"))
+        or clean_text(meta.get("field_rep_id"))
+    )
+
+    def rep_is_assigned(campaign_id: str) -> bool:
+        if not source_rep_id:
+            return False
+        if campaign_rep_ids is not None:
+            return source_rep_id in campaign_rep_ids.get(campaign_id, set())
+        return campaign_id in rep_campaign_ids.get(source_rep_id, set())
+
     if campaign_hint:
-        direct_match = clean_text((rfa_campaigns.get(campaign_hint) or {}).get("id"))
-        if direct_match:
-            return [direct_match]
         hint_norm = _norm_id(campaign_hint)
-        normalized_matches = [
+        matched_campaigns = [
             campaign_id
             for campaign_id, campaign in rfa_campaigns.items()
             if _norm_id(campaign_id) == hint_norm or _norm_id(campaign.get("name")) == hint_norm
         ]
-        if normalized_matches:
-            return sorted(normalized_matches)
-        return []
+        return sorted(campaign_id for campaign_id in matched_campaigns if rep_is_assigned(campaign_id))
 
-    source_rep_id = clean_text((rep or {}).get("id"))
     if rep_campaign_assignments is not None:
         login_date = parse_date(row.get("ts"))
         candidates = []
@@ -384,6 +394,8 @@ def _activity_value(row: dict[str, Any], payload: dict[str, Any], *fields: str) 
 
 
 def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
     text = clean_text(value)
     if not text:
         return {}
@@ -1041,9 +1053,15 @@ def build_silver(run_id: str) -> dict[str, Any]:
 
     def field_rep_from_event(row: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
         event_type = (clean_text(row.get("event_type")) or "").lower()
+        meta = _json_object(row.get("meta"))
         raw_value = clean_text(row.get("field_rep_id"))
         if event_type == "field_rep_login":
-            raw_value = raw_value or clean_text(row.get("action_key"))
+            raw_value = (
+                clean_text(row.get("action_key"))
+                or raw_value
+                or clean_text(meta.get("field_rep_id"))
+                or clean_text(meta.get("brand_supplied_field_rep_id"))
+            )
         rep = field_rep_by_id.get(raw_value or "") or field_rep_by_external.get(_norm_id(raw_value))
         return rep, raw_value or ""
 
@@ -1053,17 +1071,22 @@ def build_silver(run_id: str) -> dict[str, Any]:
             row=row,
             rfa_campaigns=rfa_campaigns,
             rep_campaign_ids=rep_campaign_ids,
+            campaign_rep_ids=campaign_rep_ids,
             rep_campaign_assignments=rep_campaign_assignments,
         )
 
-    def field_rep_display(rep: dict[str, Any] | None, raw_value: str) -> dict[str, str]:
+    def field_rep_display(rep: dict[str, Any] | None, raw_value: str, meta: dict[str, Any] | None = None) -> dict[str, str]:
+        meta = meta or {}
         source_id = clean_text((rep or {}).get("id")) or raw_value
         display_id = clean_text((rep or {}).get("brand_supplied_field_rep_id")) or source_id or "Unassigned"
         return {
             "source_field_rep_id": source_id or display_id,
             "field_rep_id": display_id,
-            "field_rep_name": clean_text((rep or {}).get("full_name")) or display_id,
+            "field_rep_name": clean_text((rep or {}).get("full_name")) or clean_text(meta.get("field_rep_name")) or display_id,
             "state": clean_text((rep or {}).get("state")) or "",
+            "field_rep_email": clean_text(meta.get("email")) or "",
+            "login_method": clean_text(meta.get("login_method")) or "",
+            "user_agent": clean_text(meta.get("user_agent")) or "",
         }
 
     def device_type_from_metric_meta(row: dict[str, Any]) -> str:
@@ -1076,8 +1099,9 @@ def build_silver(run_id: str) -> dict[str, Any]:
         if (clean_text(row.get("event_type")) or "").lower() != "field_rep_login":
             continue
         login_ts = _empty_text(iso_datetime(row.get("ts")))
+        meta = _json_object(row.get("meta"))
         rep, raw_field_rep_id = field_rep_from_event(row)
-        display = field_rep_display(rep, raw_field_rep_id)
+        display = field_rep_display(rep, raw_field_rep_id, meta)
         for campaign_id in campaign_ids_for_field_rep_event(rep, row):
             if privacy_allowlist and campaign_id not in rfa_campaigns:
                 continue
@@ -1094,9 +1118,12 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     "campaign_label": campaign_label,
                     "field_rep_id": display["field_rep_id"],
                     "field_rep_name": display["field_rep_name"],
+                    "field_rep_email": display["field_rep_email"],
                     "state": display["state"],
                     "login_ts": login_ts,
+                    "login_method": display["login_method"],
                     "device_type": device_type_from_metric_meta(row),
+                    "user_agent": display["user_agent"],
                 }
             )
     replace_table(
@@ -1110,9 +1137,12 @@ def build_silver(run_id: str) -> dict[str, Any]:
             "campaign_label",
             "field_rep_id",
             "field_rep_name",
+            "field_rep_email",
             "state",
             "login_ts",
+            "login_method",
             "device_type",
+            "user_agent",
         ],
         field_rep_login_rows,
     )

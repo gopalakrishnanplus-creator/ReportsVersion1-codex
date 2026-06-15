@@ -105,7 +105,7 @@ DETAIL_SPECS = {
         "summary_unique_field": "source_field_rep_id",
         "title": "Field Rep Logins",
         "weekly": True,
-        "columns": ["field_rep_name", "field_rep_id", "state", "login_ts"],
+        "columns": ["field_rep_name", "field_rep_id", "field_rep_email", "state", "login_ts", "login_count", "device_type", "login_method"],
     },
     "active_clinics": {
         "table": "rpt_doctor_status_current",
