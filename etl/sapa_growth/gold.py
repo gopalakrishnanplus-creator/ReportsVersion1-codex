@@ -509,8 +509,12 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
             staff_forms_shared_by_doctor[doctor_key] = staff_forms_shared_by_doctor.get(doctor_key, 0) + 1
 
     forms_filled_by_doctor: dict[str, int] = {}
-    red_tagged_by_doctor: dict[str, int] = {}
-    yellow_tagged_by_doctor: dict[str, int] = {}
+    red_tagged_patient_keys_by_doctor: dict[str, set[str]] = {}
+    yellow_tagged_patient_keys_by_doctor: dict[str, set[str]] = {}
+
+    def patient_key(row: dict[str, Any]) -> str:
+        return clean_text(row.get("patient_id")) or f"record:{clean_text(row.get('source_submission_id')) or clean_text(row.get('submission_key')) or ''}"
+
     for row in screening_rows:
         if clean_text(row.get("source_table")) != "redflags_patientsubmission":
             continue
@@ -520,9 +524,9 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
         forms_filled_by_doctor[doctor_key] = forms_filled_by_doctor.get(doctor_key, 0) + 1
         overall_flag = (clean_text(row.get("overall_flag_code")) or "").lower()
         if overall_flag == "red":
-            red_tagged_by_doctor[doctor_key] = red_tagged_by_doctor.get(doctor_key, 0) + 1
+            red_tagged_patient_keys_by_doctor.setdefault(doctor_key, set()).add(patient_key(row))
         if overall_flag == "yellow":
-            yellow_tagged_by_doctor[doctor_key] = yellow_tagged_by_doctor.get(doctor_key, 0) + 1
+            yellow_tagged_patient_keys_by_doctor.setdefault(doctor_key, set()).add(patient_key(row))
 
     refresh_rows = [
         _stringify_row(
@@ -630,8 +634,8 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
                     "clinic_staff_has_logged_in": _yes_no(doctor_key in staff_login_keys),
                     "clinic_staff_forms_shared_count": staff_forms_shared_by_doctor.get(doctor_key, 0),
                     "forms_filled_count": forms_filled_by_doctor.get(doctor_key, 0),
-                    "red_tagged_patients_count": red_tagged_by_doctor.get(doctor_key, 0),
-                    "yellow_tagged_patients_count": yellow_tagged_by_doctor.get(doctor_key, 0),
+                    "red_tagged_patients_count": len(red_tagged_patient_keys_by_doctor.get(doctor_key, set())),
+                    "yellow_tagged_patients_count": len(yellow_tagged_patient_keys_by_doctor.get(doctor_key, set())),
                     "registered_at": doctor.get("campaign_registered_at", ""),
                     "first_seen_at": doctor.get("first_seen_at", ""),
                     "latest_seen_at": doctor.get("latest_seen_at", ""),

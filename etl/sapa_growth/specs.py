@@ -24,6 +24,8 @@ RAW_AUDIT_COLUMNS = [
     "_dq_errors",
 ]
 
+SCREENING_LOOKBACK_DAYS = 45
+
 
 @dataclass(frozen=True)
 class SourceTableSpec:
@@ -80,7 +82,7 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         current_snapshot=True,
     ),
     "campaign_campaign": SourceTableSpec(
-        source_table="campaign_v2",
+        source_table="campaign_campaign",
         raw_table="campaign_campaign_raw",
         columns=[
             "id",
@@ -99,13 +101,15 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         watermark_field="updated_at",
+        fallback_source_tables=("campaign_v2",),
         current_snapshot=True,
     ),
     "campaign_brand": SourceTableSpec(
-        source_table="brand_v2",
+        source_table="campaign_brand",
         raw_table="campaign_brand_raw",
         columns=["id", "name"],
         key_columns=["id"],
+        fallback_source_tables=("brand_v2",),
         current_snapshot=True,
     ),
     "campaign_fieldrep": SourceTableSpec(
@@ -205,7 +209,7 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         columns=["record_id", "language_code", "submitted_at", "patient_id", "doctor_id", "form_id", "overall_flag_code"],
         key_columns=["record_id"],
         watermark_field="submitted_at",
-        lookback_days=3650,
+        lookback_days=SCREENING_LOOKBACK_DAYS,
     ),
     "gnd_gndpatientsubmission": SourceTableSpec(
         source_table="gnd_gndpatientsubmission",
@@ -213,7 +217,7 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         columns=["id", "patient_id", "language_code", "submitted_at", "doctor_id", "form_id", "overall_flag_code"],
         key_columns=["id"],
         watermark_field="submitted_at",
-        lookback_days=3650,
+        lookback_days=SCREENING_LOOKBACK_DAYS,
     ),
     "redflags_submissionredflag": SourceTableSpec(
         source_table="redflags_submissionredflag",
