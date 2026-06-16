@@ -822,6 +822,16 @@ class SapaGrowthLogicTests(SimpleTestCase):
                     "state": "Karnataka",
                 }
             ],
+            "redflags_metricevent": [
+                {
+                    "id": "evt-1",
+                    "doctor_id": "DOC-RF-1",
+                    "campaign_id": "camp-a",
+                    "event_type": "clinic_login",
+                    "action_key": "doctor",
+                    "ts": "2026-05-20 10:30:00",
+                }
+            ],
         }
         replace_calls = []
 
@@ -847,6 +857,41 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(dim_rows[0]["is_user_created_doctor"], "true")
         self.assertEqual(dim_rows[0]["has_campaign_source"], "false")
         self.assertEqual(dim_rows[0]["has_redflags_source"], "true")
+
+    def test_redflags_only_doctor_without_campaign_activity_is_not_copied_by_field_rep_assignment(self):
+        rows_by_table = {
+            "campaign_campaign": [
+                {"id": "camp-a", "name": "Campaign A", "brand_id": "brand-a", "system_rfa": "true"},
+                {"id": "camp-b", "name": "Campaign B", "brand_id": "brand-a", "system_rfa": "true"},
+            ],
+            "campaign_fieldrep": [{"id": "fieldrep-1", "brand_supplied_field_rep_id": "FR1", "full_name": "Rep One"}],
+            "campaign_campaignfieldrep": [
+                {"campaign_id": "camp-a", "field_rep_id": "fieldrep-1"},
+                {"campaign_id": "camp-b", "field_rep_id": "fieldrep-1"},
+            ],
+            "redflags_doctor": [
+                {
+                    "doctor_id": "DOC-RF-1",
+                    "first_name": "Self",
+                    "last_name": "Doctor",
+                    "field_rep_id": "fieldrep-1",
+                    "created_at": "2026-05-20 10:00:00",
+                }
+            ],
+        }
+        replace_calls = []
+
+        with patch("etl.sapa_growth.silver.fetch_table", side_effect=lambda _schema, table: rows_by_table.get(table, [])), patch(
+            "etl.sapa_growth.silver.replace_table",
+            side_effect=lambda schema, table, columns, rows: replace_calls.append((schema, table, columns, list(rows))),
+        ), patch("etl.sapa_growth.silver.active_campaign_privacy_allowlist", return_value=set()), patch(
+            "etl.sapa_growth.silver.active_person_privacy_rules",
+            return_value=[],
+        ), patch("etl.sapa_growth.silver.active_raw_visibility_rules", return_value=[]):
+            sapa_silver.build_silver("run-1")
+
+        dim_call = next(call for call in replace_calls if call[1] == "dim_doctor_clinic")
+        self.assertEqual(dim_call[3], [])
 
     def test_dashboard_pdf_export_returns_pdf_attachment(self):
         request = RequestFactory().post(

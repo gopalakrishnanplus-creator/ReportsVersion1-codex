@@ -701,6 +701,20 @@ def build_silver(run_id: str) -> dict[str, Any]:
             rep_campaign_ids[assigned_rep_brand_id].add(campaign_id)
             rep_campaign_assignments[assigned_rep_brand_id].append(assignment_payload)
 
+    doctor_activity_campaign_ids: dict[str, set[str]] = defaultdict(set)
+
+    def add_doctor_campaign_evidence(doctor_id: Any, campaign_id: Any) -> None:
+        doctor_key = clean_text(doctor_id)
+        campaign_key = clean_text(campaign_id)
+        if doctor_key and campaign_key in rfa_campaigns:
+            doctor_activity_campaign_ids[doctor_key].add(campaign_key)
+
+    for row in rfa_activity_events:
+        add_doctor_campaign_evidence(row.get("doctor_uuid"), row.get("campaign_uuid"))
+    for source_rows in (redflag_submissions, gnd_submissions, followup_rows, metric_rows):
+        for row in source_rows:
+            add_doctor_campaign_evidence(row.get("doctor_id"), row.get("campaign_id"))
+
     def campaign_meta(campaign_id: Any) -> tuple[str, str]:
         campaign = rfa_campaigns.get(clean_text(campaign_id)) or {}
         brand = brand_by_id.get(clean_text(campaign.get("brand_id"))) or {}
@@ -794,8 +808,9 @@ def build_silver(run_id: str) -> dict[str, Any]:
         ]
 
     def campaigns_for_redflags_doctor(doctor_row: dict[str, Any]) -> list[dict[str, Any]]:
+        doctor_id = clean_text(doctor_row.get("doctor_id"))
         rep = field_rep_by_id.get(clean_text(doctor_row.get("field_rep_id")) or "") or field_rep_by_external.get(_norm_id(doctor_row.get("field_rep_id")))
-        campaign_ids = sorted(rep_campaign_ids.get(clean_text((rep or {}).get("id")) or "", set()) & set(rfa_campaigns.keys()))
+        campaign_ids = sorted(doctor_activity_campaign_ids.get(doctor_id, set()) & set(rfa_campaigns.keys()))
         output = []
         for campaign_id in campaign_ids:
             campaign_key, campaign_label = campaign_meta(campaign_id)
@@ -816,7 +831,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             )
         if output:
             return [_best_dim_for_event(output, doctor_row.get("created_at")) or output[0]]
-        if privacy_allowlist:
+        if privacy_allowlist or rfa_campaigns:
             return []
         campaign_key, campaign_label = _campaign_key_label(doctor_row)
         rep_info = resolve_field_rep(doctor_row.get("field_rep_id"))
