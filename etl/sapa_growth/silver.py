@@ -322,25 +322,26 @@ def _campaign_ids_for_field_rep_login_event(
     if rep_campaign_assignments is not None:
         login_date = parse_date(row.get("ts"))
         candidates = []
-        for assignment in rep_campaign_assignments.get(source_rep_id or "", []):
-            campaign_id = clean_text(assignment.get("campaign_id"))
-            if campaign_id not in rfa_campaigns:
-                continue
-            assigned_at = parse_date(assignment.get("assigned_at"))
-            campaign = rfa_campaigns.get(campaign_id) or {}
-            campaign_start = parse_date(campaign.get("start_date"))
-            campaign_end = parse_date(campaign.get("end_date"))
-            if login_date and assigned_at and login_date < assigned_at:
-                continue
-            if login_date and campaign_start and login_date < campaign_start:
-                continue
-            if login_date and campaign_end and login_date > campaign_end:
-                continue
-            candidates.append(campaign_id)
+        for identity in sorted(rep_identity_values):
+            for assignment in rep_campaign_assignments.get(identity, []):
+                campaign_id = clean_text(assignment.get("campaign_id"))
+                if campaign_id not in rfa_campaigns:
+                    continue
+                assigned_at = parse_date(assignment.get("assigned_at"))
+                campaign = rfa_campaigns.get(campaign_id) or {}
+                campaign_start = parse_date(campaign.get("start_date"))
+                campaign_end = parse_date(campaign.get("end_date"))
+                if login_date and assigned_at and login_date < assigned_at:
+                    continue
+                if login_date and campaign_start and login_date < campaign_start:
+                    continue
+                if login_date and campaign_end and login_date > campaign_end:
+                    continue
+                candidates.append(campaign_id)
         candidate_campaigns = sorted(set(candidates))
         return candidate_campaigns
 
-    candidate_campaigns = sorted(rep_campaign_ids.get(source_rep_id or "", set()) & set(rfa_campaigns.keys()))
+    candidate_campaigns = sorted(set().union(*(rep_campaign_ids.get(identity, set()) for identity in rep_identity_values)) & set(rfa_campaigns.keys()))
     return candidate_campaigns if len(candidate_campaigns) == 1 else []
 
 
@@ -684,12 +685,14 @@ def build_silver(run_id: str) -> dict[str, Any]:
         if assigned_rep_brand_id:
             campaign_rep_membership_ids[campaign_id].add(assigned_rep_brand_id)
         rep_campaign_ids[field_rep_id].add(campaign_id)
-        rep_campaign_assignments[field_rep_id].append(
-            {
-                "campaign_id": campaign_id,
-                "assigned_at": row.get("created_at"),
-            }
-        )
+        assignment_payload = {
+            "campaign_id": campaign_id,
+            "assigned_at": row.get("created_at"),
+        }
+        rep_campaign_assignments[field_rep_id].append(assignment_payload)
+        if assigned_rep_brand_id:
+            rep_campaign_ids[assigned_rep_brand_id].add(campaign_id)
+            rep_campaign_assignments[assigned_rep_brand_id].append(assignment_payload)
 
     def campaign_meta(campaign_id: Any) -> tuple[str, str]:
         campaign = rfa_campaigns.get(clean_text(campaign_id)) or {}
