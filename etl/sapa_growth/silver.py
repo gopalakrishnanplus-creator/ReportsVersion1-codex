@@ -763,30 +763,63 @@ def build_silver(run_id: str) -> dict[str, Any]:
             continue
         enrollments_by_campaign_doctor_id[campaign_doctor_id].append(row)
 
+    def campaign_info_from_id(campaign_id: Any, rep_value: Any = None, registered_at: Any = None) -> dict[str, str] | None:
+        campaign_id = clean_text(campaign_id)
+        if not campaign_id or campaign_id not in rfa_campaigns:
+            return None
+        campaign_key, campaign_label = campaign_meta(campaign_id)
+        date_info = campaign_dates(campaign_id)
+        rep_info = resolve_field_rep(rep_value, campaign_id)
+        return {
+            "campaign_id": campaign_id,
+            "campaign_key": campaign_key,
+            "campaign_label": campaign_label,
+            "campaign_start_date": date_info["campaign_start_date"],
+            "campaign_end_date": date_info["campaign_end_date"],
+            "field_rep_id": rep_info["field_rep_id"],
+            "field_rep_name": rep_info["field_rep_name"],
+            "field_rep_state": rep_info["field_rep_state"],
+            "registered_at": clean_text(registered_at) or "",
+        }
+
     def enrollment_campaigns_for_doctor(campaign_row: dict[str, Any], doctor_row: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         row_id = clean_text(campaign_row.get("id"))
-        enrollments = enrollments_by_campaign_doctor_id.get(row_id or "", [])
+        logical_doctor_id = clean_text(campaign_row.get("doctor_id"))
+        fallback_rep_value = (
+            campaign_row.get("registered_by_id")
+            or campaign_row.get("field_rep_id")
+            or campaign_row.get("registered_by")
+            or (doctor_row or {}).get("field_rep_id")
+        )
+        enrollment_keys = [value for value in (row_id, logical_doctor_id) if value]
+        enrollments = []
+        seen_enrollment_keys = set()
+        for key in enrollment_keys:
+            for enrollment in enrollments_by_campaign_doctor_id.get(key, []):
+                dedup_key = (clean_text(enrollment.get("campaign_id")), clean_text(enrollment.get("doctor_id")))
+                if dedup_key in seen_enrollment_keys:
+                    continue
+                seen_enrollment_keys.add(dedup_key)
+                enrollments.append(enrollment)
         output = []
         for enrollment in enrollments:
-            campaign_id = clean_text(enrollment.get("campaign_id"))
-            if not campaign_id:
-                continue
-            campaign_key, campaign_label = campaign_meta(campaign_id)
-            date_info = campaign_dates(campaign_id)
-            rep_info = resolve_field_rep(enrollment.get("registered_by_id") or (doctor_row or {}).get("field_rep_id"), campaign_id)
-            output.append(
-                {
-                    "campaign_id": campaign_id,
-                    "campaign_key": campaign_key,
-                    "campaign_label": campaign_label,
-                    "campaign_start_date": date_info["campaign_start_date"],
-                    "campaign_end_date": date_info["campaign_end_date"],
-                    "field_rep_id": rep_info["field_rep_id"],
-                    "field_rep_name": rep_info["field_rep_name"],
-                    "field_rep_state": rep_info["field_rep_state"],
-                    "registered_at": clean_text(enrollment.get("registered_at") or enrollment.get("created_at")) or "",
-                }
+            info = campaign_info_from_id(
+                enrollment.get("campaign_id"),
+                enrollment.get("registered_by_id") or fallback_rep_value,
+                enrollment.get("registered_at") or enrollment.get("created_at"),
             )
+            if info:
+                output.append(info)
+        if not output:
+            for direct_campaign_id in (campaign_row.get("campaign_id"), campaign_row.get("brand_campaign_id")):
+                info = campaign_info_from_id(
+                    direct_campaign_id,
+                    fallback_rep_value,
+                    campaign_row.get("created_at"),
+                )
+                if info:
+                    output.append(info)
+                    break
         if output:
             return output
         if privacy_allowlist:
