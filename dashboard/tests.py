@@ -605,9 +605,12 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "off_roster_pdf_downloaded_doctors": 1,
                     "assigned_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"}]',
                     "sent_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"},{"name":"","phone":"8888888888","doctor_key":"doc-2"}]',
+                    "off_roster_sent_doctors_json": '[{"name":"","phone":"8888888888","doctor_key":"doc-2"}]',
                     "viewed_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"}]',
+                    "off_roster_viewed_doctors_json": '[{"name":"Dr Off Viewed","phone":"7777777777","doctor_key":"doc-3"}]',
                     "video_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"}]',
                     "pdf_doctors_json": '[{"name":"Dr Meera Rao","phone":"9999999999","doctor_key":"doc-1"}]',
+                    "off_roster_pdf_downloaded_doctors_json": '[{"name":"Dr Off PDF","phone":"6666666666","doctor_key":"doc-4"}]',
                 }
             ],
             "error_message": None,
@@ -662,6 +665,9 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("off_roster_sent_doctors", sql)
         self.assertIn("off_roster_viewed_doctors", sql)
         self.assertIn("off_roster_pdf_downloaded_doctors", sql)
+        self.assertIn("off_roster_sent_doctors_json", sql)
+        self.assertIn("off_roster_viewed_doctors_json", sql)
+        self.assertIn("off_roster_pdf_downloaded_doctors_json", sql)
         self.assertIn("field_rep_id <> '__unmapped_activity__'", sql)
         self.assertIn("reporting_correction_rule", sql)
         self.assertNotIn("COALESCE(ab.doctors_sent, 0) > COALESCE(ad.total_doctors_assigned, 0) + COALESCE(ab.correction_accepted_doctors, 0)", sql)
@@ -739,6 +745,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("Doctor Details", workbook)
         self.assertIn("FR-101", workbook)
         self.assertIn("Dr Meera Rao", workbook)
+        self.assertIn("Off-roster Sent", workbook)
+        self.assertIn("doc-2", workbook)
         self.assertIn("doc-1", workbook)
 
     def test_field_rep_doctor_details_returns_metric_doctors(self):
@@ -762,6 +770,22 @@ class DashboardAccessViewTests(SimpleTestCase):
             include_field_rep_doctor_details=True,
             include_state_attention=False,
         )
+
+    def test_field_rep_doctor_details_returns_off_roster_metric_doctors(self):
+        self._authenticated_campaign_session()
+
+        with patch(
+            "dashboard.views.build_report_access",
+            return_value=type("Access", (), {"session_key": "auth_demo"})(),
+        ), patch("dashboard.views._build_report_context", return_value=self._download_context()):
+            response = self.client.get("/campaign/demo/field-rep-insights/details/?rep_id=FR-101&metric=off_roster_sent")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["metric_label"], "Off-roster Sent")
+        self.assertEqual(payload["doctor_count"], 1)
+        self.assertEqual(payload["doctors"][0]["doctor_key"], "doc-2")
+        self.assertEqual(payload["doctors"][0]["phone"], "8888888888")
 
     def test_unmapped_doctors_export_downloads_manual_mapping_workbook(self):
         self._authenticated_campaign_session()
@@ -1758,9 +1782,12 @@ class DashboardAccessViewTests(SimpleTestCase):
                 "total_reps": 1,
                 "total_doctors_assigned": 120,
                 "doctors_sent": 30,
+                "off_roster_sent_doctors": 2,
                 "doctors_viewed": 20,
+                "off_roster_viewed_doctors": 1,
                 "doctors_video_played": 12,
                 "doctors_pdf_downloaded": 8,
+                "off_roster_pdf_downloaded_doctors": 1,
             },
             "field_rep_insights": [
                 {
@@ -1769,14 +1796,20 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "state_normalized": "Maharashtra",
                     "total_doctors_assigned": 120,
                     "doctors_sent": 30,
+                    "off_roster_sent_doctors": 2,
                     "doctors_viewed": 20,
+                    "off_roster_viewed_doctors": 1,
                     "doctors_video_played": 12,
                     "doctors_pdf_downloaded": 8,
+                    "off_roster_pdf_downloaded_doctors": 1,
                     "assigned_doctors_json": '[{"name":"Dr Meera Rao","phone":"+919999999999"}]',
                     "sent_doctors_json": '[{"name":"Dr Sent","phone":"+911111111111"}]',
+                    "off_roster_sent_doctors_json": '[{"name":"Dr Off Sent","phone":"+915555555555"}]',
                     "viewed_doctors_json": '[{"name":"Dr Viewed","phone":"+912222222222"}]',
+                    "off_roster_viewed_doctors_json": '[{"name":"Dr Off Viewed","phone":"+916666666666"}]',
                     "video_doctors_json": '[{"name":"Dr Video","phone":"+913333333333"}]',
                     "pdf_doctors_json": '[{"name":"Dr PDF","phone":"+914444444444"}]',
+                    "off_roster_pdf_downloaded_doctors_json": '[{"name":"Dr Off PDF","phone":"+917777777777"}]',
                     "assignment_note": "Hidden diagnostic note",
                 }
             ],
@@ -1859,9 +1892,12 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Asha Mehta")
         self.assertContains(response, "doctor-count-btn")
         self.assertContains(response, 'data-metric-label="Collateral Sent"')
+        self.assertContains(response, 'data-metric-label="Off-roster Sent"')
         self.assertContains(response, 'data-metric-label="Viewed"')
+        self.assertContains(response, 'data-metric-label="Off-roster Viewed"')
         self.assertContains(response, 'data-metric-label="Video Played"')
         self.assertContains(response, 'data-metric-label="PDF / Collateral Saved"')
+        self.assertContains(response, 'data-metric-label="Off-roster PDF Saved"')
         self.assertContains(response, "S. No.")
         self.assertContains(response, "Assigned Doctors")
         self.assertContains(response, "page-loading")
@@ -2067,9 +2103,12 @@ class DashboardAccessViewTests(SimpleTestCase):
                 "total_reps": 1,
                 "total_doctors_assigned": 120,
                 "doctors_sent": 12,
+                "off_roster_sent_doctors": 1,
                 "doctors_viewed": 4,
+                "off_roster_viewed_doctors": 1,
                 "doctors_video_played": 1,
                 "doctors_pdf_downloaded": 3,
+                "off_roster_pdf_downloaded_doctors": 1,
             },
             "field_rep_insights": [
                 {
@@ -2077,14 +2116,20 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "field_rep_name": "Asha Mehta",
                     "total_doctors_assigned": 120,
                     "doctors_sent": 12,
+                    "off_roster_sent_doctors": 1,
                     "doctors_viewed": 4,
+                    "off_roster_viewed_doctors": 1,
                     "doctors_video_played": 1,
                     "doctors_pdf_downloaded": 3,
+                    "off_roster_pdf_downloaded_doctors": 1,
                     "assigned_doctors_json": '[{"name":"Dr Meera Rao","phone":"+919999999999"}]',
                     "sent_doctors_json": '[{"name":"Dr Sent","phone":"+911111111111"}]',
+                    "off_roster_sent_doctors_json": '[{"name":"Dr Off Sent","phone":"+915555555555"}]',
                     "viewed_doctors_json": '[{"name":"Dr Viewed","phone":"+912222222222"}]',
+                    "off_roster_viewed_doctors_json": '[{"name":"Dr Off Viewed","phone":"+916666666666"}]',
                     "video_doctors_json": '[{"name":"Dr Video","phone":"+913333333333"}]',
                     "pdf_doctors_json": '[{"name":"Dr PDF","phone":"+914444444444"}]',
+                    "off_roster_pdf_downloaded_doctors_json": '[{"name":"Dr Off PDF","phone":"+917777777777"}]',
                 }
             ],
             "old_collaterals": [],
@@ -2102,6 +2147,9 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Asha Mehta")
         self.assertContains(response, "doctor-count-btn")
         self.assertContains(response, 'data-metric-label="Collateral Sent"')
+        self.assertContains(response, 'data-metric-label="Off-roster Sent"')
+        self.assertContains(response, 'data-metric-label="Off-roster Viewed"')
+        self.assertContains(response, 'data-metric-label="Off-roster PDF Saved"')
         self.assertContains(response, "S. No.")
         self.assertContains(response, "Assigned Doctors")
         self.assertContains(response, "12")

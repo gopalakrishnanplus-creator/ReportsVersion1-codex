@@ -1007,7 +1007,7 @@ def _field_rep_insight_rows(
                     '[]'::jsonb
                 ) AS assigned_doctors_json
         """
-        activity_doctors_json_sql = """
+        activity_doctors_json_sql = f"""
                 COALESCE(
                     jsonb_agg(
                         jsonb_build_object(
@@ -1067,7 +1067,64 @@ def _field_rep_insight_rows(
                         ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
                     ) FILTER (WHERE pdf_flag = 1),
                     '[]'::jsonb
-                ) AS pdf_doctors_json
+                ) AS pdf_doctors_json,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_key,
+                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
+                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
+                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
+                            'evidence_source', COALESCE(evidence_source, '')
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
+                    ) FILTER (
+                        WHERE sent_flag = 1
+                          AND assigned_match_flag = 0
+                          AND field_rep_id <> '{UNMAPPED_ACTIVITY_FIELD_REP_ID}'
+                    ),
+                    '[]'::jsonb
+                ) AS off_roster_sent_doctors_json,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_key,
+                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
+                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
+                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
+                            'evidence_source', COALESCE(evidence_source, '')
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
+                    ) FILTER (
+                        WHERE viewed_flag = 1
+                          AND assigned_match_flag = 0
+                          AND field_rep_id <> '{UNMAPPED_ACTIVITY_FIELD_REP_ID}'
+                    ),
+                    '[]'::jsonb
+                ) AS off_roster_viewed_doctors_json,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'name', doctor_name,
+                            'phone', COALESCE(doctor_phone, ''),
+                            'doctor_key', doctor_key,
+                            'source_field_rep_id', COALESCE(source_field_rep_id, ''),
+                            'source_field_rep_email', COALESCE(source_field_rep_email, ''),
+                            'source_brand_rep_id', COALESCE(source_brand_rep_id, ''),
+                            'evidence_source', COALESCE(evidence_source, '')
+                        )
+                        ORDER BY doctor_name, COALESCE(doctor_phone, ''), doctor_key
+                    ) FILTER (
+                        WHERE pdf_flag = 1
+                          AND assigned_match_flag = 0
+                          AND field_rep_id <> '{UNMAPPED_ACTIVITY_FIELD_REP_ID}'
+                    ),
+                    '[]'::jsonb
+                ) AS off_roster_pdf_downloaded_doctors_json
         """
     else:
         assigned_doctors_json_sql = "'[]'::jsonb AS assigned_doctors_json"
@@ -1075,7 +1132,10 @@ def _field_rep_insight_rows(
                 '[]'::jsonb AS sent_doctors_json,
                 '[]'::jsonb AS viewed_doctors_json,
                 '[]'::jsonb AS video_doctors_json,
-                '[]'::jsonb AS pdf_doctors_json
+                '[]'::jsonb AS pdf_doctors_json,
+                '[]'::jsonb AS off_roster_sent_doctors_json,
+                '[]'::jsonb AS off_roster_viewed_doctors_json,
+                '[]'::jsonb AS off_roster_pdf_downloaded_doctors_json
         """
 
     alias_joins, alias_selects, alias_key_columns = _field_rep_alias_sql_parts()
@@ -2081,8 +2141,11 @@ def _field_rep_insight_rows(
             COALESCE(ab.pdf_doctors_json, '[]'::jsonb)::text AS pdf_doctors_json,
             COALESCE(ab.correction_accepted_doctors, 0)::int AS correction_accepted_doctors,
             COALESCE(ab.off_roster_sent_doctors, 0)::int AS off_roster_sent_doctors,
+            COALESCE(ab.off_roster_sent_doctors_json, '[]'::jsonb)::text AS off_roster_sent_doctors_json,
             COALESCE(ab.off_roster_viewed_doctors, 0)::int AS off_roster_viewed_doctors,
+            COALESCE(ab.off_roster_viewed_doctors_json, '[]'::jsonb)::text AS off_roster_viewed_doctors_json,
             COALESCE(ab.off_roster_pdf_downloaded_doctors, 0)::int AS off_roster_pdf_downloaded_doctors,
+            COALESCE(ab.off_roster_pdf_downloaded_doctors_json, '[]'::jsonb)::text AS off_roster_pdf_downloaded_doctors_json,
             CASE
                 WHEN ar.field_rep_id = '{UNMAPPED_ACTIVITY_FIELD_REP_ID}'
                  AND (
@@ -2677,18 +2740,24 @@ FIELD_REP_DOCTOR_EXPORT_HEADERS = [
 FIELD_REP_DOCTOR_METRICS = [
     ("Doctors Assigned", "assigned_doctors_json"),
     ("Collateral Sent", "sent_doctors_json"),
+    ("Off-roster Sent", "off_roster_sent_doctors_json"),
     ("Viewed", "viewed_doctors_json"),
+    ("Off-roster Viewed", "off_roster_viewed_doctors_json"),
     ("Video Played", "video_doctors_json"),
     ("PDF / Collateral Saved", "pdf_doctors_json"),
+    ("Off-roster PDF Saved", "off_roster_pdf_downloaded_doctors_json"),
 ]
 
 
 FIELD_REP_DOCTOR_METRIC_KEYS = {
     "assigned": ("Doctors Assigned", "assigned_doctors_json"),
     "sent": ("Collateral Sent", "sent_doctors_json"),
+    "off_roster_sent": ("Off-roster Sent", "off_roster_sent_doctors_json"),
     "viewed": ("Viewed", "viewed_doctors_json"),
+    "off_roster_viewed": ("Off-roster Viewed", "off_roster_viewed_doctors_json"),
     "video": ("Video Played", "video_doctors_json"),
     "pdf": ("PDF / Collateral Saved", "pdf_doctors_json"),
+    "off_roster_pdf": ("Off-roster PDF Saved", "off_roster_pdf_downloaded_doctors_json"),
 }
 
 
