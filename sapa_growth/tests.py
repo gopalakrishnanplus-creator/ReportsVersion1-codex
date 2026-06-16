@@ -1349,9 +1349,101 @@ class SapaGrowthLogicTests(SimpleTestCase):
 
         self.assertEqual(schemas, ["gold_sapa_campaign_campa", "gold_sapa_campaign_campb"])
         registry_call = next(call for call in replace_calls if call[0] == "gold_sapa_global" and call[1] == "campaign_registry")
-        self.assertEqual([row["campaign_key"] for row in registry_call[3]], ["camp-a", "camp-b"])
+        self.assertEqual([row["campaign_key"] for row in registry_call[3]], ["campa", "campb"])
         camp_a_doctor_call = next(call for call in replace_calls if call[0] == "gold_sapa_campaign_campa" and call[1] == "rpt_doctor_status_current")
         self.assertEqual([row["doctor_key"] for row in camp_a_doctor_call[3]], ["doc-a"])
+        self.assertEqual(camp_a_doctor_call[3][0]["campaign_key"], "campa")
+
+    def test_gold_publisher_merges_hyphenated_and_plain_campaign_aliases(self):
+        table_names = [
+            "refresh_status",
+            "dashboard_summary_snapshot",
+            "rpt_doctor_status_current",
+            "rpt_field_rep_login_detail",
+            "dim_filter_campaign",
+            "dim_filter_state",
+            "dim_filter_field_rep",
+            "dim_filter_doctor",
+            "dim_filter_city",
+        ]
+        hyphenated = "1151a492-947b-4c91-83ac-5a224b2d07b1"
+        plain = "1151a492947b4c9183ac5a224b2d07b1"
+        rows_by_table = {
+            "dim_filter_campaign": [
+                {"underlying_key": hyphenated, "display_label": "Portal"},
+                {"underlying_key": plain, "display_label": "Portal"},
+            ],
+            "rpt_doctor_status_current": [
+                {
+                    "doctor_key": "doc-a",
+                    "campaign_key": hyphenated,
+                    "campaign_label": "Portal",
+                    "doctor_display_name": "Doctor A",
+                    "state": "Delhi",
+                    "field_rep_id": "FR1",
+                    "field_rep_name": "Rep One",
+                    "active_flag": "false",
+                    "inactive_flag": "true",
+                    "onboarding_flag": "true",
+                    "first_seen_at": "2026-06-01",
+                    "latest_seen_at": "2026-06-01",
+                }
+            ],
+            "rpt_field_rep_login_detail": [
+                {
+                    "campaign_key": plain,
+                    "source_field_rep_id": "fieldrep-1",
+                    "field_rep_id": "FR1",
+                    "field_rep_name": "Rep One",
+                    "login_ts": "2026-06-01 09:00:00",
+                }
+            ],
+        }
+        default_columns = {
+            "refresh_status": ["publish_id", "as_of_date", "published_at", "source_completeness_status", "stale_source_flags", "notes"],
+            "dashboard_summary_snapshot": ["as_of_date", "published_at"],
+            "dim_filter_state": ["display_label", "underlying_key"],
+            "dim_filter_field_rep": ["display_label", "underlying_key"],
+            "dim_filter_doctor": ["display_label", "underlying_key"],
+            "dim_filter_city": ["display_label", "underlying_key"],
+        }
+        columns_by_table = {
+            table: list(rows_by_table[table][0].keys()) if rows_by_table.get(table) else default_columns.get(table, ["campaign_key"])
+            for table in table_names
+        }
+        replace_calls = []
+
+        cursor_context = MagicMock()
+        cursor_context.__enter__.return_value.fetchall.return_value = []
+        cursor_context.__exit__.return_value = False
+        connection_mock = MagicMock()
+        connection_mock.cursor.return_value = cursor_context
+
+        with patch("etl.sapa_growth.gold.fetch_table", side_effect=lambda _schema, table: rows_by_table.get(table, [])), patch(
+            "etl.sapa_growth.gold._table_columns", side_effect=lambda _schema, table: columns_by_table[table]
+        ), patch("etl.sapa_growth.gold.replace_table", side_effect=lambda schema, table, columns, rows: replace_calls.append((schema, table, columns, list(rows)))), patch(
+            "etl.sapa_growth.gold.ensure_schema"
+        ), patch("etl.sapa_growth.gold.connection", connection_mock):
+            schemas = sapa_gold._publish_campaign_schemas(
+                table_names=table_names,
+                run_id="run-1",
+                as_of_date=date(2026, 6, 16),
+                published_at="2026-06-16T10:00:00Z",
+                source_status="SUCCESS",
+                stale_source_flags="",
+                notes="",
+            )
+
+        self.assertEqual(schemas, ["gold_sapa_campaign_1151a492947b4c9183ac5a224b2d07b1"])
+        registry_call = next(call for call in replace_calls if call[0] == "gold_sapa_global" and call[1] == "campaign_registry")
+        self.assertEqual(len(registry_call[3]), 1)
+        self.assertEqual(registry_call[3][0]["campaign_key"], plain)
+        doctor_call = next(call for call in replace_calls if call[1] == "rpt_doctor_status_current")
+        field_rep_call = next(call for call in replace_calls if call[1] == "rpt_field_rep_login_detail")
+        self.assertEqual([row["doctor_key"] for row in doctor_call[3]], ["doc-a"])
+        self.assertEqual([row["source_field_rep_id"] for row in field_rep_call[3]], ["fieldrep-1"])
+        self.assertEqual(doctor_call[3][0]["campaign_key"], plain)
+        self.assertEqual(field_rep_call[3][0]["campaign_key"], plain)
 
     def test_gold_current_doctor_status_includes_onboarded_detail_metrics(self):
         today = date.today().isoformat()
