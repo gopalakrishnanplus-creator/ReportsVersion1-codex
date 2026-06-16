@@ -80,7 +80,7 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         current_snapshot=True,
     ),
     "campaign_campaign": SourceTableSpec(
-        source_table="campaign_v2",
+        source_table="campaign_campaign",
         raw_table="campaign_campaign_raw",
         columns=[
             "id",
@@ -99,13 +99,15 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         watermark_field="updated_at",
+        fallback_source_tables=("campaign_v2",),
         current_snapshot=True,
     ),
     "campaign_brand": SourceTableSpec(
-        source_table="brand_v2",
+        source_table="campaign_brand",
         raw_table="campaign_brand_raw",
         columns=["id", "name"],
         key_columns=["id"],
+        fallback_source_tables=("brand_v2",),
         current_snapshot=True,
     ),
     "campaign_fieldrep": SourceTableSpec(

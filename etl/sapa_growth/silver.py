@@ -719,7 +719,9 @@ def build_silver(run_id: str) -> dict[str, Any]:
         campaign = rfa_campaigns.get(clean_text(campaign_id)) or {}
         brand = brand_by_id.get(clean_text(campaign.get("brand_id"))) or {}
         key = clean_text(campaign.get("id"))
-        label = clean_text(campaign.get("name")) or clean_text(brand.get("name"))
+        campaign_name = clean_text(campaign.get("name"))
+        brand_name = clean_text(brand.get("name"))
+        label = f"{campaign_name} ({brand_name})" if campaign_name and brand_name else campaign_name or brand_name
         return _campaign_key_label({"campaign_id": key, "campaign_name": label})
 
     def campaign_dates(campaign_id: Any) -> dict[str, str]:

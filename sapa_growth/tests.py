@@ -119,7 +119,11 @@ class SapaGrowthLogicTests(SimpleTestCase):
             MYSQL_TABLE_SPECS["campaign_doctorcampaignenrollment"].fallback_source_tables,
         )
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_doctorcampaignenrollment"].current_snapshot)
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_campaign"].source_table, "campaign_campaign")
+        self.assertIn("campaign_v2", MYSQL_TABLE_SPECS["campaign_campaign"].fallback_source_tables)
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_campaign"].current_snapshot)
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_brand"].source_table, "campaign_brand")
+        self.assertIn("brand_v2", MYSQL_TABLE_SPECS["campaign_brand"].fallback_source_tables)
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_brand"].current_snapshot)
         self.assertEqual(MYSQL_TABLE_SPECS["campaign_fieldrep"].source_table, "campaign_fieldrep")
         self.assertIn("field_rep_v2", MYSQL_TABLE_SPECS["campaign_fieldrep"].fallback_source_tables)
@@ -896,6 +900,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
     def test_campaign_doctor_enrollment_can_match_logical_doctor_id(self):
         rows_by_table = {
             "campaign_campaign": [{"id": "camp-a", "name": "Campaign A", "brand_id": "brand-a", "system_rfa": "true"}],
+            "campaign_brand": [{"id": "brand-a", "name": "Brand A"}],
             "campaign_fieldrep": [{"id": "fieldrep-1", "brand_supplied_field_rep_id": "FR1", "full_name": "Rep One"}],
             "campaign_campaignfieldrep": [{"campaign_id": "camp-a", "field_rep_id": "fieldrep-1"}],
             "campaign_doctor": [
@@ -931,6 +936,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(len(dim_rows), 1)
         self.assertEqual(dim_rows[0]["source_doctor_id"], "DOC-1")
         self.assertEqual(dim_rows[0]["campaign_key"], "camp-a")
+        self.assertEqual(dim_rows[0]["campaign_label"], "Campaign A (Brand A)")
         self.assertEqual(dim_rows[0]["field_rep_id"], "FR1")
 
     def test_dashboard_pdf_export_returns_pdf_attachment(self):
@@ -1389,8 +1395,27 @@ class SapaGrowthLogicTests(SimpleTestCase):
                 {"doctor_key": "doc-a", "event_type": "clinic_form_share", "action_key": "clinic_staff"},
             ],
             "fact_screening_submission": [
-                {"doctor_key": "doc-a", "source_table": "redflags_patientsubmission", "overall_flag_code": "RED"},
-                {"doctor_key": "doc-a", "source_table": "redflags_patientsubmission", "overall_flag_code": "YELLOW"},
+                {
+                    "doctor_key": "doc-a",
+                    "source_table": "redflags_patientsubmission",
+                    "source_submission_id": "sub-1",
+                    "patient_id": "patient-1",
+                    "overall_flag_code": "RED",
+                },
+                {
+                    "doctor_key": "doc-a",
+                    "source_table": "redflags_patientsubmission",
+                    "source_submission_id": "sub-2",
+                    "patient_id": "patient-1",
+                    "overall_flag_code": "RED",
+                },
+                {
+                    "doctor_key": "doc-a",
+                    "source_table": "redflags_patientsubmission",
+                    "source_submission_id": "sub-3",
+                    "patient_id": "patient-2",
+                    "overall_flag_code": "YELLOW",
+                },
                 {"doctor_key": "doc-a", "source_table": "gnd_gndpatientsubmission", "overall_flag_code": "RED"},
             ],
         }
@@ -1412,7 +1437,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(row["doctor_has_added_clinic_staff"], "Yes")
         self.assertEqual(row["clinic_staff_has_logged_in"], "Yes")
         self.assertEqual(row["clinic_staff_forms_shared_count"], "2")
-        self.assertEqual(row["forms_filled_count"], "2")
+        self.assertEqual(row["forms_filled_count"], "3")
         self.assertEqual(row["red_tagged_patients_count"], "1")
         self.assertEqual(row["yellow_tagged_patients_count"], "1")
         self.assertEqual(row["registered_at"], "2026-06-01 10:00:00")
