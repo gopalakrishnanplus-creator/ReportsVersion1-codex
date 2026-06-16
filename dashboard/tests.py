@@ -81,8 +81,11 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/_internal/data-admin/bronze/campaign_campaign/").view_name, "internal-data-admin-table")
         self.assertEqual(resolve("/_internal/data-admin/bronze/campaign_campaign/bulk-delete/").view_name, "internal-data-admin-bulk-delete")
 
-    def test_new_delhi_displays_as_delhi(self):
-        self.assertEqual(dashboard.views._display_state_name("New Delhi"), "Delhi")
+    def test_state_display_preserves_source_value(self):
+        self.assertEqual(dashboard.views._display_state_name("New Delhi"), "New Delhi")
+        self.assertEqual(dashboard.views._display_state_name("Tamil Nadu 1"), "Tamil Nadu 1")
+        self.assertEqual(dashboard.views._display_state_name("Aligarh"), "Aligarh")
+        self.assertEqual(dashboard.views._display_state_name("unknown"), "Unknown")
 
     def test_collateral_options_link_to_main_dashboard_and_use_collateral_schedule_dates(self):
         rows = [
@@ -838,8 +841,6 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("share_rep_id_email_map AS", sql)
         self.assertIn("linked_share.field_rep_email", sql)
         self.assertIn("tx.field_rep_master_id_resolved, 1", sql)
-        self.assertIn("THEN 'Tamil Nadu I'", sql)
-        self.assertIn("THEN 'Tamil Nadu II'", sql)
         self.assertIn("tx.brand_supplied_field_rep_id_resolved, 2", sql)
         self.assertIn("tx_campaign_state.state_normalized", sql)
         self.assertLess(sql.index("tx_campaign_state.state_normalized"), sql.index("rb.state_normalized"))
@@ -847,9 +848,9 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("share_campaign_state.state_normalized", sql)
         self.assertNotIn("rsc_tx.rep_key", sql)
         self.assertIn("state_normalized IS NOT NULL", sql)
-        self.assertIn("WHEN lower(regexp_replace(COALESCE(btrim(d.state_normalized)", sql)
-        self.assertIn("THEN 'Uttar Pradesh'", sql)
-        self.assertNotIn("THEN 'Aligarh'", sql)
+        self.assertIn("ELSE NULLIF(btrim(d.state_normalized), '') END", sql)
+        self.assertNotIn("THEN 'Uttar Pradesh'", sql)
+        self.assertNotIn("THEN 'Tamil Nadu I'", sql)
         self.assertNotIn("state_normalized <> 'UNKNOWN'", sql)
         self.assertNotIn("total_state,0)/4.0", sql)
         self.assertEqual(fetch_mock.call_args.kwargs.get("timeout_ms"), 12000)
@@ -925,11 +926,14 @@ class DashboardAccessViewTests(SimpleTestCase):
         ]
 
         state_attention = dashboard.views._state_attention_from_field_rep_insights(rows)
+        rows_by_state = {row["state"]: row for row in state_attention}
 
-        self.assertEqual([row["state"] for row in state_attention], ["Delhi"])
-        self.assertEqual(state_attention[0]["reached_pct"], 100.0)
-        self.assertEqual(state_attention[0]["open_pct"], 33.3)
-        self.assertEqual(state_attention[0]["consumed_pct"], 100.0)
+        self.assertEqual(set(rows_by_state), {"DELHI", "New Delhi"})
+        self.assertEqual(rows_by_state["DELHI"]["reached_pct"], 100.0)
+        self.assertEqual(rows_by_state["DELHI"]["open_pct"], 50.0)
+        self.assertEqual(rows_by_state["DELHI"]["consumed_pct"], 100.0)
+        self.assertEqual(rows_by_state["New Delhi"]["reached_pct"], 100.0)
+        self.assertEqual(rows_by_state["New Delhi"]["open_pct"], 0.0)
 
     def test_state_attention_keeps_apex_tamil_nadu_territories(self):
         rows = [
@@ -956,8 +960,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         state_attention = dashboard.views._state_attention_from_field_rep_insights(rows)
         rows_by_state = {row["state"]: row for row in state_attention}
 
-        self.assertEqual(set(rows_by_state), {"Tamil Nadu I", "Tamil Nadu II"})
-        self.assertEqual(rows_by_state["Tamil Nadu I"]["reached_pct"], 100.0)
+        self.assertEqual(set(rows_by_state), {"Tamil Nadu 1", "Tamil Nadu II"})
+        self.assertEqual(rows_by_state["Tamil Nadu 1"]["reached_pct"], 100.0)
         self.assertEqual(rows_by_state["Tamil Nadu II"]["reached_pct"], 100.0)
 
     def test_manual_mapping_export_omits_activity_accepted_by_reporting_correction_rule(self):
@@ -998,16 +1002,17 @@ class DashboardAccessViewTests(SimpleTestCase):
 
         self.assertEqual(dashboard.views._manual_mapping_export_rows(rows), [])
 
-    def test_united_kingdom_state_is_grouped_as_unknown(self):
-        self.assertEqual(dashboard.views._display_state_name("United Kingdom"), "Unknown")
-        self.assertEqual(dashboard.views._display_state_name("U.K"), "Unknown")
-        self.assertEqual(dashboard.views._display_state_name("Aligarh"), "Unknown")
-        self.assertEqual(dashboard.views._display_state_name("U.P."), "Uttar Pradesh")
-        self.assertEqual(dashboard.views._display_state_name("Delhi NCR"), "Delhi")
+    def test_state_display_only_groups_placeholders_as_unknown(self):
+        self.assertEqual(dashboard.views._display_state_name("United Kingdom"), "United Kingdom")
+        self.assertEqual(dashboard.views._display_state_name("U.K"), "U.K")
+        self.assertEqual(dashboard.views._display_state_name("Aligarh"), "Aligarh")
+        self.assertEqual(dashboard.views._display_state_name("U.P."), "U.P.")
+        self.assertEqual(dashboard.views._display_state_name("Delhi NCR"), "Delhi NCR")
         self.assertEqual(dashboard.views._display_state_name("Tamil Nadu I"), "Tamil Nadu I")
-        self.assertEqual(dashboard.views._display_state_name("Tamil Nadu 1"), "Tamil Nadu I")
+        self.assertEqual(dashboard.views._display_state_name("Tamil Nadu 1"), "Tamil Nadu 1")
         self.assertEqual(dashboard.views._display_state_name("Tamil Nadu II"), "Tamil Nadu II")
-        self.assertEqual(dashboard.views._display_state_name("Tamil Nadu 2"), "Tamil Nadu II")
+        self.assertEqual(dashboard.views._display_state_name("Tamil Nadu 2"), "Tamil Nadu 2")
+        self.assertEqual(dashboard.views._display_state_name("N/A"), "Unknown")
 
     def test_all_weeks_metrics_are_aggregated_not_latest_week_only(self):
         rows = [
@@ -2381,7 +2386,7 @@ class V2ReportingPreservationTests(SimpleTestCase):
         rows = v2_reporting._field_rep_rows(source, "2026-06-05T00:00:00+00:00")
 
         self.assertEqual(rows[0]["state"], "uttar pradesh")
-        self.assertEqual(rows[0]["state_normalized"], "Uttar Pradesh")
+        self.assertEqual(rows[0]["state_normalized"], "uttar pradesh")
 
     def test_field_rep_state_uses_preserved_fallback_when_v2_sources_are_blank(self):
         source = {

@@ -752,7 +752,7 @@ def _clean_state(value: Any) -> str:
 
 def _state_for_value(value: Any) -> str:
     state = _clean_state(value)
-    return state.title() if state else "UNKNOWN"
+    return state if state else "UNKNOWN"
 
 
 def _state_for_rep(rep: dict[str, Any] | None) -> str:
