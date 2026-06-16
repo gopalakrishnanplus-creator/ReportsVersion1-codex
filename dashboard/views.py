@@ -2327,13 +2327,19 @@ def _state_attention_source_rows(
               tx.brand_campaign_id,
               tx.collateral_id,
               tx.doctor_identity_key,
+              NULLIF(btrim(tx.field_rep_master_id_resolved), '') AS field_rep_master_id_resolved,
+              NULLIF(btrim(tx.brand_supplied_field_rep_id_resolved), '') AS brand_supplied_field_rep_id_resolved,
+              NULLIF(btrim(tx.field_rep_id), '') AS source_field_rep_id,
+              NULLIF(btrim(linked_share.field_rep_email), '') AS linked_share_field_rep_email,
+              NULLIF(btrim(rep_email_map.mapped_email), '') AS mapped_field_rep_email,
+              NULLIF(btrim(tx.field_rep_email), '') AS transaction_field_rep_email,
               COALESCE(
-                NULLIF(btrim(linked_share.field_rep_email), ''),
-                NULLIF(btrim(rep_email_map.mapped_email), ''),
                 NULLIF(btrim(tx.field_rep_master_id_resolved), ''),
                 NULLIF(btrim(tx.brand_supplied_field_rep_id_resolved), ''),
-                NULLIF(btrim(tx.field_rep_email), ''),
-                tx.field_rep_id::text
+                NULLIF(btrim(tx.field_rep_id), ''),
+                NULLIF(btrim(linked_share.field_rep_email), ''),
+                NULLIF(btrim(rep_email_map.mapped_email), ''),
+                NULLIF(btrim(tx.field_rep_email), '')
               ) AS field_rep_id_resolved
             FROM silver.fact_collateral_transaction tx
             LEFT JOIN silver.fact_share_log linked_share
@@ -2355,7 +2361,9 @@ def _state_attention_source_rows(
               s.brand_campaign_id,
               s.collateral_id,
               s.doctor_identity_key,
-              COALESCE(NULLIF(btrim(s.field_rep_email), ''), s.field_rep_id::text) AS field_rep_id_resolved
+              NULLIF(btrim(s.field_rep_id::text), '') AS source_field_rep_id,
+              NULLIF(btrim(s.field_rep_email), '') AS field_rep_email,
+              COALESCE(NULLIF(btrim(s.field_rep_id::text), ''), NULLIF(btrim(s.field_rep_email), '')) AS field_rep_id_resolved
             FROM silver.fact_share_log s
             WHERE {_normalized_sql('s.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_share}
@@ -2367,14 +2375,14 @@ def _state_attention_source_rows(
             SELECT
               se.doctor_key,
               COALESCE(
-                {_valid_state_sql('rb.state_normalized')},
-                {_valid_state_sql('base.state_normalized')},
-                {_valid_state_sql('rsc_tx.state_normalized')},
-                {_valid_state_sql('rsc_share.state_normalized')},
-                {_valid_state_sql('rsg_tx.state_normalized')},
-                {_valid_state_sql('rsg_share.state_normalized')},
+                {_valid_state_sql('tx_campaign_state.state_normalized')},
+                {_valid_state_sql('share_campaign_state.state_normalized')},
+                {_valid_state_sql('tx_global_state.state_normalized')},
+                {_valid_state_sql('share_global_state.state_normalized')},
                 {_valid_state_sql('fr_tx.state_normalized')},
                 {_valid_state_sql('fr_share.state_normalized')},
+                {_valid_state_sql('rb.state_normalized')},
+                {_valid_state_sql('base.state_normalized')},
                 {_valid_state_sql('d.state_normalized')},
                 'UNKNOWN'
               ) AS state_normalized,
@@ -2403,14 +2411,66 @@ def _state_attention_source_rows(
               ON sr.brand_campaign_id = se.brand_campaign_id
              AND sr.collateral_id = se.collateral_id
              AND sr.doctor_identity_key = se.doctor_identity_key
-            LEFT JOIN rep_state_campaign rsc_tx
-              ON rsc_tx.rep_key = lower(regexp_replace(NULLIF(btrim(tx.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
-            LEFT JOIN rep_state_campaign rsc_share
-              ON rsc_share.rep_key = lower(regexp_replace(NULLIF(btrim(sr.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
-            LEFT JOIN rep_state_global rsg_tx
-              ON rsg_tx.rep_key = lower(regexp_replace(NULLIF(btrim(tx.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
-            LEFT JOIN rep_state_global rsg_share
-              ON rsg_share.rep_key = lower(regexp_replace(NULLIF(btrim(sr.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
+            LEFT JOIN LATERAL (
+              SELECT rsc.state_normalized
+              FROM (
+                VALUES
+                  (tx.field_rep_master_id_resolved, 1),
+                  (tx.brand_supplied_field_rep_id_resolved, 2),
+                  (tx.source_field_rep_id, 3),
+                  (tx.linked_share_field_rep_email, 4),
+                  (tx.mapped_field_rep_email, 5),
+                  (tx.transaction_field_rep_email, 6)
+              ) AS tx_state_keys(rep_key, key_rank)
+              JOIN rep_state_campaign rsc
+                ON rsc.rep_key = {_normalized_sql('tx_state_keys.rep_key')}
+              WHERE {_normalized_sql('tx_state_keys.rep_key')} <> ''
+              ORDER BY tx_state_keys.key_rank
+              LIMIT 1
+            ) tx_campaign_state ON TRUE
+            LEFT JOIN LATERAL (
+              SELECT rsc.state_normalized
+              FROM (
+                VALUES
+                  (sr.source_field_rep_id, 1),
+                  (sr.field_rep_email, 2)
+              ) AS share_state_keys(rep_key, key_rank)
+              JOIN rep_state_campaign rsc
+                ON rsc.rep_key = {_normalized_sql('share_state_keys.rep_key')}
+              WHERE {_normalized_sql('share_state_keys.rep_key')} <> ''
+              ORDER BY share_state_keys.key_rank
+              LIMIT 1
+            ) share_campaign_state ON TRUE
+            LEFT JOIN LATERAL (
+              SELECT rsg.state_normalized
+              FROM (
+                VALUES
+                  (tx.field_rep_master_id_resolved, 1),
+                  (tx.brand_supplied_field_rep_id_resolved, 2),
+                  (tx.source_field_rep_id, 3),
+                  (tx.linked_share_field_rep_email, 4),
+                  (tx.mapped_field_rep_email, 5),
+                  (tx.transaction_field_rep_email, 6)
+              ) AS tx_global_keys(rep_key, key_rank)
+              JOIN rep_state_global rsg
+                ON rsg.rep_key = {_normalized_sql('tx_global_keys.rep_key')}
+              WHERE {_normalized_sql('tx_global_keys.rep_key')} <> ''
+              ORDER BY tx_global_keys.key_rank
+              LIMIT 1
+            ) tx_global_state ON TRUE
+            LEFT JOIN LATERAL (
+              SELECT rsg.state_normalized
+              FROM (
+                VALUES
+                  (sr.source_field_rep_id, 1),
+                  (sr.field_rep_email, 2)
+              ) AS share_global_keys(rep_key, key_rank)
+              JOIN rep_state_global rsg
+                ON rsg.rep_key = {_normalized_sql('share_global_keys.rep_key')}
+              WHERE {_normalized_sql('share_global_keys.rep_key')} <> ''
+              ORDER BY share_global_keys.key_rank
+              LIMIT 1
+            ) share_global_state ON TRUE
             LEFT JOIN silver.dim_field_rep fr_tx
               ON lower(regexp_replace(COALESCE(NULLIF(btrim(fr_tx.source_field_rep_id), ''), btrim(fr_tx.id::text)), '[^a-zA-Z0-9]', '', 'g'))
                = lower(regexp_replace(NULLIF(btrim(tx.field_rep_id_resolved), ''), '[^a-zA-Z0-9]', '', 'g'))
