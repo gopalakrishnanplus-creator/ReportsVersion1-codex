@@ -136,6 +136,8 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].current_snapshot)
         self.assertFalse(MYSQL_TABLE_SPECS["rfa_activity_event"].current_snapshot)
         self.assertEqual(MYSQL_TABLE_SPECS["rfa_activity_event"].lookback_days, 45)
+        self.assertEqual(MYSQL_TABLE_SPECS["redflags_patientsubmission"].lookback_days, 45)
+        self.assertEqual(MYSQL_TABLE_SPECS["gnd_gndpatientsubmission"].lookback_days, 45)
 
     def test_bronze_prefers_admin_source_rows_over_v2_fallback_rows(self):
         spec = MYSQL_TABLE_SPECS["campaign_campaignfieldrep"]
