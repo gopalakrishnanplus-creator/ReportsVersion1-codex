@@ -838,6 +838,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn("share_rep_id_email_map AS", sql)
         self.assertIn("linked_share.field_rep_email", sql)
         self.assertIn("tx.field_rep_master_id_resolved, 1", sql)
+        self.assertIn("THEN 'Tamil Nadu I'", sql)
+        self.assertIn("THEN 'Tamil Nadu II'", sql)
         self.assertIn("tx.brand_supplied_field_rep_id_resolved, 2", sql)
         self.assertIn("tx_campaign_state.state_normalized", sql)
         self.assertLess(sql.index("tx_campaign_state.state_normalized"), sql.index("rb.state_normalized"))
@@ -929,6 +931,35 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(state_attention[0]["open_pct"], 33.3)
         self.assertEqual(state_attention[0]["consumed_pct"], 100.0)
 
+    def test_state_attention_keeps_apex_tamil_nadu_territories(self):
+        rows = [
+            {
+                "field_rep_id": "TN1",
+                "state_normalized": "Tamil Nadu 1",
+                "total_doctors_assigned": 4,
+                "doctors_sent": 1,
+                "doctors_viewed": 1,
+                "doctors_video_played": 0,
+                "doctors_pdf_downloaded": 0,
+            },
+            {
+                "field_rep_id": "TN2",
+                "state_normalized": "Tamil Nadu II",
+                "total_doctors_assigned": 8,
+                "doctors_sent": 2,
+                "doctors_viewed": 0,
+                "doctors_video_played": 0,
+                "doctors_pdf_downloaded": 0,
+            },
+        ]
+
+        state_attention = dashboard.views._state_attention_from_field_rep_insights(rows)
+        rows_by_state = {row["state"]: row for row in state_attention}
+
+        self.assertEqual(set(rows_by_state), {"Tamil Nadu I", "Tamil Nadu II"})
+        self.assertEqual(rows_by_state["Tamil Nadu I"]["reached_pct"], 100.0)
+        self.assertEqual(rows_by_state["Tamil Nadu II"]["reached_pct"], 100.0)
+
     def test_manual_mapping_export_omits_activity_accepted_by_reporting_correction_rule(self):
         rows = [
             {
@@ -973,6 +1004,10 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(dashboard.views._display_state_name("Aligarh"), "Unknown")
         self.assertEqual(dashboard.views._display_state_name("U.P."), "Uttar Pradesh")
         self.assertEqual(dashboard.views._display_state_name("Delhi NCR"), "Delhi")
+        self.assertEqual(dashboard.views._display_state_name("Tamil Nadu I"), "Tamil Nadu I")
+        self.assertEqual(dashboard.views._display_state_name("Tamil Nadu 1"), "Tamil Nadu I")
+        self.assertEqual(dashboard.views._display_state_name("Tamil Nadu II"), "Tamil Nadu II")
+        self.assertEqual(dashboard.views._display_state_name("Tamil Nadu 2"), "Tamil Nadu II")
 
     def test_all_weeks_metrics_are_aggregated_not_latest_week_only(self):
         rows = [
