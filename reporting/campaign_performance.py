@@ -1637,7 +1637,7 @@ def _rfa_attribution_context(reference: CampaignReference) -> RfaAttributionCont
                     NULLIF(btrim(cfr.brand_supplied_field_rep_id), ''),
                     NULLIF(btrim(ccf.field_rep_id::text), '')
                 ) AS field_rep_name,
-                initcap(NULLIF(btrim(cfr.state), '')) AS state_normalized
+                NULLIF(btrim(cfr.state), '') AS state_normalized
             FROM {safe_assignment_ref} ccf
             LEFT JOIN {safe_rep_ref} cfr
               ON cfr.id::text = ccf.field_rep_id::text

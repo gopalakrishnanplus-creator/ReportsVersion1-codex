@@ -196,99 +196,39 @@ def _normalized_sql(column_sql: str) -> str:
     return f"lower(regexp_replace(COALESCE(btrim({column_sql}), ''), '[^a-zA-Z0-9]', '', 'g'))"
 
 
-INDIAN_STATE_DISPLAY_BY_KEY = {
-    "andamanandnicobarislands": "Andaman and Nicobar Islands",
-    "andamanandnicobar": "Andaman and Nicobar Islands",
-    "andhrapradesh": "Andhra Pradesh",
-    "arunachalpradesh": "Arunachal Pradesh",
-    "assam": "Assam",
-    "bihar": "Bihar",
-    "chandigarh": "Chandigarh",
-    "chhattisgarh": "Chhattisgarh",
-    "chattisgarh": "Chhattisgarh",
-    "dadraandnagarhavelianddamananddiu": "Dadra and Nagar Haveli and Daman and Diu",
-    "dadraandnagarhaveli": "Dadra and Nagar Haveli and Daman and Diu",
-    "damananddiu": "Dadra and Nagar Haveli and Daman and Diu",
-    "delhi": "Delhi",
-    "delhincr": "Delhi",
-    "newdelhi": "Delhi",
-    "nctdelhi": "Delhi",
-    "nationalcapitalterritoryofdelhi": "Delhi",
-    "goa": "Goa",
-    "gujarat": "Gujarat",
-    "haryana": "Haryana",
-    "himachalpradesh": "Himachal Pradesh",
-    "jammuandkashmir": "Jammu & Kashmir",
-    "jammukashmir": "Jammu & Kashmir",
-    "jk": "Jammu & Kashmir",
-    "jharkhand": "Jharkhand",
-    "karnataka": "Karnataka",
-    "kerala": "Kerala",
-    "ladakh": "Ladakh",
-    "lakshadweep": "Lakshadweep",
-    "madhyapradesh": "Madhya Pradesh",
-    "maharashtra": "Maharashtra",
-    "manipur": "Manipur",
-    "meghalaya": "Meghalaya",
-    "mizoram": "Mizoram",
-    "nagaland": "Nagaland",
-    "odisha": "Odisha",
-    "orissa": "Odisha",
-    "odisa": "Odisha",
-    "puducherry": "Puducherry",
-    "pondicherry": "Puducherry",
-    "punjab": "Punjab",
-    "rajasthan": "Rajasthan",
-    "sikkim": "Sikkim",
-    "tamilnadu": "Tamil Nadu",
-    "telangana": "Telangana",
-    "telengana": "Telangana",
-    "telingana": "Telangana",
-    "tripura": "Tripura",
-    "uttarpradesh": "Uttar Pradesh",
-    "up": "Uttar Pradesh",
-    "uttarakhand": "Uttarakhand",
-    "uttrakhand": "Uttarakhand",
-    "westbengal": "West Bengal",
-}
-
 UNKNOWN_STATE_KEYS = {
     "",
+    "-",
+    "na",
+    "n/a",
     "null",
     "none",
     "unknown",
-    "unitedkingdom",
-    "uk",
 }
 
 
 def _valid_state_sql(column_sql: str) -> str:
     state_key_sql = f"lower(regexp_replace(COALESCE(btrim({column_sql}), ''), '[^a-zA-Z0-9]', '', 'g'))"
     unknown_values = ", ".join(f"'{key}'" for key in sorted(UNKNOWN_STATE_KEYS))
-    state_cases = " ".join(
-        f"WHEN {state_key_sql} = '{key}' THEN '{label}'"
-        for key, label in INDIAN_STATE_DISPLAY_BY_KEY.items()
-    )
-    return f"CASE WHEN {state_key_sql} IN ({unknown_values}) THEN NULL {state_cases} ELSE NULL END"
-
-
-def _display_state_sql(column_sql: str) -> str:
-    state_key_sql = f"lower(regexp_replace(COALESCE(btrim({column_sql}), ''), '[^a-zA-Z0-9]', '', 'g'))"
-    unknown_values = ", ".join(f"'{key}'" for key in sorted(UNKNOWN_STATE_KEYS))
     return f"CASE WHEN {state_key_sql} IN ({unknown_values}) THEN NULL ELSE NULLIF(btrim({column_sql}), '') END"
 
 
-def _canonical_state_name(value: Any) -> str | None:
+def _display_state_sql(column_sql: str) -> str:
+    return _valid_state_sql(column_sql)
+
+
+def _state_is_placeholder(value: Any) -> bool:
     state_key = re.sub(r"[^a-zA-Z0-9]", "", str(value or "").strip().lower())
-    return INDIAN_STATE_DISPLAY_BY_KEY.get(state_key)
+    return state_key in UNKNOWN_STATE_KEYS
 
 
 def _is_unknown_state(value: Any) -> bool:
-    return _canonical_state_name(value) is None
+    return _state_is_placeholder(value)
 
 
 def _display_state_name(value: Any) -> str:
-    return _canonical_state_name(value) or "Unknown"
+    state = str(value or "").strip()
+    return "Unknown" if _state_is_placeholder(state) else state
 
 
 def _state_sort_key(item: dict[str, Any]) -> tuple[int, str]:

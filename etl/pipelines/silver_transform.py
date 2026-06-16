@@ -170,7 +170,7 @@ def build_silver(run_id: str) -> None:
             state,
             regexp_replace(COALESCE(phone_number,''), '[^0-9+]', '', 'g') AS field_rep_phone_normalized,
             email AS field_rep_email_best,
-            COALESCE(NULLIF(initcap(trim(state)), ''), 'UNKNOWN') AS state_normalized,
+            COALESCE(NULLIF(btrim(state), ''), 'UNKNOWN') AS state_normalized,
             CASE WHEN lower(COALESCE(is_active,'')) IN ('1','true','t','yes') THEN 'true' ELSE 'false' END AS is_active_flag,
             created_at::text AS created_at_ts,
             updated_at::text AS updated_at_ts,
@@ -204,7 +204,7 @@ def build_silver(run_id: str) -> None:
                 NULLIF(btrim(cfr.user_id), '') AS auth_user_id,
                 NULLIF(btrim(au.email), '') AS auth_email,
                 NULLIF(btrim(au.username), '') AS auth_username,
-                COALESCE(NULLIF(initcap(btrim(cfr.state)), ''), 'UNKNOWN') AS state_normalized,
+                COALESCE(NULLIF(btrim(cfr.state), ''), 'UNKNOWN') AS state_normalized,
                 cfr.updated_at,
                 cfr.created_at
             FROM bronze.campaign_fieldrep cfr
@@ -686,7 +686,7 @@ def build_silver(run_id: str) -> None:
                 m.brand_campaign_id,
                 ccf.field_rep_id::text AS master_field_rep_id,
                 mi.alias_key AS rep_key,
-                COALESCE(mi.state_normalized, NULLIF(initcap(btrim(cfr.state)), ''), 'UNKNOWN') AS state_normalized
+                COALESCE(mi.state_normalized, NULLIF(btrim(cfr.state), ''), 'UNKNOWN') AS state_normalized
             FROM silver.map_brand_campaign_to_campaign m
             JOIN bronze.campaign_campaignfieldrep ccf
               ON lower(regexp_replace(NULLIF(btrim(ccf.campaign_id), ''), '[^a-zA-Z0-9]', '', 'g')) IN (
