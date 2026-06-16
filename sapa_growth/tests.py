@@ -893,6 +893,46 @@ class SapaGrowthLogicTests(SimpleTestCase):
         dim_call = next(call for call in replace_calls if call[1] == "dim_doctor_clinic")
         self.assertEqual(dim_call[3], [])
 
+    def test_campaign_doctor_enrollment_can_match_logical_doctor_id(self):
+        rows_by_table = {
+            "campaign_campaign": [{"id": "camp-a", "name": "Campaign A", "brand_id": "brand-a", "system_rfa": "true"}],
+            "campaign_fieldrep": [{"id": "fieldrep-1", "brand_supplied_field_rep_id": "FR1", "full_name": "Rep One"}],
+            "campaign_campaignfieldrep": [{"campaign_id": "camp-a", "field_rep_id": "fieldrep-1"}],
+            "campaign_doctor": [
+                {
+                    "id": "campaign-row-1",
+                    "doctor_id": "DOC-1",
+                    "full_name": "Doctor One",
+                    "created_at": "2026-06-01 08:00:00",
+                }
+            ],
+            "campaign_doctorcampaignenrollment": [
+                {
+                    "campaign_id": "camp-a",
+                    "doctor_id": "DOC-1",
+                    "registered_by_id": "fieldrep-1",
+                    "registered_at": "2026-06-01 09:00:00",
+                }
+            ],
+        }
+        replace_calls = []
+
+        with patch("etl.sapa_growth.silver.fetch_table", side_effect=lambda _schema, table: rows_by_table.get(table, [])), patch(
+            "etl.sapa_growth.silver.replace_table",
+            side_effect=lambda schema, table, columns, rows: replace_calls.append((schema, table, columns, list(rows))),
+        ), patch("etl.sapa_growth.silver.active_campaign_privacy_allowlist", return_value=set()), patch(
+            "etl.sapa_growth.silver.active_person_privacy_rules",
+            return_value=[],
+        ), patch("etl.sapa_growth.silver.active_raw_visibility_rules", return_value=[]):
+            sapa_silver.build_silver("run-1")
+
+        dim_call = next(call for call in replace_calls if call[1] == "dim_doctor_clinic")
+        dim_rows = dim_call[3]
+        self.assertEqual(len(dim_rows), 1)
+        self.assertEqual(dim_rows[0]["source_doctor_id"], "DOC-1")
+        self.assertEqual(dim_rows[0]["campaign_key"], "camp-a")
+        self.assertEqual(dim_rows[0]["field_rep_id"], "FR1")
+
     def test_dashboard_pdf_export_returns_pdf_attachment(self):
         request = RequestFactory().post(
             "/sapa-growth/export/dashboard.pdf",
@@ -1114,6 +1154,54 @@ class SapaGrowthLogicTests(SimpleTestCase):
             [(row["state"], row["onboarded_doctors"], row["screenings"], row["field_rep_logins"]) for row in context["state_performance"]],
             [("Delhi", 1, 2, 1), ("Maharashtra", 1, 1, 0)],
         )
+
+    def test_dashboard_context_recomputes_when_summary_snapshot_is_stale(self):
+        filters = {"campaign_key": "growth-clinic", "state": None, "field_rep_id": None, "doctor_key": None}
+
+        with patch(
+            "sapa_growth.services.filter_options",
+            return_value={
+                "campaigns": [{"underlying_key": "growth-clinic", "display_label": "SAPA Growth Clinic Program"}],
+                "states": [],
+                "field_reps": [],
+                "doctors": [],
+                "cities": [],
+            },
+        ), patch("sapa_growth.services._latest_refresh", return_value={"as_of_date": "2026-06-05", "published_at": "2026-06-05T10:00:00Z"}), patch(
+            "sapa_growth.services._gold_rows"
+        ) as gold_rows_mock:
+            def fake_gold_rows(table: str, scope=None):
+                if table == "dashboard_summary_snapshot":
+                    return [
+                        {
+                            "as_of_date": "2026-06-01",
+                            "published_at": "2026-06-01T10:00:00Z",
+                            "onboarded_doctors_cumulative": "0",
+                            "total_screenings_cumulative": "0",
+                        }
+                    ]
+                if table == "rpt_doctor_status_current":
+                    return [
+                        {
+                            "campaign_key": "growth-clinic",
+                            "doctor_key": "DOC-1",
+                            "onboarding_flag": "true",
+                            "first_seen_at": "2026-06-03 09:00:00",
+                            "active_flag": "true",
+                        }
+                    ]
+                if table == "rpt_doctor_status_history":
+                    return [{"campaign_key": "growth-clinic", "doctor_key": "DOC-1", "as_of_date": "2026-06-05", "is_active": "true"}]
+                if table == "rpt_screening_detail":
+                    return [{"campaign_key": "growth-clinic", "doctor_key": "DOC-1", "submitted_at": "2026-06-05"}]
+                return []
+
+            gold_rows_mock.side_effect = fake_gold_rows
+            context = dashboard_context(filters)
+
+        self.assertEqual(context["summary"]["as_of_date"], "2026-06-05")
+        self.assertEqual(context["summary"]["onboarded_doctors_cumulative"], 1)
+        self.assertEqual(context["summary"]["total_screenings_cumulative"], 1)
 
     def test_campaign_rows_are_read_from_registered_campaign_schema(self):
         with patch(

@@ -399,6 +399,16 @@ def _summary_from_row(row: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _summary_matches_refresh(summary: dict[str, Any] | None, refresh: dict[str, Any] | None) -> bool:
+    if summary is None:
+        return False
+    refresh_as_of = clean_text((refresh or {}).get("as_of_date"))
+    summary_as_of = clean_text(summary.get("as_of_date"))
+    if refresh_as_of and summary_as_of and refresh_as_of != summary_as_of:
+        return False
+    return True
+
+
 def _metric_ready_doctor_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     output = []
     for row in rows:
@@ -677,7 +687,7 @@ def _doctor_login_count(doctor_rows: list[dict[str, Any]]) -> int:
         {
             clean_text(row.get("doctor_key"))
             for row in doctor_rows
-            if clean_text(row.get("doctor_key")) and clean_text(row.get("doctor_has_logged_in")).lower() == "yes"
+            if clean_text(row.get("doctor_key")) and (clean_text(row.get("doctor_has_logged_in")) or "").lower() == "yes"
         }
     )
 
@@ -843,6 +853,9 @@ def dashboard_context(filters: dict[str, str | None]) -> dict[str, Any]:
     webinar_rows = _gold_rows("rpt_webinar_registration_detail", campaign_key)
     course_rows = _gold_rows("rpt_course_detail", campaign_key)
     certified_rows = _derived_certified_rows(filters, doctor_rows, course_rows)
+
+    if not _summary_matches_refresh(summary, refresh):
+        summary = None
 
     if summary is None:
         as_of = parse_date(refresh.get("as_of_date")) or date.today()
