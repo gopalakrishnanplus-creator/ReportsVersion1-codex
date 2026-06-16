@@ -49,6 +49,32 @@ def ensure_raw_tables() -> None:
         ensure_text_table(RAW_API_SCHEMA, spec["raw_table"], spec["columns"] + RAW_AUDIT_COLUMNS)
 
 
+def _extract_spec_rows(name: str, spec, watermark_start: str | None) -> tuple[str, list[dict[str, Any]]]:
+    errors: list[str] = []
+    for source_table in (spec.source_table, *spec.fallback_source_tables):
+        is_v2_source = source_table.lower().endswith("_v2")
+        try:
+            return (
+                source_table,
+                extract_rows(
+                    source_table,
+                    spec.columns,
+                    watermark_field=spec.watermark_field,
+                    watermark_start=None if is_v2_source else watermark_start,
+                ),
+            )
+        except SapaMySQLExtractionError as exc:
+            errors.append(str(exc))
+    error_summary = " | ".join(errors)
+    raise SapaMySQLExtractionError(
+        f"SAPA MySQL extract failed for entity '{name}' from all configured source tables: {error_summary}"
+    )
+
+
+def _uses_current_snapshot(spec, source_table: str) -> bool:
+    return bool(spec.current_snapshot or source_table.lower().endswith("_v2"))
+
+
 def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
     ensure_raw_tables()
     counts: dict[str, int] = {}
@@ -58,28 +84,23 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
     max_watermarks: dict[str, str] = {}
 
     for name, spec in MYSQL_TABLE_SPECS.items():
-        is_v2_source = spec.source_table.lower().endswith("_v2")
-        watermark_start = None if is_v2_source else _watermark_start("mysql", name, spec.watermark_field, spec.lookback_days)
+        watermark_start = _watermark_start("mysql", name, spec.watermark_field, spec.lookback_days)
         try:
-            rows = extract_rows(
-                spec.source_table,
-                spec.columns,
-                watermark_field=spec.watermark_field,
-                watermark_start=watermark_start,
-            )
+            source_table, rows = _extract_spec_rows(name, spec, watermark_start)
+            uses_current_snapshot = _uses_current_snapshot(spec, source_table)
             prepared_rows: list[dict[str, Any]] = []
             max_watermark_value: str | None = None
             for row in rows:
                 values = [row.get(column) for column in spec.columns]
                 payload = {column: row.get(column) for column in spec.columns}
-                payload.update(_audit_payload(run_id, "sapa_mysql", spec.source_table, extracted_at, values))
+                payload.update(_audit_payload(run_id, "sapa_mysql", source_table, extracted_at, values))
                 prepared_rows.append(payload)
                 if spec.watermark_field:
                     candidate = clean_text(row.get(spec.watermark_field))
                     if candidate and (max_watermark_value is None or candidate > max_watermark_value):
                         max_watermark_value = candidate
 
-            fingerprint_columns = spec.columns + ["_source_table"] if spec.source_table.lower().endswith("_v2") else spec.columns
+            fingerprint_columns = spec.columns + ["_source_table"] if uses_current_snapshot else spec.columns
             inserted_count = insert_new_source_rows(
                 RAW_MYSQL_SCHEMA,
                 spec.raw_table,
@@ -88,11 +109,11 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
                 prepared_rows,
                 fingerprint_columns=fingerprint_columns,
             )
-            if is_v2_source and prepared_rows:
+            if uses_current_snapshot and prepared_rows:
                 record_v2_current_snapshot(
                     raw_schema=RAW_MYSQL_SCHEMA,
                     raw_table=spec.raw_table,
-                    source_table=spec.source_table,
+                    source_table=source_table,
                     key_columns=spec.key_columns,
                     rows=prepared_rows,
                     run_id=run_id,
@@ -111,7 +132,7 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
                 spec.watermark_field,
                 max_watermark_value or previous_value,
                 spec.lookback_days,
-                "full_snapshot" if is_v2_source else "incremental" if spec.watermark_field else "full_snapshot",
+                "full_snapshot" if uses_current_snapshot else "incremental" if spec.watermark_field else "full_snapshot",
                 run_id,
             )
             log_step(run_id, "extract_mysql", name, "SUCCESS", rows_read=len(rows), rows_written=inserted_count)

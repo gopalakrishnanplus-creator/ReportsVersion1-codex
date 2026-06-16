@@ -33,6 +33,8 @@ class SourceTableSpec:
     key_columns: list[str]
     watermark_field: str | None = None
     lookback_days: int = 30
+    fallback_source_tables: tuple[str, ...] = ()
+    current_snapshot: bool = False
 
 
 MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
@@ -101,7 +103,7 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         key_columns=["id"],
     ),
     "campaign_fieldrep": SourceTableSpec(
-        source_table="field_rep_v2",
+        source_table="campaign_fieldrep",
         raw_table="campaign_fieldrep_raw",
         columns=[
             "id",
@@ -117,12 +119,15 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         watermark_field="updated_at",
+        fallback_source_tables=("field_rep_v2",),
     ),
     "campaign_campaignfieldrep": SourceTableSpec(
-        source_table="campaign_field_rep_assignment_v2",
+        source_table="campaign_campaignfieldrep",
         raw_table="campaign_campaignfieldrep_raw",
         columns=["id", "field_rep_id", "created_at", "campaign_id"],
         key_columns=["id"],
+        fallback_source_tables=("campaign_field_rep_assignment_v2",),
+        current_snapshot=True,
     ),
     "rfa_activity_event": SourceTableSpec(
         source_table="rfa_activity_event_v2",
