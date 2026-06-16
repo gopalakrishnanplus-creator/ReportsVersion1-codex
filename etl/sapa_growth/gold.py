@@ -47,14 +47,21 @@ def _table_columns(schema: str, table: str) -> list[str]:
         return [row[0] for row in cursor.fetchall()]
 
 
-def _copy_campaign_rows(rows: list[dict[str, Any]], source_campaign_key: str, route_campaign_key: str) -> list[dict[str, str]]:
+def _campaign_key_matches(value: Any, source_campaign_keys: set[str]) -> bool:
+    value_key = clean_text(value)
+    if not value_key:
+        return False
+    value_token = _campaign_token(value_key)
+    return any(value_key == source_key or value_token == _campaign_token(source_key) for source_key in source_campaign_keys if source_key)
+
+
+def _copy_campaign_rows(rows: list[dict[str, Any]], source_campaign_keys: set[str], route_campaign_key: str) -> list[dict[str, str]]:
     output: list[dict[str, str]] = []
     for row in rows:
-        if clean_text(row.get("campaign_key")) != source_campaign_key:
+        if not _campaign_key_matches(row.get("campaign_key"), source_campaign_keys):
             continue
         item = dict(row)
-        if not clean_text(item.get("campaign_key")):
-            item["campaign_key"] = route_campaign_key
+        item["campaign_key"] = route_campaign_key
         output.append(_stringify_row(item))
     return output
 
@@ -240,27 +247,32 @@ def _publish_campaign_schemas(
 ) -> list[str]:
     all_rows = {table: fetch_table(GOLD_SCHEMA, table) for table in table_names}
     all_columns = {table: _table_columns(GOLD_SCHEMA, table) for table in table_names}
-    campaigns: dict[str, dict[str, str]] = {}
+    campaigns: dict[str, dict[str, Any]] = {}
+
+    def add_campaign(source_key: Any, label: Any) -> None:
+        source_key = clean_text(source_key)
+        if not source_key:
+            return
+        route_key = _campaign_token(source_key)
+        campaign = campaigns.setdefault(
+            route_key,
+            {
+                "source_keys": set(),
+                "label": "",
+            },
+        )
+        campaign["source_keys"].add(source_key)
+        candidate_label = clean_text(label)
+        if candidate_label and (not campaign["label"] or campaign["label"] == route_key):
+            campaign["label"] = candidate_label
+
     for row in all_rows.get("dim_filter_campaign", []):
-        source_key = clean_text(row.get("underlying_key") or row.get("campaign_key"))
-        route_key = source_key or "unknown"
-        campaigns[route_key] = {
-            "source_key": source_key,
-            "label": clean_text(row.get("display_label") or row.get("campaign_label")) or route_key,
-        }
+        add_campaign(row.get("underlying_key") or row.get("campaign_key"), row.get("display_label") or row.get("campaign_label"))
     for table_rows in all_rows.values():
         for row in table_rows:
             if "campaign_key" not in row:
                 continue
-            source_key = clean_text(row.get("campaign_key"))
-            route_key = source_key or "unknown"
-            campaigns.setdefault(
-                route_key,
-                {
-                    "source_key": source_key,
-                    "label": clean_text(row.get("campaign_label")) or route_key,
-                },
-            )
+            add_campaign(row.get("campaign_key"), row.get("campaign_label"))
 
     target_schemas = {campaign_schema_name(route_key) for route_key in campaigns}
     ensure_schema(GOLD_GLOBAL_SCHEMA)
@@ -292,8 +304,8 @@ def _publish_campaign_schemas(
     campaign_schemas: list[str] = []
 
     for route_key, campaign in sorted(campaigns.items(), key=lambda item: (item[1]["label"].lower(), item[0].lower())):
-        source_key = campaign["source_key"]
         label = campaign["label"] or route_key
+        source_keys = campaign["source_keys"] or {route_key}
         schema = campaign_schema_name(route_key)
         campaign_schemas.append(schema)
 
@@ -302,7 +314,7 @@ def _publish_campaign_schemas(
             rows = all_rows.get(table, [])
             columns = all_columns.get(table, [])
             if "campaign_key" in columns:
-                campaign_tables[table] = _copy_campaign_rows(rows, source_key, route_key)
+                campaign_tables[table] = _copy_campaign_rows(rows, source_keys, route_key)
             else:
                 campaign_tables[table] = []
 
@@ -332,7 +344,7 @@ def _publish_campaign_schemas(
                 field_rep_login_rows=field_rep_login_rows,
             )
         ]
-        campaign_tables["dashboard_summary_state_rep"] = _copy_campaign_rows(all_rows.get("dashboard_summary_state_rep", []), source_key, route_key)
+        campaign_tables["dashboard_summary_state_rep"] = _copy_campaign_rows(all_rows.get("dashboard_summary_state_rep", []), source_keys, route_key)
         campaign_tables["rpt_course_summary"] = _course_summary_rows(as_of_date, course_rows)
         campaign_tables["rpt_video_rankings"] = [_stringify_row(row) for row in build_video_rankings(video_rows)]
         campaign_tables["rpt_red_flag_rankings"] = [_stringify_row(row) for row in build_red_flag_rankings(redflag_rows)]
