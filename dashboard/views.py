@@ -1480,6 +1480,48 @@ def _field_rep_insight_rows(
         activity_period AS (
             SELECT %s::date AS period_start, %s::date AS period_end
         ),
+        doctor_phone_lookup AS (
+            SELECT DISTINCT ON (doctor_phone_last10)
+                doctor_phone_last10,
+                name,
+                phone,
+                doctor_phone_normalized,
+                _silver_updated_at
+            FROM (
+                SELECT
+                    right(regexp_replace(COALESCE(d.phone, d.doctor_phone_normalized, ''), '[^0-9]', '', 'g'), 10) AS doctor_phone_last10,
+                    NULLIF(btrim(d.name), '') AS name,
+                    NULLIF(btrim(d.phone), '') AS phone,
+                    NULLIF(btrim(d.doctor_phone_normalized), '') AS doctor_phone_normalized,
+                    NULLIF(btrim(d._silver_updated_at), '') AS _silver_updated_at,
+                    1 AS source_rank,
+                    d.id::text AS source_id
+                FROM silver.dim_doctor d
+                WHERE COALESCE(NULLIF(btrim(d.phone), ''), NULLIF(btrim(d.doctor_phone_normalized), '')) IS NOT NULL
+                UNION ALL
+                SELECT
+                    right(regexp_replace(COALESCE(d.phone, d.doctor_phone_normalized, ''), '[^0-9]', '', 'g'), 10) AS doctor_phone_last10,
+                    NULLIF(btrim(d.full_name), '') AS name,
+                    NULLIF(btrim(d.phone), '') AS phone,
+                    NULLIF(btrim(d.doctor_phone_normalized), '') AS doctor_phone_normalized,
+                    NULLIF(btrim(d._silver_updated_at), '') AS _silver_updated_at,
+                    2 AS source_rank,
+                    d.id::text AS source_id
+                FROM silver.dim_prefilled_doctor d
+                WHERE COALESCE(NULLIF(btrim(d.phone), ''), NULLIF(btrim(d.doctor_phone_normalized), '')) IS NOT NULL
+            ) doctors
+            WHERE COALESCE(NULLIF(doctor_phone_last10, ''), '') <> ''
+            ORDER BY
+                doctor_phone_last10,
+                CASE
+                    WHEN NULLIF(btrim(name), '') IS NULL
+                      OR lower(btrim(name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                    THEN 1 ELSE 0
+                END,
+                source_rank,
+                _silver_updated_at DESC NULLS LAST,
+                source_id DESC
+        ),
         transaction_doctor_lookup AS (
             SELECT DISTINCT ON ({_normalized_sql('tx.brand_campaign_id')}, tx.collateral_id::text, tx.doctor_identity_key)
                 {_normalized_sql('tx.brand_campaign_id')} AS brand_campaign_key,
@@ -1606,13 +1648,28 @@ def _field_rep_insight_rows(
                     COALESCE(NULLIF(a.doctor_identity_key, ''), a.brand_campaign_id || ':' || a.collateral_id) AS activity_row_id,
                 COALESCE(NULLIF(a.doctor_identity_key, ''), a.brand_campaign_id || ':' || a.collateral_id) AS doctor_key,
                 COALESCE(
-                    NULLIF(btrim(d_action.name), ''),
-                    NULLIF(btrim(tx_action.doctor_name), '')
+                    CASE
+                        WHEN NULLIF(btrim(d_action.name), '') IS NULL
+                          OR lower(btrim(d_action.name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                        THEN NULL ELSE btrim(d_action.name)
+                    END,
+                    CASE
+                        WHEN NULLIF(btrim(tx_action.doctor_name), '') IS NULL
+                          OR lower(btrim(tx_action.doctor_name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                        THEN NULL ELSE btrim(tx_action.doctor_name)
+                    END,
+                    CASE
+                        WHEN NULLIF(btrim(d_phone.name), '') IS NULL
+                          OR lower(btrim(d_phone.name)) IN ('unknown doctor', 'unknown', 'null', 'none')
+                        THEN NULL ELSE btrim(d_phone.name)
+                    END
                 ) AS doctor_name,
                 COALESCE(
                     NULLIF(btrim(d_action.phone), ''),
                     NULLIF(btrim(d_action.doctor_phone_normalized), ''),
                     NULLIF(btrim(tx_action.doctor_number), ''),
+                    NULLIF(btrim(d_phone.phone), ''),
+                    NULLIF(btrim(d_phone.doctor_phone_normalized), ''),
                     ''
                 ) AS doctor_phone,
                 CASE WHEN a.reached_first_ts IS NULL OR btrim(a.reached_first_ts) = '' OR lower(btrim(a.reached_first_ts)) = 'null' THEN NULL ELSE a.reached_first_ts::date END AS reached_first_date,
@@ -1626,6 +1683,17 @@ def _field_rep_insight_rows(
               ON tx_action.brand_campaign_key = {_normalized_sql('a.brand_campaign_id')}
              AND tx_action.collateral_id = a.collateral_id::text
              AND tx_action.doctor_identity_key = a.doctor_identity_key
+            LEFT JOIN doctor_phone_lookup d_phone
+              ON d_phone.doctor_phone_last10 = right(
+                    regexp_replace(
+                        COALESCE(tx_action.doctor_number, d_action.phone, d_action.doctor_phone_normalized, ''),
+                        '[^0-9]',
+                        '',
+                        'g'
+                    ),
+                    10
+                 )
+             AND d_phone.doctor_phone_last10 <> ''
             WHERE {_normalized_sql('a.brand_campaign_id')} IN ({brand_placeholders})
               {collateral_filter_action}
         ),
