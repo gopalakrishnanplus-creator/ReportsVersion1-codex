@@ -62,9 +62,12 @@
               <th>State</th>
               <th>Doctors Assigned</th>
               <th>Collateral Sent</th>
+              <th>Off-roster Sent</th>
               <th>Viewed</th>
+              <th>Off-roster Viewed</th>
               <th>Video Played</th>
               <th>PDF / Collateral Saved</th>
+              <th>Off-roster PDF Saved</th>
             </tr>
           </thead>
           <tbody>
@@ -101,6 +104,20 @@
                     {{ rep.doctors_sent }}
                   </button>
                 </td>
+                <td data-label="Off-roster Sent">
+                  <button
+                    type="button"
+                    class="doctor-count-btn"
+                    data-rep-id="{{ rep.field_rep_id|escape }}"
+                    data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-detail-url="{{ field_rep_detail_url|escape }}"
+                    data-metric-key="off_roster_sent"
+                    data-metric-label="Off-roster Sent"
+                    data-doctors='{{ rep.off_roster_sent_doctors_json|default:"[]"|escape }}'
+                  >
+                    {{ rep.off_roster_sent_doctors|default:0 }}
+                  </button>
+                </td>
                 <td data-label="Viewed">
                   <button
                     type="button"
@@ -113,6 +130,20 @@
                     data-doctors='{{ rep.viewed_doctors_json|default:"[]"|escape }}'
                   >
                     {{ rep.doctors_viewed }}
+                  </button>
+                </td>
+                <td data-label="Off-roster Viewed">
+                  <button
+                    type="button"
+                    class="doctor-count-btn"
+                    data-rep-id="{{ rep.field_rep_id|escape }}"
+                    data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-detail-url="{{ field_rep_detail_url|escape }}"
+                    data-metric-key="off_roster_viewed"
+                    data-metric-label="Off-roster Viewed"
+                    data-doctors='{{ rep.off_roster_viewed_doctors_json|default:"[]"|escape }}'
+                  >
+                    {{ rep.off_roster_viewed_doctors|default:0 }}
                   </button>
                 </td>
                 <td data-label="Video Played">
@@ -143,9 +174,23 @@
                     {{ rep.doctors_pdf_downloaded }}
                   </button>
                 </td>
+                <td data-label="Off-roster PDF Saved">
+                  <button
+                    type="button"
+                    class="doctor-count-btn"
+                    data-rep-id="{{ rep.field_rep_id|escape }}"
+                    data-rep-name="{{ rep.field_rep_name|escape }}"
+                    data-detail-url="{{ field_rep_detail_url|escape }}"
+                    data-metric-key="off_roster_pdf"
+                    data-metric-label="Off-roster PDF Saved"
+                    data-doctors='{{ rep.off_roster_pdf_downloaded_doctors_json|default:"[]"|escape }}'
+                  >
+                    {{ rep.off_roster_pdf_downloaded_doctors|default:0 }}
+                  </button>
+                </td>
               </tr>
             {% empty %}
-              <tr><td colspan="8">No field representative assignment data available for this collateral.</td></tr>
+              <tr><td colspan="11">No field representative assignment data available for this collateral.</td></tr>
             {% endfor %}
           </tbody>
         </table>
