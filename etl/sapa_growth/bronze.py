@@ -62,23 +62,38 @@ def _active_source_rows(
     current_keys: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     if source_table.lower().endswith("_v2"):
-        v2_rows = [row for row in rows if clean_text(row.get("_source_table")) == source_table]
-        if current_keys is None:
-            return v2_rows
-        return [row for row in v2_rows if snapshot_row_key(row, key_columns) in current_keys]
+        rows = [row for row in rows if clean_text(row.get("_source_table")) == source_table]
+    if current_keys is None:
+        return rows
+    return [row for row in rows if snapshot_row_key(row, key_columns) in current_keys]
+
+
+def _rows_for_source_table(rows: list[dict[str, Any]], source_table: str) -> list[dict[str, Any]]:
+    source_rows = [row for row in rows if clean_text(row.get("_source_table")) == source_table]
+    if source_rows or any(clean_text(row.get("_source_table")) for row in rows):
+        return source_rows
     return rows
+
+
+def _active_source_rows_for_spec(rows: list[dict[str, Any]], spec) -> list[dict[str, Any]]:
+    for source_table in (spec.source_table, *spec.fallback_source_tables):
+        source_rows = _rows_for_source_table(rows, source_table)
+        if not source_rows:
+            continue
+        current_keys = (
+            current_v2_snapshot_keys(RAW_MYSQL_SCHEMA, spec.raw_table, source_table)
+            if spec.current_snapshot or source_table.lower().endswith("_v2")
+            else None
+        )
+        return _active_source_rows(source_rows, source_table, spec.key_columns, current_keys)
+    return []
 
 
 def build_bronze() -> dict[str, int]:
     counts: dict[str, int] = {}
     for name, spec in MYSQL_TABLE_SPECS.items():
         raw_rows = fetch_table(RAW_MYSQL_SCHEMA, spec.raw_table)
-        current_keys = (
-            current_v2_snapshot_keys(RAW_MYSQL_SCHEMA, spec.raw_table, spec.source_table)
-            if spec.source_table.lower().endswith("_v2")
-            else None
-        )
-        raw_rows = _active_source_rows(raw_rows, spec.source_table, spec.key_columns, current_keys)
+        raw_rows = _active_source_rows_for_spec(raw_rows, spec)
         output_rows = _dedup_rows(raw_rows, spec.key_columns, spec.watermark_field, spec.columns, name)
         extra_columns = []
         if name in {"redflags_patientsubmission", "gnd_gndpatientsubmission"}:

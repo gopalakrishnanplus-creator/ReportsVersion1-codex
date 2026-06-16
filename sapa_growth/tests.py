@@ -24,7 +24,7 @@ from etl.sapa_growth.silver import (
     _doctor_matches_for_api,
     _merge_legacy_rows,
 )
-from etl.sapa_growth.specs import RAW_AUDIT_COLUMNS
+from etl.sapa_growth.specs import MYSQL_TABLE_SPECS, RAW_AUDIT_COLUMNS
 from sapa_growth import services as sapa_services
 from sapa_growth.logic import classify_metric_event, explode_followup_schedule, map_course_status, normalize_phone, webinar_effective_date
 from sapa_growth.reporting import filter_rows
@@ -108,6 +108,42 @@ class SapaGrowthLogicTests(SimpleTestCase):
             ],
         )
         self.assertEqual(sapa_bronze._active_source_rows(rows, "redflags_doctor", ["id"]), rows)
+
+    def test_sapa_field_rep_membership_specs_prefer_redflag_admin_tables(self):
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_fieldrep"].source_table, "campaign_fieldrep")
+        self.assertIn("field_rep_v2", MYSQL_TABLE_SPECS["campaign_fieldrep"].fallback_source_tables)
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].source_table, "campaign_campaignfieldrep")
+        self.assertIn(
+            "campaign_field_rep_assignment_v2",
+            MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].fallback_source_tables,
+        )
+        self.assertTrue(MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].current_snapshot)
+
+    def test_bronze_prefers_admin_source_rows_over_v2_fallback_rows(self):
+        spec = MYSQL_TABLE_SPECS["campaign_campaignfieldrep"]
+        rows = [
+            {
+                "id": "old-v2",
+                "field_rep_id": "15",
+                "campaign_id": "camp-1",
+                "_source_table": "campaign_field_rep_assignment_v2",
+            },
+            {
+                "id": "admin-1",
+                "field_rep_id": "142",
+                "campaign_id": "camp-1",
+                "_source_table": "campaign_campaignfieldrep",
+            },
+            {
+                "id": "admin-stale",
+                "field_rep_id": "stale",
+                "campaign_id": "camp-1",
+                "_source_table": "campaign_campaignfieldrep",
+            },
+        ]
+
+        with patch("etl.sapa_growth.bronze.current_v2_snapshot_keys", return_value={"admin-1"}):
+            self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [rows[1]])
 
     def test_pipeline_refuses_empty_required_v2_source_counts(self):
         raw_mysql = {
