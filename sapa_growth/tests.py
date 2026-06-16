@@ -394,6 +394,31 @@ class SapaGrowthLogicTests(SimpleTestCase):
 
         self.assertEqual(matched, ["current-campaign"])
 
+    def test_field_rep_login_without_campaign_can_use_brand_supplied_assignment_key(self):
+        matched = _campaign_ids_for_field_rep_login_event(
+            rep=None,
+            row={"event_type": "field_rep_login", "action_key": "44228", "ts": "2026-06-13 10:00:00"},
+            rfa_campaigns={
+                "1151a492-947b-4c91-83ac-5a224b2d07b1": {
+                    "id": "1151a492-947b-4c91-83ac-5a224b2d07b1",
+                    "name": "Portal",
+                    "start_date": "2026-06-01",
+                    "end_date": "2026-06-30",
+                }
+            },
+            rep_campaign_ids={"44228": {"1151a492-947b-4c91-83ac-5a224b2d07b1"}},
+            rep_campaign_assignments={
+                "44228": [
+                    {
+                        "campaign_id": "1151a492-947b-4c91-83ac-5a224b2d07b1",
+                        "assigned_at": "2026-06-01",
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(matched, ["1151a492-947b-4c91-83ac-5a224b2d07b1"])
+
     def test_field_rep_login_without_campaign_uses_all_active_assignments_when_metadata_is_available(self):
         matched = _campaign_ids_for_field_rep_login_event(
             rep={"id": "rep-1"},
