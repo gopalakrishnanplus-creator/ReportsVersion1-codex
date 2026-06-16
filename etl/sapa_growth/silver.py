@@ -317,7 +317,14 @@ def _campaign_ids_for_field_rep_login_event(
             for campaign_id, campaign in rfa_campaigns.items()
             if _norm_id(campaign_id) == hint_norm or _norm_id(campaign.get("name")) == hint_norm
         ]
-        return sorted(campaign_id for campaign_id in matched_campaigns if rep_is_assigned(campaign_id))
+        output = []
+        for campaign_id in matched_campaigns:
+            if rep_is_assigned(campaign_id):
+                output.append(campaign_id)
+                continue
+            if campaign_rep_membership_ids is not None and not campaign_rep_membership_ids.get(campaign_id):
+                output.append(campaign_id)
+        return sorted(output)
 
     if rep_campaign_assignments is not None:
         login_date = parse_date(row.get("ts"))

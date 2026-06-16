@@ -85,7 +85,9 @@ def _active_source_rows_for_spec(rows: list[dict[str, Any]], spec) -> list[dict[
             if spec.current_snapshot
             else None
         )
-        return _active_source_rows(source_rows, source_table, spec.key_columns, current_keys)
+        active_rows = _active_source_rows(source_rows, source_table, spec.key_columns, current_keys)
+        if active_rows or not spec.current_snapshot:
+            return active_rows
     return []
 
 
