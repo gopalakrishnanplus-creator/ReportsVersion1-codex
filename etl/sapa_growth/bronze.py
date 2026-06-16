@@ -82,7 +82,7 @@ def _active_source_rows_for_spec(rows: list[dict[str, Any]], spec) -> list[dict[
             continue
         current_keys = (
             current_v2_snapshot_keys(RAW_MYSQL_SCHEMA, spec.raw_table, source_table)
-            if spec.current_snapshot or source_table.lower().endswith("_v2")
+            if spec.current_snapshot
             else None
         )
         return _active_source_rows(source_rows, source_table, spec.key_columns, current_keys)

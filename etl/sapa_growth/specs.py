@@ -39,7 +39,7 @@ class SourceTableSpec:
 
 MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
     "campaign_doctor": SourceTableSpec(
-        source_table="doctor_v2",
+        source_table="campaign_doctor",
         raw_table="campaign_doctor_raw",
         columns=[
             "id",
@@ -58,9 +58,11 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         watermark_field="created_at",
+        fallback_source_tables=("doctor_v2",),
+        current_snapshot=True,
     ),
     "campaign_doctorcampaignenrollment": SourceTableSpec(
-        source_table="doctor_campaign_enrollment_v2",
+        source_table="campaign_doctorcampaignenrollment",
         raw_table="campaign_doctorcampaignenrollment_raw",
         columns=[
             "campaign_id",
@@ -74,6 +76,8 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["campaign_id", "doctor_id"],
         watermark_field="registered_at",
+        fallback_source_tables=("doctor_campaign_enrollment_v2",),
+        current_snapshot=True,
     ),
     "campaign_campaign": SourceTableSpec(
         source_table="campaign_v2",
@@ -95,12 +99,14 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         watermark_field="updated_at",
+        current_snapshot=True,
     ),
     "campaign_brand": SourceTableSpec(
         source_table="brand_v2",
         raw_table="campaign_brand_raw",
         columns=["id", "name"],
         key_columns=["id"],
+        current_snapshot=True,
     ),
     "campaign_fieldrep": SourceTableSpec(
         source_table="campaign_fieldrep",
@@ -120,6 +126,7 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         key_columns=["id"],
         watermark_field="updated_at",
         fallback_source_tables=("field_rep_v2",),
+        current_snapshot=True,
     ),
     "campaign_campaignfieldrep": SourceTableSpec(
         source_table="campaign_campaignfieldrep",
@@ -152,7 +159,7 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["activity_event_uuid"],
         watermark_field="event_at",
-        lookback_days=3650,
+        lookback_days=45,
     ),
     "redflags_doctor": SourceTableSpec(
         source_table="redflags_doctor",

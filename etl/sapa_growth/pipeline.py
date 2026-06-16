@@ -10,14 +10,13 @@ from etl.sapa_growth.gold import build_gold
 from etl.sapa_growth.raw import ingest_api_sources, ingest_mysql_sources
 from etl.sapa_growth.silver import build_silver
 
-REQUIRED_V2_MYSQL_TABLES = (
+REQUIRED_SAPA_ROSTER_TABLES = (
     "campaign_doctor",
     "campaign_doctorcampaignenrollment",
     "campaign_campaign",
     "campaign_brand",
     "campaign_fieldrep",
     "campaign_campaignfieldrep",
-    "rfa_activity_event",
 )
 
 
@@ -25,13 +24,13 @@ def _validate_required_v2_source_counts(raw_mysql: dict[str, Any]) -> None:
     extracted_counts = raw_mysql.get("extracted_counts", {}) or {}
     empty_required = [
         name
-        for name in REQUIRED_V2_MYSQL_TABLES
+        for name in REQUIRED_SAPA_ROSTER_TABLES
         if int(extracted_counts.get(name) or 0) <= 0
     ]
     if empty_required:
         raise RuntimeError(
-            "SAPA V2 source refresh safety check failed before bronze/silver/gold rebuild. "
-            "Required V2 source tables returned zero rows: "
+            "SAPA source refresh safety check failed before bronze/silver/gold rebuild. "
+            "Required SAPA roster/master source tables returned zero rows: "
             f"{', '.join(empty_required)}. Existing SAPA reporting tables were not replaced."
         )
 
