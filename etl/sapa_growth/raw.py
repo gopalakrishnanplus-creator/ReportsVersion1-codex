@@ -51,18 +51,19 @@ def ensure_raw_tables() -> None:
 
 def _extract_spec_rows(name: str, spec, watermark_start: str | None) -> tuple[str, list[dict[str, Any]]]:
     errors: list[str] = []
-    for source_table in (spec.source_table, *spec.fallback_source_tables):
+    candidates = (spec.source_table, *spec.fallback_source_tables)
+    for index, source_table in enumerate(candidates):
         uses_current_snapshot = _uses_current_snapshot(spec, source_table)
         try:
-            return (
+            rows = extract_rows(
                 source_table,
-                extract_rows(
-                    source_table,
-                    spec.columns,
-                    watermark_field=spec.watermark_field,
-                    watermark_start=None if uses_current_snapshot else watermark_start,
-                ),
+                spec.columns,
+                watermark_field=spec.watermark_field,
+                watermark_start=None if uses_current_snapshot else watermark_start,
             )
+            if rows or not spec.fallback_source_tables or index == len(candidates) - 1:
+                return source_table, rows
+            errors.append(f"{source_table} returned zero rows; trying fallback")
         except SapaMySQLExtractionError as exc:
             errors.append(str(exc))
     error_summary = " | ".join(errors)
@@ -84,6 +85,7 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
     max_watermarks: dict[str, str] = {}
 
     for name, spec in MYSQL_TABLE_SPECS.items():
+        candidate_source_tables = (spec.source_table, *spec.fallback_source_tables)
         watermark_start = _watermark_start("mysql", name, spec.watermark_field, spec.lookback_days)
         try:
             source_table, rows = _extract_spec_rows(name, spec, watermark_start)
@@ -109,7 +111,19 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
                 prepared_rows,
                 fingerprint_columns=fingerprint_columns,
             )
-            if uses_current_snapshot and prepared_rows:
+            if uses_current_snapshot:
+                for candidate_source_table in candidate_source_tables:
+                    if candidate_source_table == source_table:
+                        continue
+                    record_v2_current_snapshot(
+                        raw_schema=RAW_MYSQL_SCHEMA,
+                        raw_table=spec.raw_table,
+                        source_table=candidate_source_table,
+                        key_columns=spec.key_columns,
+                        rows=[],
+                        run_id=run_id,
+                        extracted_at=extracted_at,
+                    )
                 record_v2_current_snapshot(
                     raw_schema=RAW_MYSQL_SCHEMA,
                     raw_table=spec.raw_table,

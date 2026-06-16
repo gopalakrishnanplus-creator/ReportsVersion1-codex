@@ -159,13 +159,45 @@ class SapaGrowthLogicTests(SimpleTestCase):
         with patch("etl.sapa_growth.bronze.current_v2_snapshot_keys", return_value={"admin-1"}):
             self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [rows[1]])
 
-    def test_current_snapshot_admin_sources_skip_incremental_watermark(self):
+    def test_bronze_uses_fallback_when_primary_snapshot_has_no_current_rows(self):
+        spec = MYSQL_TABLE_SPECS["campaign_campaignfieldrep"]
+        rows = [
+            {
+                "id": "admin-stale",
+                "field_rep_id": "stale",
+                "campaign_id": "camp-1",
+                "_source_table": "campaign_campaignfieldrep",
+            },
+            {
+                "id": "fallback-v2",
+                "field_rep_id": "142",
+                "campaign_id": "camp-1",
+                "_source_table": "campaign_field_rep_assignment_v2",
+            },
+        ]
+
+        with patch("etl.sapa_growth.bronze.current_v2_snapshot_keys", side_effect=[set(), {"fallback-v2"}]):
+            self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [rows[1]])
+
+    def test_current_snapshot_admin_sources_skip_incremental_watermark_and_fallback_on_empty(self):
         spec = MYSQL_TABLE_SPECS["campaign_doctor"]
-        with patch("etl.sapa_growth.raw.extract_rows", return_value=[]) as extract_mock:
+        fallback_rows = [{"id": "doctor-v2-1"}]
+        with patch("etl.sapa_growth.raw.extract_rows", side_effect=[[], fallback_rows]) as extract_mock:
+            source_table, rows = sapa_raw._extract_spec_rows("campaign_doctor", spec, "2026-06-01 00:00:00")
+
+        self.assertEqual(source_table, "doctor_v2")
+        self.assertEqual(rows, fallback_rows)
+        self.assertEqual([call.kwargs["watermark_start"] for call in extract_mock.call_args_list], [None, None])
+
+    def test_current_snapshot_admin_sources_keep_non_empty_primary_rows(self):
+        spec = MYSQL_TABLE_SPECS["campaign_doctor"]
+        primary_rows = [{"id": "campaign-doctor-1"}]
+        with patch("etl.sapa_growth.raw.extract_rows", return_value=primary_rows) as extract_mock:
             source_table, rows = sapa_raw._extract_spec_rows("campaign_doctor", spec, "2026-06-01 00:00:00")
 
         self.assertEqual(source_table, "campaign_doctor")
-        self.assertEqual(rows, [])
+        self.assertEqual(rows, primary_rows)
+        self.assertEqual(extract_mock.call_count, 1)
         self.assertIsNone(extract_mock.call_args.kwargs["watermark_start"])
 
     def test_incremental_event_sources_keep_watermark(self):
@@ -207,7 +239,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
 
         sapa_pipeline._validate_required_v2_source_counts(raw_mysql)
 
-    def test_empty_v2_source_pull_does_not_replace_current_snapshot(self):
+    def test_empty_incremental_activity_pull_does_not_replace_current_snapshot(self):
         with patch("etl.sapa_growth.raw.ensure_raw_tables"), patch(
             "etl.sapa_growth.raw.extract_rows",
             return_value=[],
@@ -218,7 +250,9 @@ class SapaGrowthLogicTests(SimpleTestCase):
         ), patch("etl.sapa_growth.raw.log_step"):
             sapa_raw.ingest_mysql_sources("run-1", "2026-06-03T00:00:00+00:00")
 
-        snapshot_mock.assert_not_called()
+        self.assertFalse(
+            any(call.kwargs["source_table"] == "rfa_activity_event_v2" for call in snapshot_mock.call_args_list)
+        )
 
     def test_rfa_activity_v2_payloads_convert_to_legacy_activity_rows(self):
         converted = _activity_events_as_legacy_rows(
@@ -422,6 +456,32 @@ class SapaGrowthLogicTests(SimpleTestCase):
         )
 
         self.assertEqual(matched, [])
+
+    def test_field_rep_login_meta_campaign_is_used_when_membership_source_is_empty(self):
+        matched = _campaign_ids_for_field_rep_login_event(
+            rep=None,
+            row={
+                "event_type": "field_rep_login",
+                "action_key": "44228",
+                "meta": json.dumps(
+                    {
+                        "campaign_id": "1151a492947b4c9183ac5a224b2d07b1",
+                        "brand_supplied_field_rep_id": "44228",
+                    }
+                ),
+            },
+            rfa_campaigns={
+                "1151a492-947b-4c91-83ac-5a224b2d07b1": {
+                    "id": "1151a492-947b-4c91-83ac-5a224b2d07b1",
+                    "name": "Portal",
+                }
+            },
+            rep_campaign_ids={},
+            campaign_rep_ids={},
+            campaign_rep_membership_ids={},
+        )
+
+        self.assertEqual(matched, ["1151a492-947b-4c91-83ac-5a224b2d07b1"])
 
     def test_field_rep_login_without_campaign_is_not_copied_to_multiple_campaigns(self):
         campaigns = {
