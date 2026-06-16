@@ -52,7 +52,7 @@ def ensure_raw_tables() -> None:
 def _extract_spec_rows(name: str, spec, watermark_start: str | None) -> tuple[str, list[dict[str, Any]]]:
     errors: list[str] = []
     for source_table in (spec.source_table, *spec.fallback_source_tables):
-        is_v2_source = source_table.lower().endswith("_v2")
+        uses_current_snapshot = _uses_current_snapshot(spec, source_table)
         try:
             return (
                 source_table,
@@ -60,7 +60,7 @@ def _extract_spec_rows(name: str, spec, watermark_start: str | None) -> tuple[st
                     source_table,
                     spec.columns,
                     watermark_field=spec.watermark_field,
-                    watermark_start=None if is_v2_source else watermark_start,
+                    watermark_start=None if uses_current_snapshot else watermark_start,
                 ),
             )
         except SapaMySQLExtractionError as exc:
@@ -72,7 +72,7 @@ def _extract_spec_rows(name: str, spec, watermark_start: str | None) -> tuple[st
 
 
 def _uses_current_snapshot(spec, source_table: str) -> bool:
-    return bool(spec.current_snapshot or source_table.lower().endswith("_v2"))
+    return bool(spec.current_snapshot)
 
 
 def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
@@ -100,7 +100,7 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
                     if candidate and (max_watermark_value is None or candidate > max_watermark_value):
                         max_watermark_value = candidate
 
-            fingerprint_columns = spec.columns + ["_source_table"] if uses_current_snapshot else spec.columns
+            fingerprint_columns = spec.columns + ["_source_table"] if uses_current_snapshot or source_table.lower().endswith("_v2") else spec.columns
             inserted_count = insert_new_source_rows(
                 RAW_MYSQL_SCHEMA,
                 spec.raw_table,

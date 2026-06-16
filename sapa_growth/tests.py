@@ -109,15 +109,29 @@ class SapaGrowthLogicTests(SimpleTestCase):
         )
         self.assertEqual(sapa_bronze._active_source_rows(rows, "redflags_doctor", ["id"]), rows)
 
-    def test_sapa_field_rep_membership_specs_prefer_redflag_admin_tables(self):
+    def test_sapa_roster_specs_prefer_redflag_admin_tables(self):
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_doctor"].source_table, "campaign_doctor")
+        self.assertIn("doctor_v2", MYSQL_TABLE_SPECS["campaign_doctor"].fallback_source_tables)
+        self.assertTrue(MYSQL_TABLE_SPECS["campaign_doctor"].current_snapshot)
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_doctorcampaignenrollment"].source_table, "campaign_doctorcampaignenrollment")
+        self.assertIn(
+            "doctor_campaign_enrollment_v2",
+            MYSQL_TABLE_SPECS["campaign_doctorcampaignenrollment"].fallback_source_tables,
+        )
+        self.assertTrue(MYSQL_TABLE_SPECS["campaign_doctorcampaignenrollment"].current_snapshot)
+        self.assertTrue(MYSQL_TABLE_SPECS["campaign_campaign"].current_snapshot)
+        self.assertTrue(MYSQL_TABLE_SPECS["campaign_brand"].current_snapshot)
         self.assertEqual(MYSQL_TABLE_SPECS["campaign_fieldrep"].source_table, "campaign_fieldrep")
         self.assertIn("field_rep_v2", MYSQL_TABLE_SPECS["campaign_fieldrep"].fallback_source_tables)
+        self.assertTrue(MYSQL_TABLE_SPECS["campaign_fieldrep"].current_snapshot)
         self.assertEqual(MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].source_table, "campaign_campaignfieldrep")
         self.assertIn(
             "campaign_field_rep_assignment_v2",
             MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].fallback_source_tables,
         )
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].current_snapshot)
+        self.assertFalse(MYSQL_TABLE_SPECS["rfa_activity_event"].current_snapshot)
+        self.assertEqual(MYSQL_TABLE_SPECS["rfa_activity_event"].lookback_days, 45)
 
     def test_bronze_prefers_admin_source_rows_over_v2_fallback_rows(self):
         spec = MYSQL_TABLE_SPECS["campaign_campaignfieldrep"]
@@ -145,6 +159,24 @@ class SapaGrowthLogicTests(SimpleTestCase):
         with patch("etl.sapa_growth.bronze.current_v2_snapshot_keys", return_value={"admin-1"}):
             self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [rows[1]])
 
+    def test_current_snapshot_admin_sources_skip_incremental_watermark(self):
+        spec = MYSQL_TABLE_SPECS["campaign_doctor"]
+        with patch("etl.sapa_growth.raw.extract_rows", return_value=[]) as extract_mock:
+            source_table, rows = sapa_raw._extract_spec_rows("campaign_doctor", spec, "2026-06-01 00:00:00")
+
+        self.assertEqual(source_table, "campaign_doctor")
+        self.assertEqual(rows, [])
+        self.assertIsNone(extract_mock.call_args.kwargs["watermark_start"])
+
+    def test_incremental_event_sources_keep_watermark(self):
+        spec = MYSQL_TABLE_SPECS["rfa_activity_event"]
+        with patch("etl.sapa_growth.raw.extract_rows", return_value=[]) as extract_mock:
+            source_table, rows = sapa_raw._extract_spec_rows("rfa_activity_event", spec, "2026-06-01 00:00:00")
+
+        self.assertEqual(source_table, "rfa_activity_event_v2")
+        self.assertEqual(rows, [])
+        self.assertEqual(extract_mock.call_args.kwargs["watermark_start"], "2026-06-01 00:00:00")
+
     def test_pipeline_refuses_empty_required_v2_source_counts(self):
         raw_mysql = {
             "extracted_counts": {
@@ -159,6 +191,21 @@ class SapaGrowthLogicTests(SimpleTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "campaign_fieldrep"):
             sapa_pipeline._validate_required_v2_source_counts(raw_mysql)
+
+    def test_pipeline_allows_empty_incremental_activity_source_count(self):
+        raw_mysql = {
+            "extracted_counts": {
+                "campaign_doctor": 10,
+                "campaign_doctorcampaignenrollment": 10,
+                "campaign_campaign": 1,
+                "campaign_brand": 1,
+                "campaign_fieldrep": 10,
+                "campaign_campaignfieldrep": 10,
+                "rfa_activity_event": 0,
+            }
+        }
+
+        sapa_pipeline._validate_required_v2_source_counts(raw_mysql)
 
     def test_empty_v2_source_pull_does_not_replace_current_snapshot(self):
         with patch("etl.sapa_growth.raw.ensure_raw_tables"), patch(
