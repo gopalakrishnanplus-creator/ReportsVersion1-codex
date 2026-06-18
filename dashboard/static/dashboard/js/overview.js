@@ -26,6 +26,7 @@
         || event.altKey
         || link.target
         || link.hasAttribute('download')
+        || link.matches('[data-collateral-switch-link]')
         || !href
         || href.startsWith('#')
         || href.startsWith('javascript:')
@@ -122,14 +123,16 @@
 
   function setFieldRepPanel(open) {
     if (!fieldRepTile || !fieldRepPanel) return;
+    const currentFieldRepToggle = document.getElementById('field-rep-toggle') || fieldRepToggle;
+    const currentFieldRepClose = document.getElementById('field-rep-close') || fieldRepClose;
     fieldRepPanel.classList.toggle('hidden', !open);
     document.body.classList.toggle('modal-open', currentModalOpen());
     fieldRepTile.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (fieldRepToggle) {
-      fieldRepToggle.textContent = open ? 'Hide insights' : 'View all reps';
+    if (currentFieldRepToggle) {
+      currentFieldRepToggle.textContent = open ? 'Hide insights' : 'View all reps';
     }
     if (open) {
-      fieldRepClose?.focus();
+      currentFieldRepClose?.focus();
     }
   }
 
@@ -144,12 +147,12 @@
       }
     });
   }
-  if (fieldRepClose) {
-    fieldRepClose.addEventListener('click', (event) => {
+  document.addEventListener('click', (event) => {
+    if (event.target?.closest?.('#field-rep-close')) {
       event.stopPropagation();
       setFieldRepPanel(false);
-    });
-  }
+    }
+  });
   if (fieldRepPanel) {
     fieldRepPanel.addEventListener('click', (event) => {
       if (event.target === fieldRepPanel) {
@@ -265,9 +268,15 @@
     }
   }
 
+  function getFieldRepTable() {
+    return document.getElementById('field-rep-insights-table');
+  }
+
   function collectDoctorDetailRows() {
+    const currentFieldRepTable = getFieldRepTable();
+    if (!currentFieldRepTable) return [];
     const rows = [];
-    Array.from(fieldRepTable.querySelectorAll('.doctor-count-btn')).forEach((button) => {
+    Array.from(currentFieldRepTable.querySelectorAll('.doctor-count-btn')).forEach((button) => {
       const doctors = parseDoctorPayload(button);
       const state = button.dataset.state || button.closest('tr')?.children?.[2]?.textContent.trim() || 'UNKNOWN';
       doctors.forEach((doctor, index) => {
@@ -288,7 +297,7 @@
 
   const fieldRepExcelBtn = document.getElementById('field-rep-excel-btn');
   const unmappedDoctorsExcelBtn = document.getElementById('unmapped-doctors-excel-btn');
-  const fieldRepTable = document.getElementById('field-rep-insights-table');
+  const fieldRepTable = getFieldRepTable();
   if (fieldRepExcelBtn && fieldRepTable) {
     fieldRepExcelBtn.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -411,39 +420,121 @@
     });
   }
 
-  document.querySelectorAll('a[data-server-download="true"]').forEach((link) => {
-    link.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      downloadServerFile(link);
-    });
+  document.addEventListener('click', (event) => {
+    const link = event.target?.closest?.('a[data-server-download="true"]');
+    if (!link) return;
+    event.preventDefault();
+    event.stopPropagation();
+    downloadServerFile(link);
   });
 
-  const oldCollateralsBtns = document.querySelectorAll('[data-collateral-switch-trigger]');
   const oldCollateralsPanel = document.getElementById('old_collaterals_panel');
   const oldCollateralsClose = document.getElementById('old-collaterals-close');
 
   function setOldCollateralsPanel(open) {
     if (!oldCollateralsPanel) return;
+    const currentOldCollateralsClose = document.getElementById('old-collaterals-close') || oldCollateralsClose;
     oldCollateralsPanel.classList.toggle('hidden', !open);
     document.body.classList.toggle('modal-open', currentModalOpen());
     if (open) {
-      oldCollateralsClose?.focus();
+      currentOldCollateralsClose?.focus();
     }
   }
 
-  oldCollateralsBtns.forEach((button) => {
-    button.addEventListener('click', (event) => {
+  document.addEventListener('click', (event) => {
+    if (event.target?.closest?.('[data-collateral-switch-trigger]')) {
       event.stopPropagation();
       setOldCollateralsPanel(true);
-    });
+    }
   });
-  if (oldCollateralsClose) {
-    oldCollateralsClose.addEventListener('click', (event) => {
+  document.addEventListener('click', (event) => {
+    if (event.target?.closest?.('#old-collaterals-close')) {
       event.stopPropagation();
       setOldCollateralsPanel(false);
-    });
+    }
+  });
+
+  function updateWeekFormCollateral(url) {
+    const weekFilterForm = document.getElementById('week-filter-form');
+    if (!weekFilterForm) return;
+    const nextUrl = new URL(url, window.location.origin);
+    const collateralId = nextUrl.searchParams.get('collateral_id') || '';
+    let collateralInput = weekFilterForm.querySelector('input[name="collateral_id"]');
+    if (!collateralId) {
+      collateralInput?.remove();
+      return;
+    }
+    if (!collateralInput) {
+      collateralInput = document.createElement('input');
+      collateralInput.type = 'hidden';
+      collateralInput.name = 'collateral_id';
+      weekFilterForm.appendChild(collateralInput);
+    }
+    collateralInput.value = collateralId;
   }
+
+  function replaceInnerHtmlFromDocument(sourceDocument, selector) {
+    const currentElement = document.querySelector(selector);
+    const nextElement = sourceDocument.querySelector(selector);
+    if (!currentElement || !nextElement) return false;
+    currentElement.innerHTML = nextElement.innerHTML;
+    return true;
+  }
+
+  async function switchCollateralInPlace(link) {
+    const href = link?.getAttribute('href') || '';
+    if (!href) return;
+    showPageLoading('Refreshing insights...');
+    link.setAttribute('aria-busy', 'true');
+    link.classList.add('is-loading');
+    try {
+      const response = await fetch(href, {
+        credentials: 'same-origin',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      });
+      if (!response.ok) {
+        throw new Error(`Collateral switch failed with status ${response.status}`);
+      }
+      const html = await response.text();
+      const sourceDocument = new DOMParser().parseFromString(html, 'text/html');
+      const updatedPanel = replaceInnerHtmlFromDocument(sourceDocument, '#field_rep_insights_panel .card');
+      const updatedTile = replaceInnerHtmlFromDocument(sourceDocument, '#field_rep_tile');
+      replaceInnerHtmlFromDocument(sourceDocument, '#old_collaterals_panel .old-collateral-list');
+      if (!updatedPanel || !updatedTile) {
+        throw new Error('Collateral response did not include Field Representative Insights.');
+      }
+      const nextUrl = new URL(href, window.location.origin);
+      window.history.pushState({}, '', `${nextUrl.pathname}${nextUrl.search}`);
+      updateWeekFormCollateral(nextUrl.toString());
+      setOldCollateralsPanel(false);
+      setFieldRepPanel(true);
+    } catch (error) {
+      console.error('Failed to switch collateral without reload', error);
+      alert('Could not refresh Field Representative Insights for this collateral. Please try again.');
+    } finally {
+      hidePageLoading();
+      link.removeAttribute('aria-busy');
+      link.classList.remove('is-loading');
+    }
+  }
+
+  document.addEventListener('click', (event) => {
+    const link = event.target?.closest?.('a[data-collateral-switch-link]');
+    if (
+      !link
+      || event.metaKey
+      || event.ctrlKey
+      || event.shiftKey
+      || event.altKey
+      || link.target
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    switchCollateralInPlace(link);
+  });
+
   if (oldCollateralsPanel) {
     oldCollateralsPanel.addEventListener('click', (event) => {
       if (event.target === oldCollateralsPanel) {
@@ -521,8 +612,9 @@
     return Array.isArray(payload?.doctors) ? payload.doctors : [];
   }
 
-  document.querySelectorAll('.doctor-count-btn').forEach((button) => {
-    button.addEventListener('click', async (event) => {
+  document.addEventListener('click', async (event) => {
+    const button = event.target?.closest?.('.doctor-count-btn');
+    if (!button) return;
       event.stopPropagation();
       const repName = button.dataset.repName || button.dataset.repId || 'Field Representative';
       const metricLabel = button.dataset.metricLabel || 'Assigned Doctors';
@@ -565,7 +657,6 @@
         button.removeAttribute('aria-busy');
         button.classList.remove('is-loading');
       }
-    });
   });
 
   if (doctorRosterClose) {
