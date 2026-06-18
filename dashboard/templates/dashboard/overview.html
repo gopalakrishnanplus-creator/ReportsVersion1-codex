@@ -373,13 +373,17 @@
         <div class="panel-title-row">
           <div>
             <h3 id="old-collaterals-title">Switch Collateral</h3>
-            <p class="subtext">Select a current or previous collateral to refresh the full dashboard for that collateral.</p>
+            <p class="subtext">Select a current or previous collateral to refresh Field Representative Insights here.</p>
           </div>
           <button type="button" id="old-collaterals-close" class="ghost-btn">Close</button>
         </div>
         <div class="old-collateral-list">
           {% for collateral in old_collaterals %}
-            <a class="old-collateral-row{% if collateral.is_selected == 'true' %} is-selected{% endif %}" href="{{ collateral.url }}">
+            <a
+              class="old-collateral-row{% if collateral.is_selected == 'true' %} is-selected{% endif %}"
+              href="{{ collateral.url }}"
+              data-collateral-switch-link
+            >
               <strong>{{ collateral.name }}</strong>
               <span>{{ collateral.schedule_text }}</span>
               <em>{{ collateral.status_label }}</em>

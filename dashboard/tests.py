@@ -1887,6 +1887,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Off-roster PDF Saved")
         self.assertContains(response, "Download Excel")
         self.assertContains(response, "Switch Collateral")
+        self.assertContains(response, "refresh Field Representative Insights here")
+        self.assertContains(response, "data-collateral-switch-link")
         self.assertContains(response, 'class="comparison-grid single"')
         self.assertNotContains(response, "<h4>Best Collateral</h4>")
         self.assertNotContains(response, "<h4>Benchmark Best</h4>")
