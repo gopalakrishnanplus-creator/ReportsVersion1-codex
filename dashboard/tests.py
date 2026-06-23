@@ -1697,73 +1697,70 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "reporting_source": "V2 activity events",
                     "total_rows": 2,
                     "unique_keys": 2,
+                    "reporting_keys_for_cleanup": 2,
+                    "source_overlap_keys": 1,
+                    "already_removed_from_source_keys": 1,
+                    "source_overlap_error": "",
                     "latest_ingested_at": "2026-06-23T10:00:00+00:00",
                     "latest_ingestion_run_id": "etl-run-1",
                     "cleanup_counts": {"DELETED": 1},
+                    "cleanup_report": {
+                        "total_eligible": 2,
+                        "not_attempted": 1,
+                        "pending": 0,
+                        "deleted": 1,
+                        "already_absent": 0,
+                        "guard_blocked": 0,
+                        "failed": 0,
+                        "complete": 1,
+                        "action_required": 1,
+                        "status_counts": {"NOT_ATTEMPTED": 1, "DELETED": 1},
+                        "latest_cleanup_run_id": "cleanup-1",
+                        "latest_cleanup_at": "2026-06-23T10:05:00+00:00",
+                    },
                     "error": "",
                 }
             ],
             "table_count": 4,
             "total_rows": 2,
             "total_unique_keys": 2,
+            "total_reporting_keys_for_cleanup": 2,
+            "total_source_overlap_keys": 1,
+            "total_already_removed_from_source_keys": 1,
+            "total_action_required": 1,
+            "total_source_complete": 1,
+            "total_source_deleted": 1,
+            "total_source_already_absent": 0,
+            "total_source_not_attempted": 1,
+            "total_source_pending": 0,
+            "total_source_guard_blocked": 0,
+            "total_source_failed": 0,
             "latest_cleanup": {"status": "SUCCESS"},
-        }
-        records = {
-            "rows": [
-                {
-                    "domain": "rfa",
-                    "source_table": "redflags_patientsubmission",
-                    "raw_table": "raw_sapa_mysql.rfa_activity_event_raw",
-                    "source_pk": "SUB-1",
-                    "source_pk_column": "record_id",
-                    "activity_type": "rfa_patient_submission",
-                    "event_at": "2026-06-23T10:00:00+00:00",
-                    "patient_id": "PAT-1",
-                    "doctor_id": "DOC-1",
-                    "doctor_phone": "",
-                    "campaign_id": "",
-                    "collateral_id": "",
-                    "field_rep_id": "",
-                    "form_id": "FORM-1",
-                    "overall_flag_code": "RED",
-                    "submission_id": "",
-                    "red_flag_id": "",
-                    "ingestion_run_id": "etl-run-1",
-                    "ingested_at": "2026-06-23T10:00:00+00:00",
-                    "cleanup_status": "DELETED",
-                    "cleanup_run_id": "cleanup-1",
-                    "cleanup_error": "",
-                }
-            ],
-            "row_count": 1,
-            "limit": 100,
-            "is_limited": False,
-            "errors": [],
         }
         patches = [
             patch("dashboard.internal_data_admin._require_auth", return_value=None),
             patch("dashboard.internal_data_admin._transfer_cleanup_assert_scope"),
             patch("dashboard.internal_data_admin._transfer_cleanup_raw_summary", return_value=summary),
-            patch("dashboard.internal_data_admin._transfer_cleanup_raw_records", return_value=records),
             patch("dashboard.internal_data_admin._transfer_cleanup_recent_runs", return_value=[]),
+            patch("dashboard.internal_data_admin._transfer_cleanup_recent_step_logs", return_value=[]),
         ]
         patches.extend(extra.values())
         return patches
 
-    def test_internal_data_admin_rfa_transfer_cleanup_page_renders_records(self):
+    def test_internal_data_admin_rfa_transfer_cleanup_page_renders_summary(self):
         patches = self._transfer_cleanup_page_patches()
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             response = self.client.get(
-                "/_internal/data-admin/transfer-cleanup/?domain=rfa&source_table=redflags_patientsubmission&q=DOC&cleanup_status=DELETED"
+                "/_internal/data-admin/transfer-cleanup/?domain=rfa&source_table=redflags_patientsubmission"
             )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Transfer Source Cleanup")
         self.assertContains(response, "redflags_patientsubmission")
-        self.assertContains(response, "rfa_patient_submission")
-        self.assertContains(response, "SUB-1")
-        self.assertContains(response, "Run Selected ETL + Source Cleanup")
-        self.assertContains(response, "redflags_metricevent")
+        self.assertContains(response, "Source cleanup report")
+        self.assertContains(response, "Still in source")
+        self.assertContains(response, "Delete Transferred Source Records For Selected System")
+        self.assertContains(response, "GitHub deploy ETL does not run source deletion")
 
     def test_internal_data_admin_rfa_transfer_cleanup_post_requires_confirmation(self):
         run_cleanup = patch("dashboard.internal_data_admin.run_weekly_transfer_cleanup")
@@ -1803,6 +1800,7 @@ class DashboardAccessViewTests(SimpleTestCase):
                 "/_internal/data-admin/transfer-cleanup/",
                 {
                     "domain": "rfa",
+                    "source_table": "redflags_patientsubmission",
                     "transfer_action": "run_transfer_cleanup",
                     "confirmation": "RUN RFA TRANSFER CLEANUP",
                 },
@@ -1881,6 +1879,29 @@ class DashboardAccessViewTests(SimpleTestCase):
         v2_query, v2_params = fetch_mock.call_args_list[5].args
         self.assertIn("inclinic_collateral_transaction_v2", v2_query)
         self.assertEqual(v2_params, ["sharing_management_collateraltransaction"])
+
+    def test_weekly_transfer_cleanup_source_status_counts_live_source_overlap(self):
+        spec = weekly_transfer_cleanup.INCLINIC_SPECS[0]
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [{"source_pk": "txn-1"}, {"source_pk": "txn-3"}]
+
+        with patch(
+            "etl.weekly_transfer_cleanup._raw_rows_for_cleanup",
+            return_value=[
+                {"source_pk": "txn-1", "guard_value": None},
+                {"source_pk": "txn-2", "guard_value": None},
+                {"source_pk": "txn-3", "guard_value": None},
+            ],
+        ), patch("etl.weekly_transfer_cleanup.source_mysql_cursor", return_value=nullcontext(cursor)):
+            status = weekly_transfer_cleanup.source_transfer_status_for_spec(spec)
+
+        self.assertEqual(status["reporting_keys_for_cleanup"], 3)
+        self.assertEqual(status["source_overlap_keys"], 2)
+        self.assertEqual(status["already_removed_from_source_keys"], 1)
+        self.assertEqual(status["source_overlap_error"], "")
+        executed_sql, executed_params = cursor.execute.call_args.args
+        self.assertIn("sharing_management_collateraltransaction", executed_sql)
+        self.assertEqual(executed_params, ["txn-1", "txn-2", "txn-3"])
 
     def test_campaign_performance_page_renders_bootstrap_data(self):
         with patch(

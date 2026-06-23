@@ -6,65 +6,20 @@
 {% block content %}
 <nav class="ida-toolbar">
   <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-home' %}">Back to Data Dashboard</a>
-  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-raw-downloads' %}">RAW Data Downloads</a>
 </nav>
 
 <section class="ida-band">
   <div>
-    <h2>Transferred activity cleanup</h2>
-    <p class="ida-muted">Review records that have already reached the reporting layer, then run the selected ETL and remove only those transferred activity rows from the approved upstream source tables.</p>
+    <h2>Source cleanup report</h2>
+    <p class="ida-muted">Select a system and review which transferred records still exist in source. The delete button runs system-wide for the protected V1/V2 transfer tables only.</p>
   </div>
   <div class="ida-safety-note">
-    <strong>Deletion scope</strong>
-    <span>InClinic collateral transactions and approved RFA/SAPA V2 activity, patient-submission, and red-flag activity tables only.</span>
-  </div>
-</section>
-
-<section class="ida-summary-grid" aria-label="Transfer cleanup totals">
-  <div class="ida-summary-tile">
-    <span>Selected system</span>
-    <strong>{{ selected_domain_label }}</strong>
-  </div>
-  <div class="ida-summary-tile">
-    <span>Protected source tables</span>
-    <strong>{{ protected_source_tables|length }}</strong>
-  </div>
-  <div class="ida-summary-tile">
-    <span>Reporting evidence rows</span>
-    <strong>{{ summary.total_rows }}</strong>
-  </div>
-  <div class="ida-summary-tile">
-    <span>Unique transfer keys</span>
-    <strong>{{ summary.total_unique_keys }}</strong>
+    <strong>GitHub deploy deletion</strong>
+    <span>{{ deploy_cleanup_status.short }}</span>
   </div>
 </section>
 
 <section class="ida-panel">
-  <p class="ida-eyebrow">Approved cleanup scope</p>
-  <div class="ida-guidance-grid">
-    <div>
-      <strong>Source tables that may be deleted from</strong>
-      <p>{{ protected_source_tables|join:", " }}</p>
-    </div>
-    <div>
-      <strong>Tables intentionally not touched by source deletion</strong>
-      <p>doctor data, field rep data, campaign/master/reference tables, redflags_followupreminder, redflags_metricevent</p>
-    </div>
-    <div>
-      <strong>Reporting evidence checked</strong>
-      <p>{{ protected_raw_tables|join:", " }}</p>
-    </div>
-    <div>
-      <strong>Selected run notes</strong>
-      {% for note in domain_notes %}
-      <p>{{ note }}</p>
-      {% endfor %}
-    </div>
-  </div>
-</section>
-
-<section class="ida-panel">
-  <p class="ida-eyebrow">Filters</p>
   <form class="ida-form ida-record-form" method="get">
     <div class="ida-field-grid">
       <label class="ida-field">
@@ -76,52 +31,62 @@
         </select>
       </label>
       <label class="ida-field">
-        <span>Source table</span>
+        <span>Table</span>
         <select name="source_table">
           {% for option in table_options %}
           <option value="{{ option.value }}" {% if option.is_selected %}selected{% endif %}>{{ option.label }}</option>
           {% endfor %}
         </select>
       </label>
-      <label class="ida-field">
-        <span>Cleanup status</span>
-        <select name="cleanup_status">
-          {% for option in status_options %}
-          <option value="{{ option.value }}" {% if option.is_selected %}selected{% endif %}>{{ option.label }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label class="ida-field">
-        <span>Run ID</span>
-        <input type="text" name="run_id" value="{{ run_id_filter }}" placeholder="ETL or cleanup run id">
-      </label>
-      <label class="ida-field ida-field-wide">
-        <span>Search</span>
-        <input type="search" name="q" value="{{ search_query }}" placeholder="source key, campaign, doctor, collateral, field rep, activity, red flag, or run id">
-      </label>
     </div>
-    <button class="ida-button" type="submit">Search Records</button>
+    <button class="ida-button" type="submit">Show Summary</button>
   </form>
+</section>
+
+<section class="ida-summary-grid" aria-label="Transfer cleanup totals">
+  <div class="ida-summary-tile">
+    <span>System</span>
+    <strong>{{ selected_domain_label }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Tables shown</span>
+    <strong>{{ summary.table_count }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Reporting keys</span>
+    <strong>{{ summary.total_reporting_keys_for_cleanup }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Still in source</span>
+    <strong>{{ summary.total_source_overlap_keys }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Already removed</span>
+    <strong>{{ summary.total_already_removed_from_source_keys }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Cleanup logs</span>
+    <strong>{{ recent_step_logs|length }}</strong>
+  </div>
 </section>
 
 <section class="ida-section">
   <div class="ida-section-heading">
-    <h2>Transfer summary</h2>
-    <span>{{ summary.table_count }} cleanup source table{{ summary.table_count|pluralize }}</span>
+    <h2>Tables</h2>
+    <span>Records already in reporting and still present in source need cleanup</span>
   </div>
   <div class="ida-scroll">
     <table class="ida-data-table">
       <thead>
         <tr>
           <th>System</th>
-          <th>Source table to clean</th>
+          <th>Source table</th>
           <th>Reporting evidence</th>
-          <th>Activity type</th>
-          <th>Key used</th>
-          <th>Rows</th>
-          <th>Unique keys</th>
-          <th>Latest evidence</th>
-          <th>Cleanup status counts</th>
+          <th>Key</th>
+          <th>In reporting</th>
+          <th>Still in source</th>
+          <th>Already removed</th>
+          <th>Latest cleanup</th>
         </tr>
       </thead>
       <tbody>
@@ -129,79 +94,35 @@
         <tr>
           <td>{{ row.domain_label }}</td>
           <td><code>{{ row.source_table }}</code></td>
-          <td><code>{{ row.raw_table }}</code><br><small>{{ row.reporting_source }}{% if row.legacy_raw_table and row.legacy_raw_table != row.raw_table %} / legacy: {{ row.legacy_raw_table }}{% endif %}</small></td>
-          <td><code>{{ row.activity_type|default:"-" }}</code></td>
-          <td><code>{{ row.key_column }}</code><br><small>source column: {{ row.source_pk_column }}</small></td>
+          <td><code>{{ row.raw_table }}</code><br><small>{{ row.reporting_source }}</small></td>
+          <td><code>{{ row.source_pk_column }}</code></td>
           {% if row.error %}
           <td colspan="4">{{ row.error }}</td>
-          {% else %}
-          <td>{{ row.total_rows }}</td>
-          <td>{{ row.unique_keys }}</td>
-          <td>{{ row.latest_ingested_at|default:"-" }}<br><small>{{ row.latest_ingestion_run_id|default:"" }}</small></td>
+          {% elif row.source_overlap_error %}
+          <td>{{ row.reporting_keys_for_cleanup }}</td>
+          <td colspan="2">{{ row.source_overlap_error }}</td>
           <td>
-            {% for status, count in row.cleanup_counts.items %}
-            <span><code>{{ status }}</code>: {{ count }}</span><br>
-            {% empty %}
-            <span class="ida-muted">No cleanup attempt yet</span>
-            {% endfor %}
+            {% if row.cleanup_report.latest_cleanup_run_id %}
+            <code>{{ row.cleanup_report.latest_cleanup_run_id }}</code>
+            {% else %}
+            <span class="ida-muted">No cleanup run yet</span>
+            {% endif %}
+          </td>
+          {% else %}
+          <td>{{ row.reporting_keys_for_cleanup }}</td>
+          <td><strong>{{ row.source_overlap_keys }}</strong></td>
+          <td>{{ row.already_removed_from_source_keys }}</td>
+          <td>
+            {% if row.cleanup_report.latest_cleanup_run_id %}
+            <code>{{ row.cleanup_report.latest_cleanup_run_id }}</code><br><small>{{ row.cleanup_report.latest_cleanup_at }}</small>
+            {% else %}
+            <span class="ida-muted">No cleanup run yet</span>
+            {% endif %}
           </td>
           {% endif %}
         </tr>
         {% empty %}
-        <tr><td colspan="9">No transfer cleanup source tables are available for this system.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<section class="ida-section">
-  <div class="ida-section-heading">
-    <h2>Transferred records</h2>
-    <span>Showing {{ records.row_count }} row{{ records.row_count|pluralize }}{% if records.is_limited %} of first {{ records.limit }} matched rows{% endif %}</span>
-  </div>
-  {% if records.errors %}
-  <section class="ida-danger-box">
-    <strong>Some tables could not be inspected.</strong>
-    <span>{{ records.errors|join:" " }}</span>
-  </section>
-  {% endif %}
-  <div class="ida-scroll">
-    <table class="ida-data-table">
-      <thead>
-        <tr>
-          <th>System</th>
-          <th>Source / evidence</th>
-          <th>Source key</th>
-          <th>Activity</th>
-          <th>Campaign</th>
-          <th>Doctor / patient</th>
-          <th>Collateral / form</th>
-          <th>Ingest or event time</th>
-          <th>Cleanup status</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in records.rows %}
-        <tr>
-          <td>{{ row.domain|default:"rfa" }}</td>
-          <td><code>{{ row.source_table }}</code><br><small>{{ row.raw_table }}</small></td>
-          <td><code>{{ row.source_pk }}</code><br><small>{{ row.source_pk_column|default:"source_pk_value" }}</small></td>
-          <td><code>{{ row.activity_type|default:"-" }}</code><br><small>{{ row.event_at|default:"" }}</small></td>
-          <td>{{ row.campaign_id|default:"-" }}</td>
-          <td>
-            {{ row.doctor_id|default:row.patient_id|default:"-" }}
-            <br><small>{{ row.doctor_phone|default:row.patient_id|default:"" }}</small>
-          </td>
-          <td>
-            {{ row.collateral_id|default:row.form_id|default:"-" }}
-            <br><small>{{ row.overall_flag_code|default:row.red_flag_id|default:"" }}</small>
-          </td>
-          <td><code>{{ row.ingestion_run_id }}</code><br><small>{{ row.ingested_at|default:row.event_at }}</small></td>
-          <td><strong>{{ row.cleanup_status }}</strong><br><small>{{ row.cleanup_run_id }} {{ row.cleanup_error }}</small></td>
-        </tr>
-        {% empty %}
-        <tr><td colspan="9">No transferred records match these filters.</td></tr>
+        <tr><td colspan="8">No protected transfer tables are available for this system.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -211,12 +132,12 @@
 <section class="ida-panel ida-cleanup-plan">
   <div class="ida-table-meta">
     <div>
-      <p class="ida-eyebrow">Run cleanup</p>
-      <h2>Fetch selected source data, then remove transferred rows upstream</h2>
-      <p class="ida-muted">This runs the selected ETL first. Choosing both systems runs InClinic and RFA/SAPA sequentially; choose one system when you want the shorter operation.</p>
+      <p class="ida-eyebrow">Delete from source</p>
+      <h2>Run selected system cleanup</h2>
+      <p class="ida-muted">This runs the selected ETL, rebuilds reporting evidence, and deletes only transferred keys from all protected source tables for the selected system.</p>
     </div>
     <div class="ida-safety-note">
-      <strong>Confirmation phrase</strong>
+      <strong>Type to confirm</strong>
       <span><code>{{ confirmation_phrase }}</code></span>
     </div>
   </div>
@@ -225,14 +146,11 @@
     <input type="hidden" name="transfer_action" value="run_transfer_cleanup">
     <input type="hidden" name="domain" value="{{ selected_domain }}">
     <input type="hidden" name="source_table" value="{{ selected_source_table }}">
-    <input type="hidden" name="cleanup_status" value="{{ selected_cleanup_status }}">
-    <input type="hidden" name="q" value="{{ search_query }}">
-    <input type="hidden" name="run_id" value="{{ run_id_filter }}">
     <label class="ida-field">
       <span>Confirmation</span>
       <input type="text" name="confirmation" placeholder="{{ confirmation_phrase }}" required>
     </label>
-    <button class="ida-button ida-button-danger" type="submit">Run Selected ETL + Source Cleanup</button>
+    <button class="ida-button ida-button-danger" type="submit">Delete Transferred Source Records For Selected System</button>
   </form>
 </section>
 
@@ -246,8 +164,7 @@
         <tr>
           <th>System</th>
           <th>Table</th>
-          <th>Eligible</th>
-          <th>Manifested</th>
+          <th>In reporting</th>
           <th>Deleted</th>
           <th>Already absent</th>
           <th>Guard blocked</th>
@@ -260,18 +177,17 @@
           <tr>
             <td>{{ domain }}</td>
             <td><code>{{ table }}</code></td>
-            <td>{{ item.rows_copied }}</td>
-            <td>{{ item.rows_manifested }}</td>
+            <td>{{ item.rows_manifested|default:item.rows_copied }}</td>
             <td>{{ item.rows_deleted }}</td>
             <td>{{ item.rows_already_absent }}</td>
             <td>{{ item.rows_guard_blocked }}</td>
             <td>{{ item.rows_failed }}</td>
           </tr>
           {% empty %}
-          <tr><td colspan="8">{{ domain }} returned no table cleanup details.</td></tr>
+          <tr><td colspan="7">{{ domain }} returned no table cleanup details.</td></tr>
           {% endfor %}
         {% empty %}
-        <tr><td colspan="8">No cleanup result was returned.</td></tr>
+        <tr><td colspan="7">No cleanup result was returned.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -281,31 +197,37 @@
 
 <section class="ida-section">
   <div class="ida-section-heading">
-    <h2>Recent cleanup runs</h2>
-    <span>{{ recent_runs|length }} runs</span>
+    <h2>Deletion Logs</h2>
+    <span>{{ recent_step_logs|length }} table log{{ recent_step_logs|length|pluralize }}</span>
   </div>
   <div class="ida-scroll">
     <table class="ida-data-table">
       <thead>
         <tr>
           <th>Cleanup run</th>
+          <th>System</th>
+          <th>Source table</th>
+          <th>Reporting keys</th>
+          <th>Deleted</th>
+          <th>Already absent</th>
+          <th>Failed</th>
           <th>Status</th>
-          <th>Started</th>
-          <th>Ended</th>
-          <th>Domains</th>
         </tr>
       </thead>
       <tbody>
-        {% for run in recent_runs %}
+        {% for log in recent_step_logs %}
         <tr>
-          <td><code>{{ run.cleanup_run_id }}</code></td>
-          <td>{{ run.status }}</td>
-          <td>{{ run.started_at }}</td>
-          <td>{{ run.ended_at }}</td>
-          <td>{{ run.domains }}</td>
+          <td><code>{{ log.cleanup_run_id }}</code><br><small>{{ log.ended_at }}</small></td>
+          <td>{{ log.domain }}</td>
+          <td><code>{{ log.source_table }}</code></td>
+          <td>{{ log.rows_manifested|default:log.rows_copied }}</td>
+          <td>{{ log.rows_deleted|default:"0" }}</td>
+          <td>{{ log.rows_already_absent|default:"0" }}</td>
+          <td>{{ log.rows_failed|default:"0" }}</td>
+          <td><strong>{{ log.status }}</strong><br><small>{{ log.error_message }}</small></td>
         </tr>
         {% empty %}
-        <tr><td colspan="5">No transfer cleanup has run yet.</td></tr>
+        <tr><td colspan="8">No source deletion logs exist for the selected system/table. GitHub deploy ETL does not run source deletion.</td></tr>
         {% endfor %}
       </tbody>
     </table>
