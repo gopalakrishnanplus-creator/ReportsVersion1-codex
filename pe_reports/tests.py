@@ -120,10 +120,12 @@ class PeReportsLogicTests(SimpleTestCase):
             {"campaign_id": "old-v2", "_source_table": "pe_campaign_v2"},
         ]
 
-        self.assertEqual(
-            pe_bronze._active_source_rows(rows, spec, set()),
-            [{"campaign_id": "legacy-campaign", "_source_table": "publisher_campaign"}],
-        )
+        self.assertEqual(pe_bronze._active_source_rows(rows, spec, set()), [])
+        with patch("etl.pe_reports.bronze._legacy_v2_fallback_enabled", return_value=True):
+            self.assertEqual(
+                pe_bronze._active_source_rows(rows, spec, set()),
+                [{"campaign_id": "legacy-campaign", "_source_table": "publisher_campaign"}],
+            )
 
     def test_bronze_merges_fallback_rows_missing_from_v2_snapshot(self):
         spec = SourceTableSpec(
@@ -142,11 +144,16 @@ class PeReportsLogicTests(SimpleTestCase):
 
         self.assertEqual(
             pe_bronze._active_source_rows(rows, spec, {"camp-v2"}),
-            [
-                {"campaign_id": "camp-v2", "_source_table": "pe_campaign_v2"},
-                {"campaign_id": "camp-fallback-only", "_source_table": "publisher_campaign"},
-            ],
+            [{"campaign_id": "camp-v2", "_source_table": "pe_campaign_v2"}],
         )
+        with patch("etl.pe_reports.bronze._legacy_v2_fallback_enabled", return_value=True):
+            self.assertEqual(
+                pe_bronze._active_source_rows(rows, spec, {"camp-v2"}),
+                [
+                    {"campaign_id": "camp-v2", "_source_table": "pe_campaign_v2"},
+                    {"campaign_id": "camp-fallback-only", "_source_table": "publisher_campaign"},
+                ],
+            )
 
     def test_bronze_merges_legacy_share_events_missing_from_v2(self):
         spec = SourceTableSpec(
@@ -166,11 +173,16 @@ class PeReportsLogicTests(SimpleTestCase):
 
         self.assertEqual(
             pe_bronze._active_source_rows(rows, spec, {"v2-share"}),
-            [
-                {"public_id": "v2-share", "shared_at": "2026-06-03 10:00:00", "_source_table": "pe_share_event_v2"},
-                {"public_id": "legacy-live-share", "shared_at": "2026-06-04 19:58:00", "_source_table": "sharing_shareactivity"},
-            ],
+            [{"public_id": "v2-share", "shared_at": "2026-06-03 10:00:00", "_source_table": "pe_share_event_v2"}],
         )
+        with patch("etl.pe_reports.bronze._legacy_v2_fallback_enabled", return_value=True):
+            self.assertEqual(
+                pe_bronze._active_source_rows(rows, spec, {"v2-share"}),
+                [
+                    {"public_id": "v2-share", "shared_at": "2026-06-03 10:00:00", "_source_table": "pe_share_event_v2"},
+                    {"public_id": "legacy-live-share", "shared_at": "2026-06-04 19:58:00", "_source_table": "sharing_shareactivity"},
+                ],
+            )
 
     def test_pipeline_refuses_empty_required_v2_source_counts(self):
         raw_portal = {
@@ -304,7 +316,10 @@ class PeReportsLogicTests(SimpleTestCase):
                 return [{"id": "1", "code": "legacy-video"}]
             return []
 
-        with patch("etl.pe_reports.raw.insert_new_source_rows", return_value=1) as insert_mock, patch(
+        with patch("etl.pe_reports.raw._legacy_v2_fallback_enabled", return_value=True), patch(
+            "etl.pe_reports.raw.insert_new_source_rows",
+            return_value=1,
+        ) as insert_mock, patch(
             "etl.pe_reports.raw.record_v2_current_snapshot"
         ) as snapshot_mock, patch("etl.pe_reports.raw.get_watermark", return_value=None), patch(
             "etl.pe_reports.raw.upsert_watermark"
@@ -344,7 +359,10 @@ class PeReportsLogicTests(SimpleTestCase):
                 return [{"campaign_id": "camp-fallback", "updated_at": "2026-06-04 10:00:00"}]
             return []
 
-        with patch("etl.pe_reports.raw.insert_new_source_rows", return_value=2) as insert_mock, patch(
+        with patch("etl.pe_reports.raw._legacy_v2_fallback_enabled", return_value=True), patch(
+            "etl.pe_reports.raw.insert_new_source_rows",
+            return_value=2,
+        ) as insert_mock, patch(
             "etl.pe_reports.raw.record_v2_current_snapshot"
         ) as snapshot_mock, patch("etl.pe_reports.raw.get_watermark", return_value=None), patch(
             "etl.pe_reports.raw.upsert_watermark"
@@ -387,7 +405,10 @@ class PeReportsLogicTests(SimpleTestCase):
                 return [{"public_id": "legacy-live-share", "shared_at": "2026-06-04 19:58:00"}]
             return []
 
-        with patch("etl.pe_reports.raw.insert_new_source_rows", return_value=2) as insert_mock, patch(
+        with patch("etl.pe_reports.raw._legacy_v2_fallback_enabled", return_value=True), patch(
+            "etl.pe_reports.raw.insert_new_source_rows",
+            return_value=2,
+        ) as insert_mock, patch(
             "etl.pe_reports.raw.record_v2_current_snapshot"
         ) as snapshot_mock, patch("etl.pe_reports.raw.get_watermark", return_value=None), patch(
             "etl.pe_reports.raw.upsert_watermark"

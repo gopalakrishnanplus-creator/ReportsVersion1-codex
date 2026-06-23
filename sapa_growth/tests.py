@@ -110,28 +110,28 @@ class SapaGrowthLogicTests(SimpleTestCase):
         )
         self.assertEqual(sapa_bronze._active_source_rows(rows, "redflags_doctor", ["id"]), rows)
 
-    def test_sapa_roster_specs_prefer_redflag_admin_tables(self):
-        self.assertEqual(MYSQL_TABLE_SPECS["campaign_doctor"].source_table, "campaign_doctor")
-        self.assertIn("doctor_v2", MYSQL_TABLE_SPECS["campaign_doctor"].fallback_source_tables)
+    def test_sapa_roster_specs_prefer_v2_canonical_tables(self):
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_doctor"].source_table, "doctor_v2")
+        self.assertIn("campaign_doctor", MYSQL_TABLE_SPECS["campaign_doctor"].fallback_source_tables)
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_doctor"].current_snapshot)
-        self.assertEqual(MYSQL_TABLE_SPECS["campaign_doctorcampaignenrollment"].source_table, "campaign_doctorcampaignenrollment")
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_doctorcampaignenrollment"].source_table, "doctor_campaign_enrollment_v2")
         self.assertIn(
-            "doctor_campaign_enrollment_v2",
+            "campaign_doctorcampaignenrollment",
             MYSQL_TABLE_SPECS["campaign_doctorcampaignenrollment"].fallback_source_tables,
         )
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_doctorcampaignenrollment"].current_snapshot)
-        self.assertEqual(MYSQL_TABLE_SPECS["campaign_campaign"].source_table, "campaign_campaign")
-        self.assertIn("campaign_v2", MYSQL_TABLE_SPECS["campaign_campaign"].fallback_source_tables)
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_campaign"].source_table, "campaign_v2")
+        self.assertIn("campaign_campaign", MYSQL_TABLE_SPECS["campaign_campaign"].fallback_source_tables)
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_campaign"].current_snapshot)
-        self.assertEqual(MYSQL_TABLE_SPECS["campaign_brand"].source_table, "campaign_brand")
-        self.assertIn("brand_v2", MYSQL_TABLE_SPECS["campaign_brand"].fallback_source_tables)
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_brand"].source_table, "brand_v2")
+        self.assertIn("campaign_brand", MYSQL_TABLE_SPECS["campaign_brand"].fallback_source_tables)
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_brand"].current_snapshot)
-        self.assertEqual(MYSQL_TABLE_SPECS["campaign_fieldrep"].source_table, "campaign_fieldrep")
-        self.assertIn("field_rep_v2", MYSQL_TABLE_SPECS["campaign_fieldrep"].fallback_source_tables)
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_fieldrep"].source_table, "field_rep_v2")
+        self.assertIn("campaign_fieldrep", MYSQL_TABLE_SPECS["campaign_fieldrep"].fallback_source_tables)
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_fieldrep"].current_snapshot)
-        self.assertEqual(MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].source_table, "campaign_campaignfieldrep")
+        self.assertEqual(MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].source_table, "campaign_field_rep_assignment_v2")
         self.assertIn(
-            "campaign_field_rep_assignment_v2",
+            "campaign_campaignfieldrep",
             MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].fallback_source_tables,
         )
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].current_snapshot)
@@ -143,7 +143,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(MYSQL_TABLE_SPECS["redflags_patientsubmission"].lookback_days, 45)
         self.assertEqual(MYSQL_TABLE_SPECS["gnd_gndpatientsubmission"].lookback_days, 45)
 
-    def test_bronze_prefers_admin_source_rows_over_v2_fallback_rows(self):
+    def test_bronze_prefers_v2_source_rows_over_legacy_fallback_rows(self):
         spec = MYSQL_TABLE_SPECS["campaign_campaignfieldrep"]
         rows = [
             {
@@ -167,35 +167,45 @@ class SapaGrowthLogicTests(SimpleTestCase):
         ]
 
         with patch("etl.sapa_growth.bronze.current_v2_snapshot_keys", return_value={"admin-1"}):
-            self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [rows[1]])
+            self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [])
+        with patch("etl.sapa_growth.bronze.current_v2_snapshot_keys", return_value={"old-v2"}):
+            self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [rows[0]])
 
     def test_bronze_uses_fallback_when_primary_snapshot_has_no_current_rows(self):
         spec = MYSQL_TABLE_SPECS["campaign_campaignfieldrep"]
         rows = [
             {
-                "id": "admin-stale",
+                "id": "v2-stale",
                 "field_rep_id": "stale",
-                "campaign_id": "camp-1",
-                "_source_table": "campaign_campaignfieldrep",
-            },
-            {
-                "id": "fallback-v2",
-                "field_rep_id": "142",
                 "campaign_id": "camp-1",
                 "_source_table": "campaign_field_rep_assignment_v2",
             },
+            {
+                "id": "legacy-fallback",
+                "field_rep_id": "142",
+                "campaign_id": "camp-1",
+                "_source_table": "campaign_campaignfieldrep",
+            },
         ]
 
-        with patch("etl.sapa_growth.bronze.current_v2_snapshot_keys", side_effect=[set(), {"fallback-v2"}]):
+        with patch("etl.sapa_growth.bronze.current_v2_snapshot_keys", return_value=set()):
+            self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [])
+        with patch("etl.sapa_growth.bronze._legacy_v2_fallback_enabled", return_value=True), patch(
+            "etl.sapa_growth.bronze.current_v2_snapshot_keys",
+            side_effect=[set(), {"legacy-fallback"}],
+        ):
             self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [rows[1]])
 
     def test_current_snapshot_admin_sources_skip_incremental_watermark_and_fallback_on_empty(self):
         spec = MYSQL_TABLE_SPECS["campaign_doctor"]
-        fallback_rows = [{"id": "doctor-v2-1"}]
-        with patch("etl.sapa_growth.raw.extract_rows", side_effect=[[], fallback_rows]) as extract_mock:
+        fallback_rows = [{"id": "doctor-legacy-1"}]
+        with patch("etl.sapa_growth.raw._legacy_v2_fallback_enabled", return_value=True), patch(
+            "etl.sapa_growth.raw.extract_rows",
+            side_effect=[[], fallback_rows],
+        ) as extract_mock:
             source_table, rows = sapa_raw._extract_spec_rows("campaign_doctor", spec, "2026-06-01 00:00:00")
 
-        self.assertEqual(source_table, "doctor_v2")
+        self.assertEqual(source_table, "campaign_doctor")
         self.assertEqual(rows, fallback_rows)
         self.assertEqual([call.kwargs["watermark_start"] for call in extract_mock.call_args_list], [None, None])
 
@@ -205,7 +215,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
         with patch("etl.sapa_growth.raw.extract_rows", return_value=primary_rows) as extract_mock:
             source_table, rows = sapa_raw._extract_spec_rows("campaign_doctor", spec, "2026-06-01 00:00:00")
 
-        self.assertEqual(source_table, "campaign_doctor")
+        self.assertEqual(source_table, "doctor_v2")
         self.assertEqual(rows, primary_rows)
         self.assertEqual(extract_mock.call_count, 1)
         self.assertIsNone(extract_mock.call_args.kwargs["watermark_start"])

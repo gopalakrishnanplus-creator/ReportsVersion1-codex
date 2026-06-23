@@ -37,25 +37,21 @@ Settings now auto-load variables from a local `.env` file at startup, so `python
 - ETL command: `etl.management.commands.run_etl`
 - Dashboard page: `/` or `/campaign/<brand_campaign_id>/`
 
-### MySQL extraction scope
+### Default source extraction scope after V2 cutover
 
-- **Server 1** (`MYSQL_SERVER1_*`, DB: `healthcare_forms_2`)
-  - `campaign_fieldrep`
-  - `auth_user`
-  - `campaign_campaignfieldrep`
-  - `campaign_campaign`
-- **Server 2** (`MYSQL_SERVER2_*`, DB: `myproject_dev`)
-  - `campaign_management_campaign`
-  - `campaign_management_campaignassignment`
-  - `admin_dashboard_fieldrepcampaign`
-  - `collateral_management_campaigncollateral`
-  - `collateral_management_collateral`
-  - `sharing_management_sharelog`
-  - `sharing_management_collateraltransaction`
-  - `sharing_management_fieldrepresentative`
-  - `doctor_viewer_doctor`
-  - `prefilled_doctor`
-  - `user_management_user`
+The deploy ETL now treats the agreed V2 source tables as canonical by default:
+
+- **InClinic:** `field_rep_v2`, `campaign_v2`, `campaign_field_rep_assignment_v2`, `doctor_field_rep_roster_bridge_v2`, and the `inclinic_*_v2` reporting tables. `campaign_management_campaign` remains V1 because it was explicitly outside the V2 migration plan.
+- **SAPA / RFA:** V2 master/roster tables plus `rfa_activity_event_v2`; old submission, red-flag occurrence, metric-event, and follow-up tables are skipped in normal runs because they are consolidated into `rfa_activity_event_v2`.
+- **Patient Education:** PE V2 tables such as `pe_campaign_v2`, `pe_content_item_v2`, `pe_doctor_share_summary_v2`, `pe_share_event_v2`, `pe_playback_event_v2`, and `pe_banner_click_event_v2`, plus V2 master identity/roster inputs.
+
+Emergency legacy compatibility can be enabled only when intentionally needed:
+
+- `INCLINIC_REPORTING_ENABLE_LEGACY_V2_FALLBACKS=1`
+- `SAPA_ENABLE_LEGACY_V2_FALLBACKS=1`
+- `PE_REPORTS_ENABLE_LEGACY_V2_FALLBACKS=1`
+
+Keep these fallback flags unset/`0` in normal production deploys to avoid re-scanning old V1 tables and to keep GitHub/EC2 ETL runtime aligned with the V2 source cutover.
 
 ## Quick local bootstrap
 
@@ -135,7 +131,7 @@ Key behavior:
   3. `<project>/.env`
 - Runs migrations, collects static files, and restarts `gunicorn`.
 - Runs ETL by default (`python manage.py run_etl`) to create/update RAW→GOLD tables required by the dashboard (`gold_global.campaign_registry`).
-- `RUN_ETL_CONTINUE_ON_ERROR` defaults to `1` so deploy does not fail hard when source MySQL credentials/network are temporarily unavailable.
+- `RUN_ETL_CONTINUE_ON_ERROR` defaults to `0` so deploy fails fast when source extraction or reporting rebuild safety checks fail.
   - Disable with `RUN_ETL_ON_DEPLOY=0`
   - Continue despite ETL failure with `RUN_ETL_CONTINUE_ON_ERROR=1` (not recommended for production)
 
@@ -173,4 +169,3 @@ Campaign state percentages vs overall campaign percentages
 Overall campaign percentage looks at the whole campaign together. State percentage looks only at doctors/activity within each state. A state can perform very differently from the campaign average, so the percentages should not be expected to match.
 
 In plain terms: the KPI tiles show the campaign as one whole picture, while field-rep, weekly, and state views split the same campaign into smaller groups. Once data is split by rep, week, or state, the totals and percentages can naturally differ.
-

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.conf import settings
+
 from etl.pe_reports.control import active_exclusion_rules
 from etl.pe_reports.specs import BRONZE_SCHEMA, MASTER_TABLE_SPECS, PORTAL_TABLE_SPECS, RAW_AUDIT_COLUMNS, RAW_MASTER_SCHEMA, RAW_PORTAL_SCHEMA, SourceTableSpec
 from etl.pe_reports.storage import fetch_table, replace_table
@@ -56,11 +58,15 @@ def _has_logical_key(row: dict[str, Any], key_columns: list[str]) -> bool:
     return any(clean_text(row.get(column)) for column in key_columns)
 
 
+def _legacy_v2_fallback_enabled() -> bool:
+    return bool(settings.PE_REPORTS.get("ENABLE_LEGACY_V2_FALLBACKS", False))
+
+
 def _active_source_rows(rows: list[dict[str, Any]], spec: SourceTableSpec, current_keys: set[str] | None = None) -> list[dict[str, Any]]:
     if spec.source_table.lower().endswith("_v2"):
         v2_rows = [row for row in rows if clean_text(row.get("_source_table")) == spec.source_table]
         active_v2_rows = v2_rows if current_keys is None else [row for row in v2_rows if snapshot_row_key(row, spec.key_columns) in current_keys]
-        if not spec.fallback_source_table:
+        if not spec.fallback_source_table or not _legacy_v2_fallback_enabled():
             return active_v2_rows
         fallback_rows = [row for row in rows if clean_text(row.get("_source_table")) == spec.fallback_source_table]
         active_v2_keys = {

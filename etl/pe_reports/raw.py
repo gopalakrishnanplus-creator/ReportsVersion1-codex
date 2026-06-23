@@ -14,6 +14,10 @@ from etl.pe_reports.utils import clean_text, hash_fields, parse_datetime
 from etl.v2_snapshot import record_v2_current_snapshot
 
 
+def _legacy_v2_fallback_enabled() -> bool:
+    return bool(settings.PE_REPORTS.get("ENABLE_LEGACY_V2_FALLBACKS", False))
+
+
 def _audit_payload(run_id: str, source_system: str, source_table: str, extracted_at: str, values: list[Any]) -> dict[str, Any]:
     return {
         "_ingestion_run_id": run_id,
@@ -77,6 +81,7 @@ def _ingest_specs(
 
     for name, spec in specs.items():
         is_v2_source = spec.source_table.lower().endswith("_v2")
+        allow_legacy_fallback = is_v2_source and bool(spec.fallback_source_table) and _legacy_v2_fallback_enabled()
         lookback_days = spec.lookback_days or int(settings.PE_REPORTS["LOOKBACK_DAYS"])
         watermark_start = None if is_v2_source else _watermark_start(source_name, name, spec.watermark_field, lookback_days)
         try:
@@ -85,9 +90,9 @@ def _ingest_specs(
                 primary_rows = extractor(spec.source_table, spec.columns, spec.watermark_field, watermark_start)
                 source_batches.append((spec.source_table, _filter_source_rows(primary_rows, spec, spec.source_table)))
             except error_type:
-                if not spec.fallback_source_table:
+                if not allow_legacy_fallback:
                     raise
-            if spec.fallback_source_table:
+            if allow_legacy_fallback:
                 try:
                     fallback_rows = extractor(spec.fallback_source_table, spec.columns, spec.watermark_field, None)
                     source_batches.append((spec.fallback_source_table, fallback_rows))

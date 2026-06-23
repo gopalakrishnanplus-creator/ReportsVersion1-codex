@@ -26,6 +26,15 @@ RAW_AUDIT_COLUMNS = [
 
 SCREENING_LOOKBACK_DAYS = 45
 
+LEGACY_ACTIVITY_TABLES_REPLACED_BY_RFA_ACTIVITY_V2 = {
+    "redflags_patientsubmission",
+    "gnd_gndpatientsubmission",
+    "redflags_submissionredflag",
+    "gnd_gndsubmissionredflag",
+    "redflags_metricevent",
+    "redflags_followupreminder",
+}
+
 
 @dataclass(frozen=True)
 class SourceTableSpec:
@@ -41,7 +50,7 @@ class SourceTableSpec:
 
 MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
     "campaign_doctor": SourceTableSpec(
-        source_table="campaign_doctor",
+        source_table="doctor_v2",
         raw_table="campaign_doctor_raw",
         columns=[
             "id",
@@ -60,11 +69,11 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         watermark_field="created_at",
-        fallback_source_tables=("doctor_v2",),
+        fallback_source_tables=("campaign_doctor",),
         current_snapshot=True,
     ),
     "campaign_doctorcampaignenrollment": SourceTableSpec(
-        source_table="campaign_doctorcampaignenrollment",
+        source_table="doctor_campaign_enrollment_v2",
         raw_table="campaign_doctorcampaignenrollment_raw",
         columns=[
             "campaign_id",
@@ -78,11 +87,11 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["campaign_id", "doctor_id"],
         watermark_field="registered_at",
-        fallback_source_tables=("doctor_campaign_enrollment_v2",),
+        fallback_source_tables=("campaign_doctorcampaignenrollment",),
         current_snapshot=True,
     ),
     "campaign_campaign": SourceTableSpec(
-        source_table="campaign_campaign",
+        source_table="campaign_v2",
         raw_table="campaign_campaign_raw",
         columns=[
             "id",
@@ -101,19 +110,19 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         watermark_field="updated_at",
-        fallback_source_tables=("campaign_v2",),
+        fallback_source_tables=("campaign_campaign",),
         current_snapshot=True,
     ),
     "campaign_brand": SourceTableSpec(
-        source_table="campaign_brand",
+        source_table="brand_v2",
         raw_table="campaign_brand_raw",
         columns=["id", "name"],
         key_columns=["id"],
-        fallback_source_tables=("brand_v2",),
+        fallback_source_tables=("campaign_brand",),
         current_snapshot=True,
     ),
     "campaign_fieldrep": SourceTableSpec(
-        source_table="campaign_fieldrep",
+        source_table="field_rep_v2",
         raw_table="campaign_fieldrep_raw",
         columns=[
             "id",
@@ -129,15 +138,15 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         ],
         key_columns=["id"],
         watermark_field="updated_at",
-        fallback_source_tables=("field_rep_v2",),
+        fallback_source_tables=("campaign_fieldrep",),
         current_snapshot=True,
     ),
     "campaign_campaignfieldrep": SourceTableSpec(
-        source_table="campaign_campaignfieldrep",
+        source_table="campaign_field_rep_assignment_v2",
         raw_table="campaign_campaignfieldrep_raw",
         columns=["id", "field_rep_id", "created_at", "campaign_id"],
         key_columns=["id"],
-        fallback_source_tables=("campaign_field_rep_assignment_v2",),
+        fallback_source_tables=("campaign_campaignfieldrep",),
         current_snapshot=True,
     ),
     "rfa_activity_event": SourceTableSpec(

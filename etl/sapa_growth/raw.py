@@ -9,7 +9,14 @@ from django.conf import settings
 from etl.integrations.sapa_growth.learndash import LearnDashClient, LearnDashIntegrationError
 from etl.sapa_growth.control import get_watermark, log_step, upsert_watermark
 from etl.sapa_growth.mysql import SapaMySQLExtractionError, extract_rows
-from etl.sapa_growth.specs import API_TABLE_SPECS, MYSQL_TABLE_SPECS, RAW_API_SCHEMA, RAW_AUDIT_COLUMNS, RAW_MYSQL_SCHEMA
+from etl.sapa_growth.specs import (
+    API_TABLE_SPECS,
+    LEGACY_ACTIVITY_TABLES_REPLACED_BY_RFA_ACTIVITY_V2,
+    MYSQL_TABLE_SPECS,
+    RAW_API_SCHEMA,
+    RAW_AUDIT_COLUMNS,
+    RAW_MYSQL_SCHEMA,
+)
 from etl.sapa_growth.storage import ensure_text_table, fetch_all, insert_new_source_rows, qident, table_exists
 from etl.v2_snapshot import record_v2_current_snapshot
 from sapa_growth.logic import clean_text, hash_fields, normalize_phone, parse_datetime
@@ -42,6 +49,10 @@ def _watermark_start(source_name: str, entity_name: str, watermark_field: str | 
     return (parsed - timedelta(days=lookback_days)).isoformat(sep=" ")
 
 
+def _legacy_v2_fallback_enabled() -> bool:
+    return bool(settings.SAPA_ETL.get("ENABLE_LEGACY_V2_FALLBACKS", False))
+
+
 def ensure_raw_tables() -> None:
     for spec in MYSQL_TABLE_SPECS.values():
         ensure_text_table(RAW_MYSQL_SCHEMA, spec.raw_table, spec.columns + RAW_AUDIT_COLUMNS)
@@ -51,7 +62,8 @@ def ensure_raw_tables() -> None:
 
 def _extract_spec_rows(name: str, spec, watermark_start: str | None) -> tuple[str, list[dict[str, Any]]]:
     errors: list[str] = []
-    candidates = (spec.source_table, *spec.fallback_source_tables)
+    fallback_source_tables = spec.fallback_source_tables if _legacy_v2_fallback_enabled() else ()
+    candidates = (spec.source_table, *fallback_source_tables)
     for index, source_table in enumerate(candidates):
         uses_current_snapshot = _uses_current_snapshot(spec, source_table)
         try:
@@ -85,7 +97,22 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
     max_watermarks: dict[str, str] = {}
 
     for name, spec in MYSQL_TABLE_SPECS.items():
-        candidate_source_tables = (spec.source_table, *spec.fallback_source_tables)
+        if name in LEGACY_ACTIVITY_TABLES_REPLACED_BY_RFA_ACTIVITY_V2 and not _legacy_v2_fallback_enabled():
+            counts[name] = 0
+            skipped_counts[name] = 0
+            extracted_counts[name] = 0
+            log_step(
+                run_id,
+                "extract_mysql",
+                name,
+                "SKIPPED",
+                rows_read=0,
+                rows_written=0,
+                error_message="Replaced by rfa_activity_event_v2; set SAPA_ENABLE_LEGACY_V2_FALLBACKS=1 to re-enable legacy extract.",
+            )
+            continue
+        fallback_source_tables = spec.fallback_source_tables if _legacy_v2_fallback_enabled() else ()
+        candidate_source_tables = (spec.source_table, *fallback_source_tables)
         watermark_start = _watermark_start("mysql", name, spec.watermark_field, spec.lookback_days)
         try:
             source_table, rows = _extract_spec_rows(name, spec, watermark_start)

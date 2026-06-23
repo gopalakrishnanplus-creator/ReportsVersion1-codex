@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -70,6 +71,16 @@ def _clean(value: Any) -> str:
 
 def _truthy(value: Any) -> bool:
     return _clean(value).lower() in {"1", "true", "t", "yes", "y"}
+
+
+def _legacy_v2_fallback_enabled() -> bool:
+    return os.environ.get("INCLINIC_REPORTING_ENABLE_LEGACY_V2_FALLBACKS", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
 
 
 def _num(value: Any) -> str:
@@ -797,6 +808,8 @@ def _identity_state_by_campaign_fieldrep(source: dict[str, list[dict[str, Any]]]
 
 
 def _field_rep_state_fallback_by_id() -> dict[str, str]:
+    if not _legacy_v2_fallback_enabled():
+        return {}
     fallback: dict[str, str] = {}
     source_tables = (
         ("raw_server1", "campaign_fieldrep", "id", ("state",)),
@@ -937,21 +950,27 @@ def _load_source_from_raw_v2() -> dict[str, list[dict[str, Any]]]:
 def _load_source_from_mysql_v2() -> dict[str, list[dict[str, Any]]]:
     rfa = settings.MYSQL_SERVER_1
     inclinic = settings.MYSQL_SERVER_2
-    auth_rows = _fetch_optional_table(rfa, RFA_DEFAULT_DB, "auth_user")
-    field_rep_rows = _merge_field_rep_sources(
-        _fetch_table(rfa, RFA_DEFAULT_DB, "field_rep_v2"),
-        _fetch_optional_table(rfa, RFA_DEFAULT_DB, "campaign_fieldrep"),
-        auth_rows,
-    )
+    if _legacy_v2_fallback_enabled():
+        auth_rows = _fetch_optional_table(rfa, RFA_DEFAULT_DB, "auth_user")
+        field_rep_rows = _merge_field_rep_sources(
+            _fetch_table(rfa, RFA_DEFAULT_DB, "field_rep_v2"),
+            _fetch_optional_table(rfa, RFA_DEFAULT_DB, "campaign_fieldrep"),
+            auth_rows,
+        )
+    else:
+        field_rep_rows = _fetch_table(rfa, RFA_DEFAULT_DB, "field_rep_v2")
     inclinic_campaign_rows = (
         _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_v2")
         or _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "campaign_management_campaign")
     )
-    campaign_collateral_rows = _merge_campaign_collateral_sources(
-        _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_collateral_v2"),
-        _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "collateral_management_campaigncollateral"),
-        inclinic_campaign_rows,
-    )
+    if _legacy_v2_fallback_enabled():
+        campaign_collateral_rows = _merge_campaign_collateral_sources(
+            _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_collateral_v2"),
+            _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "collateral_management_campaigncollateral"),
+            inclinic_campaign_rows,
+        )
+    else:
+        campaign_collateral_rows = _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_collateral_v2")
     return {
         "campaign_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "campaign_v2"),
         "field_rep_v2": field_rep_rows,

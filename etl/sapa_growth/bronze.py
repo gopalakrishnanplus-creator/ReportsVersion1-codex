@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from etl.sapa_growth.specs import API_TABLE_SPECS, BRONZE_SCHEMA, MYSQL_TABLE_SPECS, RAW_AUDIT_COLUMNS, RAW_API_SCHEMA, RAW_MYSQL_SCHEMA
+from django.conf import settings
+
+from etl.sapa_growth.specs import (
+    API_TABLE_SPECS,
+    BRONZE_SCHEMA,
+    LEGACY_ACTIVITY_TABLES_REPLACED_BY_RFA_ACTIVITY_V2,
+    MYSQL_TABLE_SPECS,
+    RAW_AUDIT_COLUMNS,
+    RAW_API_SCHEMA,
+    RAW_MYSQL_SCHEMA,
+)
 from etl.sapa_growth.storage import fetch_table, replace_table
 from etl.v2_snapshot import current_v2_snapshot_keys, snapshot_row_key
 from sapa_growth.logic import clean_text, hash_fields, parse_date, parse_datetime
@@ -68,6 +78,10 @@ def _active_source_rows(
     return [row for row in rows if snapshot_row_key(row, key_columns) in current_keys]
 
 
+def _legacy_v2_fallback_enabled() -> bool:
+    return bool(settings.SAPA_ETL.get("ENABLE_LEGACY_V2_FALLBACKS", False))
+
+
 def _rows_for_source_table(rows: list[dict[str, Any]], source_table: str) -> list[dict[str, Any]]:
     source_rows = [row for row in rows if clean_text(row.get("_source_table")) == source_table]
     if source_rows or any(clean_text(row.get("_source_table")) for row in rows):
@@ -76,7 +90,8 @@ def _rows_for_source_table(rows: list[dict[str, Any]], source_table: str) -> lis
 
 
 def _active_source_rows_for_spec(rows: list[dict[str, Any]], spec) -> list[dict[str, Any]]:
-    for source_table in (spec.source_table, *spec.fallback_source_tables):
+    fallback_source_tables = spec.fallback_source_tables if _legacy_v2_fallback_enabled() else ()
+    for source_table in (spec.source_table, *fallback_source_tables):
         source_rows = _rows_for_source_table(rows, source_table)
         if not source_rows:
             continue
@@ -94,9 +109,6 @@ def _active_source_rows_for_spec(rows: list[dict[str, Any]], spec) -> list[dict[
 def build_bronze() -> dict[str, int]:
     counts: dict[str, int] = {}
     for name, spec in MYSQL_TABLE_SPECS.items():
-        raw_rows = fetch_table(RAW_MYSQL_SCHEMA, spec.raw_table)
-        raw_rows = _active_source_rows_for_spec(raw_rows, spec)
-        output_rows = _dedup_rows(raw_rows, spec.key_columns, spec.watermark_field, spec.columns, name)
         extra_columns = []
         if name in {"redflags_patientsubmission", "gnd_gndpatientsubmission"}:
             extra_columns.append("submitted_at_parseable")
@@ -111,6 +123,20 @@ def build_bronze() -> dict[str, int]:
             )
         if name == "redflags_metricevent":
             extra_columns.append("ts_parseable")
+
+        if name in LEGACY_ACTIVITY_TABLES_REPLACED_BY_RFA_ACTIVITY_V2 and not _legacy_v2_fallback_enabled():
+            replace_table(
+                BRONZE_SCHEMA,
+                name,
+                spec.columns + RAW_AUDIT_COLUMNS + ["_bronze_deduped_at", "_bronze_source_raw_ingested_at"] + extra_columns,
+                [],
+            )
+            counts[name] = 0
+            continue
+
+        raw_rows = fetch_table(RAW_MYSQL_SCHEMA, spec.raw_table)
+        raw_rows = _active_source_rows_for_spec(raw_rows, spec)
+        output_rows = _dedup_rows(raw_rows, spec.key_columns, spec.watermark_field, spec.columns, name)
         replace_table(
             BRONZE_SCHEMA,
             name,
