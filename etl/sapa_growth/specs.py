@@ -157,6 +157,7 @@ MYSQL_TABLE_SPECS: dict[str, SourceTableSpec] = {
             "overall_flag_code",
             "event_payload_json",
             "source_table",
+            "source_pk_column",
             "source_pk_value",
             "source_created_at",
             "source_updated_at",
