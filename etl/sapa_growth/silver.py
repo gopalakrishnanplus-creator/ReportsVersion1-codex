@@ -596,8 +596,15 @@ def _merge_legacy_rows(source_rows: list[dict[str, Any]], activity_rows: list[di
     return list(merged.values())
 
 
+def _screening_identity_submitted_at(value: Any) -> str | None:
+    parsed = parse_datetime(value)
+    if parsed:
+        return parsed.replace(microsecond=0).isoformat(sep=" ")
+    return clean_text(value)
+
+
 def _screening_identity(row: dict[str, Any]) -> str:
-    submitted_at = clean_text(row.get("submitted_at"))
+    submitted_at = _screening_identity_submitted_at(row.get("submitted_at"))
     doctor_key = clean_text(row.get("doctor_key"))
     patient_id = clean_text(row.get("patient_id"))
     form_identifier = clean_text(row.get("form_identifier"))

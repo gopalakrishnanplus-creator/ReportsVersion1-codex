@@ -475,7 +475,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
                     "patient_id": "PAT001",
                     "form_identifier": "FORM001",
                     "language_code": "en",
-                    "submitted_at": "2026-06-13 09:55:00",
+                    "submitted_at": "2026-06-13 09:55:00.786544",
                     "overall_flag_code": "",
                     "is_red_tag": "false",
                     "is_yellow_tag": "false",
@@ -490,7 +490,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
                     "patient_id": "PAT001",
                     "form_identifier": "FORM001",
                     "language_code": "en",
-                    "submitted_at": "2026-06-13 09:55:00",
+                    "submitted_at": "2026-06-13 09:55:00.786544",
                     "overall_flag_code": "red",
                     "is_red_tag": "true",
                     "is_yellow_tag": "false",
@@ -517,7 +517,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
                     "patient_id": "PAT001",
                     "form_identifier": "",
                     "language_code": "",
-                    "submitted_at": "2026-06-13 09:55:00",
+                    "submitted_at": "2026-06-13 09:55:00.795434",
                     "overall_flag_code": "",
                     "is_red_tag": "false",
                     "is_yellow_tag": "false",
@@ -532,7 +532,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
                     "patient_id": "PAT001",
                     "form_identifier": "FORM001",
                     "language_code": "en",
-                    "submitted_at": "2026-06-13 09:55:00",
+                    "submitted_at": "2026-06-13 09:55:00.786544",
                     "overall_flag_code": "yellow",
                     "is_red_tag": "false",
                     "is_yellow_tag": "true",
@@ -546,6 +546,44 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(rows[0]["is_yellow_tag"], "true")
         self.assertIs(source_index[("gnd_gndpatientsubmission", "native-gnd-1")][0], rows[0])
         self.assertIs(source_index[("gnd_gndpatientsubmission", "activity-gnd-1")][0], rows[0])
+
+    def test_screening_fact_keeps_same_patient_forms_in_different_seconds(self):
+        rows, _ = _dedupe_screening_rows(
+            [
+                {
+                    "submission_key": "gnd_gndpatientsubmission:gnd-1:campaign:camp-a",
+                    "source_table": "gnd_gndpatientsubmission",
+                    "source_submission_id": "gnd-1",
+                    "doctor_key": "DOC001::campaign:camp-a",
+                    "campaign_key": "camp-a",
+                    "patient_id": "PAT001",
+                    "form_identifier": "GND002",
+                    "language_code": "en",
+                    "submitted_at": "2026-06-13 09:55:00.795434",
+                    "overall_flag_code": "yellow",
+                    "is_red_tag": "false",
+                    "is_yellow_tag": "true",
+                    "is_green_tag": "false",
+                },
+                {
+                    "submission_key": "gnd_gndpatientsubmission:gnd-2:campaign:camp-a",
+                    "source_table": "gnd_gndpatientsubmission",
+                    "source_submission_id": "gnd-2",
+                    "doctor_key": "DOC001::campaign:camp-a",
+                    "campaign_key": "camp-a",
+                    "patient_id": "PAT001",
+                    "form_identifier": "GND002",
+                    "language_code": "en",
+                    "submitted_at": "2026-06-13 09:55:01.001000",
+                    "overall_flag_code": "yellow",
+                    "is_red_tag": "false",
+                    "is_yellow_tag": "true",
+                    "is_green_tag": "false",
+                },
+            ]
+        )
+
+        self.assertEqual(len(rows), 2)
 
     def test_filter_rows_matches_normalized_campaign_route_keys(self):
         rows = [
