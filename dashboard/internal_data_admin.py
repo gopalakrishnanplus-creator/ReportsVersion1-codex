@@ -86,7 +86,7 @@ TRANSFER_CLEANUP_DOMAIN_LABELS = {
 }
 TRANSFER_CLEANUP_DOMAIN_NOTES = {
     "inclinic": "Deletes only transferred collateral transaction/activity rows from InClinic source tables.",
-    "rfa": "Deletes only transferred patient submission and submission-red-flag rows from SAPA/RFA source tables.",
+    "rfa": "Deletes only transferred RFA V2 activity rows plus patient submission and submission-red-flag rows from SAPA/RFA source tables.",
 }
 INCLINIC_TRANSFER_CLEANUP_ALLOWED_SOURCE_TABLES = frozenset(spec.source_table for spec in INCLINIC_SPECS)
 INCLINIC_TRANSFER_CLEANUP_ALLOWED_RAW_TABLES = frozenset((spec.raw_schema, spec.raw_table) for spec in INCLINIC_SPECS)
@@ -103,6 +103,7 @@ RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA = "raw_sapa_mysql"
 RFA_TRANSFER_CLEANUP_V2_RAW_TABLE = "rfa_activity_event_raw"
 RFA_TRANSFER_CLEANUP_V2_SOURCE_TABLE = "rfa_activity_event_v2"
 RFA_TRANSFER_CLEANUP_ACTIVITY_TYPES = {
+    "rfa_activity_event_v2": "all_rfa_activity_events",
     "redflags_patientsubmission": "rfa_patient_submission",
     "gnd_gndpatientsubmission": "gnd_patient_submission",
     "redflags_submissionredflag": "rfa_submission_red_flag",
@@ -718,12 +719,14 @@ def _rfa_transfer_cleanup_assert_scope() -> None:
     source_tables = {spec.source_table for spec in RFA_SPECS}
     raw_tables = {(spec.raw_schema, spec.raw_table) for spec in RFA_SPECS}
     expected_source_tables = {
+        "rfa_activity_event_v2",
         "redflags_patientsubmission",
         "gnd_gndpatientsubmission",
         "redflags_submissionredflag",
         "gnd_gndsubmissionredflag",
     }
     expected_raw_tables = {
+        ("raw_sapa_mysql", "rfa_activity_event_raw"),
         ("raw_sapa_mysql", "redflags_patientsubmission_raw"),
         ("raw_sapa_mysql", "gnd_gndpatientsubmission_raw"),
         ("raw_sapa_mysql", "redflags_submissionredflag_raw"),
@@ -792,6 +795,7 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
     use_v2 = _rfa_transfer_cleanup_v2_usable()
     v2_columns = _rfa_transfer_cleanup_v2_columns() if use_v2 else set()
     for spec in RFA_SPECS:
+        is_activity_event_v2 = spec.source_table == RFA_TRANSFER_CLEANUP_V2_SOURCE_TABLE
         row = {
             "domain": "rfa",
             "domain_label": TRANSFER_CLEANUP_DOMAIN_LABELS["rfa"],
@@ -803,9 +807,9 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
                 else f"{spec.raw_schema}.{spec.raw_table}"
             ),
             "legacy_raw_table": f"{spec.raw_schema}.{spec.raw_table}",
-            "key_column": "source_pk_value" if use_v2 else spec.key_column,
+            "key_column": spec.key_column if is_activity_event_v2 or not use_v2 else "source_pk_value",
             "source_pk_column": spec.key_column,
-            "reporting_source": "V2 activity events" if use_v2 else "Legacy RAW table",
+            "reporting_source": "RFA V2 activity table" if is_activity_event_v2 and use_v2 else "V2 activity events" if use_v2 else "Legacy RAW table",
             "total_rows": 0,
             "unique_keys": 0,
             "latest_ingested_at": "",
@@ -815,23 +819,28 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
         }
         if use_v2:
             latest_expr = '"event_at"' if "event_at" in v2_columns else '"_ingested_at"'
+            key_column = spec.key_column if is_activity_event_v2 else "source_pk_value"
+            source_filter = sql.SQL("") if is_activity_event_v2 else sql.SQL('AND "source_table" = %s')
+            source_params = [] if is_activity_event_v2 else [spec.source_table]
             count_rows = _fetch_dicts(
                 sql.SQL(
                     """
                     SELECT
                         COUNT(*)::text AS total_rows,
-                        COUNT(DISTINCT NULLIF("source_pk_value", ''))::text AS unique_keys,
+                        COUNT(DISTINCT NULLIF({key_column}, ''))::text AS unique_keys,
                         COALESCE(MAX({latest_expr}), '') AS latest_ingested_at
                     FROM {schema}.{table}
-                    WHERE "source_table" = %s
-                      AND COALESCE("source_pk_value", '') <> ''
+                    WHERE COALESCE({key_column}, '') <> ''
+                      {source_filter}
                     """
                 ).format(
+                    key_column=sql.Identifier(key_column),
                     latest_expr=sql.SQL(latest_expr),
                     schema=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA),
                     table=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_TABLE),
+                    source_filter=source_filter,
                 ),
-                [spec.source_table],
+                source_params,
             )
             if count_rows:
                 row["total_rows"] = int(count_rows[0].get("total_rows") or 0)
@@ -845,15 +854,18 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
                     """
                     SELECT COALESCE("_ingestion_run_id", '') AS latest_ingestion_run_id
                     FROM {schema}.{table}
-                    WHERE "source_table" = %s
+                    WHERE COALESCE({key_column}, '') <> ''
+                      {source_filter}
                     ORDER BY "_ingested_at" DESC NULLS LAST
                     LIMIT 1
                     """
                 ).format(
+                    key_column=sql.Identifier(key_column),
                     schema=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA),
                     table=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_TABLE),
+                    source_filter=source_filter,
                 ),
-                [spec.source_table],
+                source_params,
             )
             if latest_run_rows:
                 row["latest_ingestion_run_id"] = latest_run_rows[0].get("latest_ingestion_run_id") or ""
@@ -981,22 +993,27 @@ def _rfa_transfer_cleanup_raw_records_v2(
     rows: list[dict[str, Any]] = []
 
     for spec in specs:
+        is_activity_event_v2 = spec.source_table == RFA_TRANSFER_CLEANUP_V2_SOURCE_TABLE
+        key_column = spec.key_column if is_activity_event_v2 else "source_pk_value"
         where_parts = [
-            sql.SQL("r.\"source_table\" = %s"),
-            sql.SQL("COALESCE(r.\"source_pk_value\", '') <> ''"),
+            sql.SQL("COALESCE(r.{key_column}, '') <> ''").format(key_column=sql.Identifier(key_column)),
         ]
         params: list[Any] = [
             spec.source_table,
             f"{RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA}.{RFA_TRANSFER_CLEANUP_V2_RAW_TABLE}",
             spec.source_table,
-            spec.source_table,
         ]
+        if not is_activity_event_v2:
+            where_parts.append(sql.SQL("r.\"source_table\" = %s"))
+            params.append(spec.source_table)
 
         if cleaned_search:
             searchable_fields = [
+                spec.key_column,
                 "source_table",
                 "source_pk_column",
                 "source_pk_value",
+                "activity_event_uuid",
                 "activity_type",
                 "patient_id_raw",
                 "doctor_uuid",
@@ -1035,7 +1052,7 @@ def _rfa_transfer_cleanup_raw_records_v2(
             SELECT
                 %s::text AS source_table,
                 %s::text AS raw_table,
-                COALESCE(r."source_pk_value", '') AS source_pk,
+                COALESCE(r.{key_column}, '') AS source_pk,
                 {source_pk_column},
                 {activity_type},
                 {event_at},
@@ -1058,7 +1075,7 @@ def _rfa_transfer_cleanup_raw_records_v2(
                 FROM control.transfer_cleanup_manifest m
                 WHERE m.domain = 'rfa'
                   AND m.source_table = %s
-                  AND m.source_pk = r."source_pk_value"
+                  AND m.source_pk = r.{key_column}
                 ORDER BY manifest_id DESC
                 LIMIT 1
             ) m ON TRUE
@@ -1067,7 +1084,12 @@ def _rfa_transfer_cleanup_raw_records_v2(
             LIMIT %s
             """
         ).format(
-            source_pk_column=_rfa_transfer_cleanup_v2_sql_field(columns, "source_pk_column"),
+            key_column=sql.Identifier(key_column),
+            source_pk_column=(
+                sql.SQL("'activity_event_uuid'::text AS source_pk_column")
+                if is_activity_event_v2
+                else _rfa_transfer_cleanup_v2_sql_field(columns, "source_pk_column")
+            ),
             activity_type=_rfa_transfer_cleanup_v2_sql_field(columns, "activity_type"),
             event_at=_rfa_transfer_cleanup_v2_sql_field(columns, "event_at"),
             patient_id=_rfa_transfer_cleanup_v2_sql_field(columns, "patient_id_raw", "patient_id"),

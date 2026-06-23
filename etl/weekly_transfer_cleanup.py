@@ -23,6 +23,8 @@ INCLINIC_V2_TRANSACTION_RAW_TABLE = "inclinic_collateral_transaction_v2"
 INCLINIC_LEGACY_TRANSACTION_SOURCE_TABLE = "sharing_management_collateraltransaction"
 RFA_ACTIVITY_EVENT_RAW_SCHEMA = "raw_sapa_mysql"
 RFA_ACTIVITY_EVENT_RAW_TABLE = "rfa_activity_event_raw"
+RFA_ACTIVITY_EVENT_SOURCE_TABLE = "rfa_activity_event_v2"
+RFA_ACTIVITY_EVENT_KEY_COLUMN = "activity_event_uuid"
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,15 @@ INCLINIC_SPECS: tuple[CleanupSpec, ...] = (
 )
 
 RFA_SPECS: tuple[CleanupSpec, ...] = (
+    CleanupSpec(
+        domain="rfa",
+        source_table=RFA_ACTIVITY_EVENT_SOURCE_TABLE,
+        raw_schema=RFA_ACTIVITY_EVENT_RAW_SCHEMA,
+        raw_table=RFA_ACTIVITY_EVENT_RAW_TABLE,
+        key_column=RFA_ACTIVITY_EVENT_KEY_COLUMN,
+        mysql_settings_name="SAPA_MYSQL",
+        delete_all_transferred_keys=True,
+    ),
     CleanupSpec(
         domain="rfa",
         source_table="redflags_submissionredflag",
@@ -353,6 +364,8 @@ def _raw_rows_from_rfa_activity_event(spec: CleanupSpec) -> list[dict[str, Any]]
     if not spec.delete_all_transferred_keys:
         return []
     if spec.domain != "rfa":
+        return []
+    if spec.source_table == RFA_ACTIVITY_EVENT_SOURCE_TABLE:
         return []
     if not _postgres_table_exists(RFA_ACTIVITY_EVENT_RAW_SCHEMA, RFA_ACTIVITY_EVENT_RAW_TABLE):
         return []

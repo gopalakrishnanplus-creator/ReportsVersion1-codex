@@ -1839,6 +1839,23 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertIn('"source_table" = %s', v2_query)
         self.assertEqual(v2_params, ["redflags_patientsubmission"])
 
+        rfa_v2_spec = next(spec for spec in weekly_transfer_cleanup.RFA_SPECS if spec.source_table == "rfa_activity_event_v2")
+        with patch(
+            "etl.weekly_transfer_cleanup.fetchall",
+            side_effect=[
+                [{"exists_flag": True}],
+                [{"column_name": "activity_event_uuid"}],
+                [{"source_pk": "activity-1", "guard_value": None}],
+            ],
+        ) as fetch_mock:
+            rows = weekly_transfer_cleanup._raw_rows_for_cleanup(rfa_v2_spec, "etl-run-1")
+
+        self.assertEqual([row["source_pk"] for row in rows], ["activity-1"])
+        rfa_v2_query, rfa_v2_params = fetch_mock.call_args_list[2].args
+        self.assertIn("rfa_activity_event_raw", rfa_v2_query)
+        self.assertIn('"activity_event_uuid" AS source_pk', rfa_v2_query)
+        self.assertEqual(rfa_v2_params, [])
+
         inclinic_spec = weekly_transfer_cleanup.INCLINIC_SPECS[0]
         with patch(
             "etl.weekly_transfer_cleanup.fetchall",
