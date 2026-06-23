@@ -426,11 +426,11 @@ def _activity_submission_source_table(row: dict[str, Any], payload: dict[str, An
     return "redflags_patientsubmission"
 
 
-def _is_submitted_form_activity(row: dict[str, Any], payload: dict[str, Any], source_table: str) -> bool:
+def _is_submitted_form_activity(row: dict[str, Any], payload: dict[str, Any], source_table: str, activity_slug: str = "") -> bool:
     event_type = _activity_form_event_type(row, payload)
     if event_type in {"urlresolved", "urlopened", "urlopen"}:
         return False
-    if source_table == "redflags_patient_form_activity" or event_type:
+    if source_table == "redflags_patient_form_activity" or activity_slug in {"rfapatientsubmission", "gndpatientsubmission"} or event_type:
         return event_type == "formsubmitted"
     return True
 
@@ -488,7 +488,7 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
         if source_table not in legacy_rows:
             continue
         if source_table == "redflags_patientsubmission":
-            if not _is_submitted_form_activity(row, payload, clean_text(row.get("source_table")) or source_table):
+            if not _is_submitted_form_activity(row, payload, clean_text(row.get("source_table")) or source_table, activity_slug):
                 continue
             legacy_rows[source_table].append(
                 {
@@ -504,7 +504,7 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
                 }
             )
         elif source_table == "gnd_gndpatientsubmission":
-            if not _is_submitted_form_activity(row, payload, clean_text(row.get("source_table")) or source_table):
+            if not _is_submitted_form_activity(row, payload, clean_text(row.get("source_table")) or source_table, activity_slug):
                 continue
             legacy_rows[source_table].append(
                 {
@@ -594,6 +594,80 @@ def _merge_legacy_rows(source_rows: list[dict[str, Any]], activity_rows: list[di
                 combined[field] = value
         merged[key] = combined
     return list(merged.values())
+
+
+def _screening_identity(row: dict[str, Any]) -> str:
+    submitted_at = clean_text(row.get("submitted_at"))
+    doctor_key = clean_text(row.get("doctor_key"))
+    patient_id = clean_text(row.get("patient_id"))
+    form_identifier = clean_text(row.get("form_identifier"))
+    source_table = clean_text(row.get("source_table")) or ""
+    campaign_token = _norm_id(row.get("campaign_key"))
+    if submitted_at and doctor_key and patient_id:
+        return "|".join(
+            [
+                "submitted",
+                campaign_token,
+                source_table,
+                doctor_key,
+                patient_id,
+                submitted_at,
+            ]
+        )
+    if submitted_at and doctor_key and form_identifier:
+        return "|".join(
+            [
+                "submitted_form",
+                campaign_token,
+                source_table,
+                doctor_key,
+                form_identifier,
+                submitted_at,
+            ]
+        )
+    return "|".join(
+        [
+            "source",
+            campaign_token,
+            doctor_key or "",
+            source_table,
+            clean_text(row.get("source_submission_id")) or clean_text(row.get("submission_key")) or "",
+        ]
+    )
+
+
+def _merge_screening_row(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
+    for field, value in incoming.items():
+        if clean_text(existing.get(field)) is None and clean_text(value) is not None:
+            existing[field] = value
+    for flag in ("is_red_tag", "is_yellow_tag", "is_green_tag"):
+        if incoming.get(flag) == "true":
+            existing[flag] = "true"
+    if not clean_text(existing.get("overall_flag_code")) and clean_text(incoming.get("overall_flag_code")):
+        existing["overall_flag_code"] = incoming["overall_flag_code"]
+
+
+def _dedupe_screening_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[tuple[str, str], list[dict[str, Any]]]]:
+    by_identity: dict[str, dict[str, Any]] = {}
+    ordered_rows: list[dict[str, Any]] = []
+    source_index: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+
+    for row in rows:
+        identity = _screening_identity(row)
+        existing = by_identity.get(identity)
+        if existing is None:
+            existing = dict(row)
+            by_identity[identity] = existing
+            ordered_rows.append(existing)
+        else:
+            _merge_screening_row(existing, row)
+
+        source_table = clean_text(row.get("source_table"))
+        source_submission_id = clean_text(row.get("source_submission_id"))
+        if source_table and source_submission_id:
+            source_index[(source_table, source_submission_id)].append(existing)
+
+    return ordered_rows, source_index
 
 
 def build_silver(run_id: str) -> dict[str, Any]:
@@ -1257,7 +1331,6 @@ def build_silver(run_id: str) -> dict[str, Any]:
     )
 
     screening_rows = []
-    screening_source_index: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for source_table, source_rows in (("redflags_patientsubmission", redflag_submissions), ("gnd_gndpatientsubmission", gnd_submissions)):
         for row in source_rows:
             source_submission_id = clean_text(row.get("record_id") or row.get("id")) or hash_fields(source_table, row)
@@ -1301,7 +1374,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     "unresolved_doctor_flag": "true" if doctor_dim is None else "false",
                 }
                 screening_rows.append(screening_row)
-                screening_source_index[(source_table, source_submission_id)].append(screening_row)
+    screening_rows, screening_source_index = _dedupe_screening_rows(screening_rows)
     replace_table(
         SILVER_SCHEMA,
         "fact_screening_submission",

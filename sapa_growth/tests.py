@@ -20,6 +20,7 @@ from etl.sapa_growth.silver import (
     _activity_events_as_legacy_rows,
     _best_dim_for_event,
     _campaign_ids_for_field_rep_login_event,
+    _dedupe_screening_rows,
     _doctor_indexes,
     _doctor_matches_for_api,
     _merge_legacy_rows,
@@ -371,6 +372,34 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(converted["gnd_gndpatientsubmission"][0]["id"], "sub-gnd-1")
         self.assertEqual(converted["gnd_gndpatientsubmission"][0]["campaign_id"], "camp-b")
 
+    def test_rfa_gnd_activity_without_form_submitted_classifier_is_not_a_screening(self):
+        converted = _activity_events_as_legacy_rows(
+            [
+                {
+                    "activity_type": "gnd_patient_submission",
+                    "source_event_id": "ambiguous-gnd-1",
+                    "event_at": "2026-06-13 10:05:00",
+                    "doctor_uuid": "DOC002",
+                    "patient_id_raw": "PAT002",
+                    "campaign_uuid": "camp-b",
+                    "form_id_raw": "FORM002",
+                },
+                {
+                    "activity_type": "gnd_patient_submission",
+                    "event_type": "form_submitted",
+                    "source_event_id": "submitted-gnd-1",
+                    "event_at": "2026-06-13 10:07:00",
+                    "doctor_uuid": "DOC002",
+                    "patient_id_raw": "PAT002",
+                    "campaign_uuid": "camp-b",
+                    "form_id_raw": "FORM002",
+                },
+            ]
+        )
+
+        self.assertEqual(len(converted["gnd_gndpatientsubmission"]), 1)
+        self.assertEqual(converted["gnd_gndpatientsubmission"][0]["id"], "submitted-gnd-1")
+
     def test_rfa_activity_v2_payloads_fall_back_to_bridge_columns(self):
         converted = _activity_events_as_legacy_rows(
             [
@@ -423,6 +452,90 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0]["event_type"], "field_rep_login")
         self.assertEqual(merged[0]["campaign_id"], "1151a492-947b-4c91-83ac-5a224b2d07b1")
+
+    def test_screening_fact_dedupes_same_submitted_form_across_source_ids(self):
+        rows, source_index = _dedupe_screening_rows(
+            [
+                {
+                    "submission_key": "redflags_patientsubmission:native-1:campaign:camp-a",
+                    "source_table": "redflags_patientsubmission",
+                    "source_submission_id": "native-1",
+                    "doctor_key": "DOC001::campaign:camp-a",
+                    "campaign_key": "camp-a",
+                    "patient_id": "PAT001",
+                    "form_identifier": "FORM001",
+                    "language_code": "en",
+                    "submitted_at": "2026-06-13 09:55:00",
+                    "overall_flag_code": "",
+                    "is_red_tag": "false",
+                    "is_yellow_tag": "false",
+                    "is_green_tag": "false",
+                },
+                {
+                    "submission_key": "redflags_patientsubmission:activity-1:campaign:camp-a",
+                    "source_table": "redflags_patientsubmission",
+                    "source_submission_id": "activity-1",
+                    "doctor_key": "DOC001::campaign:camp-a",
+                    "campaign_key": "camp-a",
+                    "patient_id": "PAT001",
+                    "form_identifier": "FORM001",
+                    "language_code": "en",
+                    "submitted_at": "2026-06-13 09:55:00",
+                    "overall_flag_code": "red",
+                    "is_red_tag": "true",
+                    "is_yellow_tag": "false",
+                    "is_green_tag": "false",
+                },
+            ]
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["overall_flag_code"], "red")
+        self.assertEqual(rows[0]["is_red_tag"], "true")
+        self.assertIs(source_index[("redflags_patientsubmission", "native-1")][0], rows[0])
+        self.assertIs(source_index[("redflags_patientsubmission", "activity-1")][0], rows[0])
+
+    def test_screening_fact_dedupes_gnd_native_and_activity_rows(self):
+        rows, source_index = _dedupe_screening_rows(
+            [
+                {
+                    "submission_key": "gnd_gndpatientsubmission:native-gnd-1:campaign:camp-a",
+                    "source_table": "gnd_gndpatientsubmission",
+                    "source_submission_id": "native-gnd-1",
+                    "doctor_key": "DOC001::campaign:camp-a",
+                    "campaign_key": "camp-a",
+                    "patient_id": "PAT001",
+                    "form_identifier": "",
+                    "language_code": "",
+                    "submitted_at": "2026-06-13 09:55:00",
+                    "overall_flag_code": "",
+                    "is_red_tag": "false",
+                    "is_yellow_tag": "false",
+                    "is_green_tag": "false",
+                },
+                {
+                    "submission_key": "gnd_gndpatientsubmission:activity-gnd-1:campaign:camp-a",
+                    "source_table": "gnd_gndpatientsubmission",
+                    "source_submission_id": "activity-gnd-1",
+                    "doctor_key": "DOC001::campaign:camp-a",
+                    "campaign_key": "camp-a",
+                    "patient_id": "PAT001",
+                    "form_identifier": "FORM001",
+                    "language_code": "en",
+                    "submitted_at": "2026-06-13 09:55:00",
+                    "overall_flag_code": "yellow",
+                    "is_red_tag": "false",
+                    "is_yellow_tag": "true",
+                    "is_green_tag": "false",
+                },
+            ]
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["overall_flag_code"], "yellow")
+        self.assertEqual(rows[0]["is_yellow_tag"], "true")
+        self.assertIs(source_index[("gnd_gndpatientsubmission", "native-gnd-1")][0], rows[0])
+        self.assertIs(source_index[("gnd_gndpatientsubmission", "activity-gnd-1")][0], rows[0])
 
     def test_filter_rows_matches_normalized_campaign_route_keys(self):
         rows = [
