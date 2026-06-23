@@ -33,6 +33,7 @@ from dashboard.internal_data_admin import (
     internal_data_admin_raw_download,
     internal_data_admin_raw_downloads,
     internal_data_admin_rfa_transfer_cleanup,
+    internal_data_admin_transfer_cleanup,
     internal_data_admin_row,
     internal_data_admin_table,
 )
@@ -58,6 +59,7 @@ urlpatterns = [
     path("_internal/data-admin/raw-downloads/", internal_data_admin_raw_downloads, name="internal-data-admin-raw-downloads"),
     path("_internal/data-admin/raw-downloads/<str:schema>/<str:table>/download/", internal_data_admin_raw_download, name="internal-data-admin-raw-download"),
     path("_internal/data-admin/raw-dedupe/", internal_data_admin_raw_dedupe, name="internal-data-admin-raw-dedupe"),
+    path("_internal/data-admin/transfer-cleanup/", internal_data_admin_transfer_cleanup, name="internal-data-admin-transfer-cleanup"),
     path("_internal/data-admin/rfa-transfer-cleanup/", internal_data_admin_rfa_transfer_cleanup, name="internal-data-admin-rfa-transfer-cleanup"),
     path("_internal/data-admin/corrections/", internal_data_admin_corrections, name="internal-data-admin-corrections"),
     path("_internal/data-admin/privacy/", internal_data_admin_privacy, name="internal-data-admin-privacy"),

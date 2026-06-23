@@ -73,6 +73,7 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/_internal/data-admin/cleanup/").view_name, "internal-data-admin-cleanup")
         self.assertEqual(resolve("/_internal/data-admin/raw-downloads/").view_name, "internal-data-admin-raw-downloads")
         self.assertEqual(resolve("/_internal/data-admin/raw-dedupe/").view_name, "internal-data-admin-raw-dedupe")
+        self.assertEqual(resolve("/_internal/data-admin/transfer-cleanup/").view_name, "internal-data-admin-transfer-cleanup")
         self.assertEqual(resolve("/_internal/data-admin/rfa-transfer-cleanup/").view_name, "internal-data-admin-rfa-transfer-cleanup")
         self.assertEqual(resolve("/_internal/data-admin/privacy/").view_name, "internal-data-admin-privacy")
         self.assertEqual(
@@ -1681,10 +1682,12 @@ class DashboardAccessViewTests(SimpleTestCase):
             max_rows=RAW_DEDUPE_BATCH_SIZE,
         )
 
-    def _rfa_transfer_cleanup_page_patches(self, **extra):
+    def _transfer_cleanup_page_patches(self, **extra):
         summary = {
             "rows": [
                 {
+                    "domain": "rfa",
+                    "domain_label": "RFA/SAPA",
                     "source_table": "redflags_patientsubmission",
                     "raw_table": "raw_sapa_mysql.rfa_activity_event_raw",
                     "legacy_raw_table": "raw_sapa_mysql.redflags_patientsubmission_raw",
@@ -1708,6 +1711,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         records = {
             "rows": [
                 {
+                    "domain": "rfa",
                     "source_table": "redflags_patientsubmission",
                     "raw_table": "raw_sapa_mysql.rfa_activity_event_raw",
                     "source_pk": "SUB-1",
@@ -1716,6 +1720,10 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "event_at": "2026-06-23T10:00:00+00:00",
                     "patient_id": "PAT-1",
                     "doctor_id": "DOC-1",
+                    "doctor_phone": "",
+                    "campaign_id": "",
+                    "collateral_id": "",
+                    "field_rep_id": "",
                     "form_id": "FORM-1",
                     "overall_flag_code": "RED",
                     "submission_id": "",
@@ -1734,36 +1742,36 @@ class DashboardAccessViewTests(SimpleTestCase):
         }
         patches = [
             patch("dashboard.internal_data_admin._require_auth", return_value=None),
-            patch("dashboard.internal_data_admin._rfa_transfer_cleanup_assert_scope"),
-            patch("dashboard.internal_data_admin._rfa_transfer_cleanup_raw_summary", return_value=summary),
-            patch("dashboard.internal_data_admin._rfa_transfer_cleanup_raw_records", return_value=records),
-            patch("dashboard.internal_data_admin._rfa_transfer_cleanup_recent_runs", return_value=[]),
+            patch("dashboard.internal_data_admin._transfer_cleanup_assert_scope"),
+            patch("dashboard.internal_data_admin._transfer_cleanup_raw_summary", return_value=summary),
+            patch("dashboard.internal_data_admin._transfer_cleanup_raw_records", return_value=records),
+            patch("dashboard.internal_data_admin._transfer_cleanup_recent_runs", return_value=[]),
         ]
         patches.extend(extra.values())
         return patches
 
     def test_internal_data_admin_rfa_transfer_cleanup_page_renders_records(self):
-        patches = self._rfa_transfer_cleanup_page_patches()
+        patches = self._transfer_cleanup_page_patches()
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             response = self.client.get(
-                "/_internal/data-admin/rfa-transfer-cleanup/?source_table=redflags_patientsubmission&q=DOC&cleanup_status=DELETED"
+                "/_internal/data-admin/transfer-cleanup/?domain=rfa&source_table=redflags_patientsubmission&q=DOC&cleanup_status=DELETED"
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "RFA Transfer Cleanup")
+        self.assertContains(response, "Transfer Source Cleanup")
         self.assertContains(response, "redflags_patientsubmission")
         self.assertContains(response, "rfa_patient_submission")
         self.assertContains(response, "SUB-1")
-        self.assertContains(response, "Run RFA ETL + Cleanup")
+        self.assertContains(response, "Run Selected ETL + Source Cleanup")
         self.assertContains(response, "redflags_metricevent")
 
     def test_internal_data_admin_rfa_transfer_cleanup_post_requires_confirmation(self):
         run_cleanup = patch("dashboard.internal_data_admin.run_weekly_transfer_cleanup")
-        patches = self._rfa_transfer_cleanup_page_patches(run_cleanup=run_cleanup)
+        patches = self._transfer_cleanup_page_patches(run_cleanup=run_cleanup)
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as run_mock:
             response = self.client.post(
-                "/_internal/data-admin/rfa-transfer-cleanup/",
-                {"transfer_action": "run_rfa_cleanup", "confirmation": "WRONG"},
+                "/_internal/data-admin/transfer-cleanup/",
+                {"domain": "rfa", "transfer_action": "run_transfer_cleanup", "confirmation": "WRONG"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -1789,12 +1797,13 @@ class DashboardAccessViewTests(SimpleTestCase):
             },
         }
         run_cleanup = patch("dashboard.internal_data_admin.run_weekly_transfer_cleanup", return_value=run_result)
-        patches = self._rfa_transfer_cleanup_page_patches(run_cleanup=run_cleanup)
+        patches = self._transfer_cleanup_page_patches(run_cleanup=run_cleanup)
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as run_mock:
             response = self.client.post(
-                "/_internal/data-admin/rfa-transfer-cleanup/",
+                "/_internal/data-admin/transfer-cleanup/",
                 {
-                    "transfer_action": "run_rfa_cleanup",
+                    "domain": "rfa",
+                    "transfer_action": "run_transfer_cleanup",
                     "confirmation": "RUN RFA TRANSFER CLEANUP",
                 },
             )
@@ -1809,6 +1818,7 @@ class DashboardAccessViewTests(SimpleTestCase):
             "etl.weekly_transfer_cleanup.fetchall",
             side_effect=[
                 [{"exists_flag": True}],
+                [{"column_name": "record_id"}],
                 [{"source_pk": "legacy-sub-1", "guard_value": None}],
                 [{"exists_flag": True}],
                 [
@@ -1820,11 +1830,11 @@ class DashboardAccessViewTests(SimpleTestCase):
             rows = weekly_transfer_cleanup._raw_rows_for_cleanup(rfa_spec, "etl-run-1")
 
         self.assertEqual([row["source_pk"] for row in rows], ["legacy-sub-1", "v2-sub-2"])
-        legacy_query, legacy_params = fetch_mock.call_args_list[1].args
+        legacy_query, legacy_params = fetch_mock.call_args_list[2].args
         self.assertIn("redflags_patientsubmission_raw", legacy_query)
         self.assertNotIn('"_ingestion_run_id" = %s', legacy_query)
         self.assertEqual(legacy_params, [])
-        v2_query, v2_params = fetch_mock.call_args_list[3].args
+        v2_query, v2_params = fetch_mock.call_args_list[4].args
         self.assertIn("rfa_activity_event_raw", v2_query)
         self.assertIn('"source_table" = %s', v2_query)
         self.assertEqual(v2_params, ["redflags_patientsubmission"])
@@ -1834,14 +1844,26 @@ class DashboardAccessViewTests(SimpleTestCase):
             "etl.weekly_transfer_cleanup.fetchall",
             side_effect=[
                 [{"exists_flag": True}],
+                [{"column_name": "id"}, {"column_name": "updated_at"}],
                 [{"source_pk": "txn-1", "guard_value": "2026-06-23"}],
+                [{"exists_flag": True}],
+                [
+                    {"column_name": "source_table"},
+                    {"column_name": "source_pk_value"},
+                    {"column_name": "source_updated_at"},
+                ],
+                [{"source_pk": "txn-v2", "guard_value": "2026-06-24"}],
             ],
         ) as fetch_mock:
-            weekly_transfer_cleanup._raw_rows_for_cleanup(inclinic_spec, "etl-run-2")
+            rows = weekly_transfer_cleanup._raw_rows_for_cleanup(inclinic_spec, "etl-run-2")
 
-        query, params = fetch_mock.call_args_list[1].args
-        self.assertIn('"_ingestion_run_id" = %s', query)
-        self.assertEqual(params, ["etl-run-2"])
+        self.assertEqual([row["source_pk"] for row in rows], ["txn-1", "txn-v2"])
+        query, params = fetch_mock.call_args_list[2].args
+        self.assertNotIn('"_ingestion_run_id" = %s', query)
+        self.assertEqual(params, [])
+        v2_query, v2_params = fetch_mock.call_args_list[5].args
+        self.assertIn("inclinic_collateral_transaction_v2", v2_query)
+        self.assertEqual(v2_params, ["sharing_management_collateraltransaction"])
 
     def test_campaign_performance_page_renders_bootstrap_data(self):
         with patch(

@@ -43,7 +43,7 @@ from etl.reporting_privacy import (
     list_person_privacy_rules,
 )
 from etl.sapa_growth.specs import MYSQL_TABLE_SPECS
-from etl.weekly_transfer_cleanup import RFA_SPECS, ensure_cleanup_tables, run_weekly_transfer_cleanup
+from etl.weekly_transfer_cleanup import INCLINIC_SPECS, RFA_SPECS, ensure_cleanup_tables, run_weekly_transfer_cleanup
 
 
 SESSION_KEY = "internal_data_admin_authenticated"
@@ -56,9 +56,15 @@ AUDIT_TABLE = "internal_dashboard_audit"
 RAW_DEDUPE_ARCHIVE_TABLE = "raw_duplicate_archive"
 RAW_DEDUPE_CONFIRM_PREFIX = "ARCHIVE RAW DUPLICATES"
 RAW_DEDUPE_BATCH_SIZE = 20000
-RFA_TRANSFER_CLEANUP_CONFIRMATION = "RUN RFA TRANSFER CLEANUP"
-RFA_TRANSFER_CLEANUP_PAGE_SIZE = 100
-RFA_TRANSFER_CLEANUP_STATUS_OPTIONS = (
+TRANSFER_CLEANUP_CONFIRMATIONS = {
+    "inclinic": "RUN INCLINIC TRANSFER CLEANUP",
+    "rfa": "RUN RFA TRANSFER CLEANUP",
+    "all": "RUN INCLINIC AND RFA TRANSFER CLEANUP",
+}
+RFA_TRANSFER_CLEANUP_CONFIRMATION = TRANSFER_CLEANUP_CONFIRMATIONS["rfa"]
+TRANSFER_CLEANUP_PAGE_SIZE = 100
+RFA_TRANSFER_CLEANUP_PAGE_SIZE = TRANSFER_CLEANUP_PAGE_SIZE
+TRANSFER_CLEANUP_STATUS_OPTIONS = (
     {"value": "all", "label": "All cleanup statuses"},
     {"value": "never_cleaned", "label": "Not attempted yet"},
     {"value": "PENDING", "label": "Pending"},
@@ -67,6 +73,30 @@ RFA_TRANSFER_CLEANUP_STATUS_OPTIONS = (
     {"value": "GUARD_BLOCKED", "label": "Guard blocked"},
     {"value": "FAILED", "label": "Failed"},
 )
+RFA_TRANSFER_CLEANUP_STATUS_OPTIONS = TRANSFER_CLEANUP_STATUS_OPTIONS
+TRANSFER_CLEANUP_DOMAIN_OPTIONS = (
+    {"value": "all", "label": "InClinic + RFA/SAPA"},
+    {"value": "inclinic", "label": "InClinic only"},
+    {"value": "rfa", "label": "RFA/SAPA only"},
+)
+TRANSFER_CLEANUP_DOMAIN_LABELS = {
+    "all": "InClinic + RFA/SAPA",
+    "inclinic": "InClinic",
+    "rfa": "RFA/SAPA",
+}
+TRANSFER_CLEANUP_DOMAIN_NOTES = {
+    "inclinic": "Deletes only transferred collateral transaction/activity rows from InClinic source tables.",
+    "rfa": "Deletes only transferred patient submission and submission-red-flag rows from SAPA/RFA source tables.",
+}
+INCLINIC_TRANSFER_CLEANUP_ALLOWED_SOURCE_TABLES = frozenset(spec.source_table for spec in INCLINIC_SPECS)
+INCLINIC_TRANSFER_CLEANUP_ALLOWED_RAW_TABLES = frozenset((spec.raw_schema, spec.raw_table) for spec in INCLINIC_SPECS)
+INCLINIC_TRANSFER_CLEANUP_V2_RAW_SCHEMA = "raw_v2_inclinic"
+INCLINIC_TRANSFER_CLEANUP_V2_RAW_TABLE = "inclinic_collateral_transaction_v2"
+INCLINIC_TRANSFER_CLEANUP_V1_SOURCE_TABLE = "sharing_management_collateraltransaction"
+INCLINIC_TRANSFER_CLEANUP_ACTIVITY_TYPES = {
+    "sharing_management_collateraltransaction": "inclinic_collateral_transaction",
+    "inclinic_collateral_transaction_v2": "inclinic_collateral_transaction_v2",
+}
 RFA_TRANSFER_CLEANUP_ALLOWED_SOURCE_TABLES = frozenset(spec.source_table for spec in RFA_SPECS)
 RFA_TRANSFER_CLEANUP_ALLOWED_RAW_TABLES = frozenset((spec.raw_schema, spec.raw_table) for spec in RFA_SPECS)
 RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA = "raw_sapa_mysql"
@@ -418,6 +448,272 @@ def _table_columns(schema: str, table: str) -> set[str]:
     return {row["column_name"] for row in rows}
 
 
+def _transfer_cleanup_domains(selected_domain: str) -> list[str]:
+    cleaned = (selected_domain or "all").strip().lower()
+    if cleaned == "all":
+        return ["inclinic", "rfa"]
+    if cleaned in {"inclinic", "rfa"}:
+        return [cleaned]
+    raise ValueError("Choose InClinic, RFA/SAPA, or both before reviewing transfer cleanup.")
+
+
+def _transfer_cleanup_domain_options(selected_domain: str) -> list[dict[str, str | bool]]:
+    cleaned = (selected_domain or "all").strip().lower()
+    return [{**option, "is_selected": option["value"] == cleaned} for option in TRANSFER_CLEANUP_DOMAIN_OPTIONS]
+
+
+def _transfer_cleanup_specs(selected_domain: str, selected_source_table: str = "all") -> tuple[Any, ...]:
+    domains = _transfer_cleanup_domains(selected_domain)
+    specs = [spec for spec in (*INCLINIC_SPECS, *RFA_SPECS) if spec.domain in domains]
+    selected = (selected_source_table or "all").strip()
+    if selected != "all":
+        specs = [spec for spec in specs if spec.source_table == selected]
+    if not specs:
+        raise ValueError("Select one of the approved transfer cleanup source tables.")
+    return tuple(specs)
+
+
+def _transfer_cleanup_table_options(selected_domain: str, selected_source_table: str = "all") -> list[dict[str, Any]]:
+    selected = (selected_source_table or "all").strip()
+    options = [
+        {
+            "value": "all",
+            "label": "All approved transfer tables",
+            "is_selected": selected == "all",
+        }
+    ]
+    for spec in _transfer_cleanup_specs(selected_domain, "all"):
+        label = f"{TRANSFER_CLEANUP_DOMAIN_LABELS.get(spec.domain, spec.domain)} / {spec.source_table}"
+        options.append(
+            {
+                "value": spec.source_table,
+                "label": label,
+                "raw_table": f"{spec.raw_schema}.{spec.raw_table}",
+                "key_column": spec.key_column,
+                "is_selected": selected == spec.source_table,
+            }
+        )
+    return options
+
+
+def _transfer_cleanup_status_options(selected_cleanup_status: str) -> list[dict[str, str | bool]]:
+    cleaned = (selected_cleanup_status or "all").strip()
+    return [{**option, "is_selected": option["value"] == cleaned} for option in TRANSFER_CLEANUP_STATUS_OPTIONS]
+
+
+def _transfer_cleanup_assert_scope() -> None:
+    inclinic_source_tables = {spec.source_table for spec in INCLINIC_SPECS}
+    inclinic_raw_tables = {(spec.raw_schema, spec.raw_table) for spec in INCLINIC_SPECS}
+    expected_inclinic_source_tables = {
+        "sharing_management_collateraltransaction",
+        "inclinic_collateral_transaction_v2",
+    }
+    expected_inclinic_raw_tables = {
+        ("raw_server2", "sharing_management_collateraltransaction"),
+        ("raw_v2_inclinic", "inclinic_collateral_transaction_v2"),
+    }
+    if inclinic_source_tables != expected_inclinic_source_tables or inclinic_raw_tables != expected_inclinic_raw_tables:
+        raise RuntimeError("InClinic transfer cleanup scope changed; source deletion is blocked until reviewed.")
+    _rfa_transfer_cleanup_assert_scope()
+
+
+def _transfer_cleanup_confirmation(selected_domain: str) -> str:
+    cleaned = (selected_domain or "all").strip().lower()
+    return TRANSFER_CLEANUP_CONFIRMATIONS.get(cleaned, TRANSFER_CLEANUP_CONFIRMATIONS["all"])
+
+
+def _cleanup_counts_for_source(domain: str, source_table: str) -> dict[str, int]:
+    status_rows = _fetch_dicts(
+        """
+        SELECT delete_status, COUNT(*)::text AS row_count
+        FROM control.transfer_cleanup_manifest
+        WHERE domain = %s
+          AND source_table = %s
+        GROUP BY delete_status
+        """,
+        [domain, source_table],
+    )
+    return {item["delete_status"] or "UNKNOWN": int(item["row_count"] or 0) for item in status_rows}
+
+
+def _latest_transfer_cleanup(domains: list[str]) -> dict[str, Any] | None:
+    rows = _fetch_dicts(
+        """
+        SELECT cleanup_run_id, status, started_at, ended_at
+        FROM control.transfer_cleanup_run_log
+        ORDER BY started_at DESC
+        LIMIT 25
+        """
+    )
+    domain_set = set(domains)
+    for row in rows:
+        row_domains = {item.strip() for item in (row.get("domains") or "").split(",") if item.strip()}
+        if row_domains & domain_set:
+            return row
+    return None
+
+
+def _sql_first_text_field(columns: set[str], *field_names: str) -> sql.Composed:
+    expressions = [
+        sql.SQL("NULLIF({field}::text, '')").format(field=sql.Identifier(field_name))
+        for field_name in field_names
+        if field_name in columns
+    ]
+    if not expressions:
+        return sql.SQL("''::text")
+    return sql.SQL("COALESCE(") + sql.SQL(", ").join(expressions) + sql.SQL(", ''::text)")
+
+
+def _inclinic_transfer_cleanup_summary_for_legacy(spec: Any) -> dict[str, Any]:
+    row = {
+        "domain": "inclinic",
+        "domain_label": TRANSFER_CLEANUP_DOMAIN_LABELS["inclinic"],
+        "source_table": spec.source_table,
+        "activity_type": INCLINIC_TRANSFER_CLEANUP_ACTIVITY_TYPES.get(spec.source_table, ""),
+        "raw_table": "raw_server2.sharing_management_collateraltransaction + raw_v2_inclinic.inclinic_collateral_transaction_v2",
+        "legacy_raw_table": "raw_server2.sharing_management_collateraltransaction",
+        "key_column": "id / source_pk_value",
+        "source_pk_column": "id",
+        "reporting_source": "V1 RAW + V2 transaction traceability",
+        "total_rows": 0,
+        "unique_keys": 0,
+        "latest_ingested_at": "",
+        "latest_ingestion_run_id": "",
+        "cleanup_counts": _cleanup_counts_for_source("inclinic", spec.source_table),
+        "error": "",
+    }
+    parts: list[sql.Composed] = []
+    params: list[Any] = []
+    legacy_columns = _table_columns(spec.raw_schema, spec.raw_table) if _table_exists(spec.raw_schema, spec.raw_table) else set()
+    if spec.key_column in legacy_columns:
+        parts.append(
+            sql.SQL(
+                """
+                SELECT {key_column}::text AS source_pk,
+                       COALESCE("_ingested_at"::text, '') AS latest_at,
+                       COALESCE("_ingestion_run_id"::text, '') AS run_id
+                FROM {schema}.{table}
+                WHERE COALESCE({key_column}::text, '') <> ''
+                """
+            ).format(
+                key_column=sql.Identifier(spec.key_column),
+                schema=sql.Identifier(spec.raw_schema),
+                table=sql.Identifier(spec.raw_table),
+            )
+        )
+    v2_columns = _table_columns(INCLINIC_TRANSFER_CLEANUP_V2_RAW_SCHEMA, INCLINIC_TRANSFER_CLEANUP_V2_RAW_TABLE) if _table_exists(INCLINIC_TRANSFER_CLEANUP_V2_RAW_SCHEMA, INCLINIC_TRANSFER_CLEANUP_V2_RAW_TABLE) else set()
+    if {"source_table", "source_pk_value"}.issubset(v2_columns):
+        latest_expr = _sql_first_text_field(v2_columns, "source_updated_at", "migrated_at", "source_created_at", "old_updated_at", "old_created_at")
+        parts.append(
+            sql.SQL(
+                """
+                SELECT "source_pk_value"::text AS source_pk,
+                       {latest_expr} AS latest_at,
+                       ''::text AS run_id
+                FROM {schema}.{table}
+                WHERE "source_table" = %s
+                  AND COALESCE("source_pk_value"::text, '') <> ''
+                """
+            ).format(
+                latest_expr=latest_expr,
+                schema=sql.Identifier(INCLINIC_TRANSFER_CLEANUP_V2_RAW_SCHEMA),
+                table=sql.Identifier(INCLINIC_TRANSFER_CLEANUP_V2_RAW_TABLE),
+            )
+        )
+        params.append(INCLINIC_TRANSFER_CLEANUP_V1_SOURCE_TABLE)
+    if not parts:
+        row["error"] = "No V1 RAW or V2 transaction traceability table is available yet."
+        return row
+    summary_rows = _fetch_dicts(
+        sql.SQL(
+            """
+            SELECT
+                COUNT(*)::text AS total_rows,
+                COUNT(DISTINCT NULLIF(source_pk, ''))::text AS unique_keys,
+                COALESCE(MAX(latest_at), '') AS latest_ingested_at,
+                COALESCE(MAX(NULLIF(run_id, '')), '') AS latest_ingestion_run_id
+            FROM ({source_rows}) evidence
+            """
+        ).format(source_rows=sql.SQL(" UNION ALL ").join(parts)),
+        params,
+    )
+    if summary_rows:
+        row["total_rows"] = int(summary_rows[0].get("total_rows") or 0)
+        row["unique_keys"] = int(summary_rows[0].get("unique_keys") or 0)
+        row["latest_ingested_at"] = summary_rows[0].get("latest_ingested_at") or ""
+        row["latest_ingestion_run_id"] = summary_rows[0].get("latest_ingestion_run_id") or ""
+    return row
+
+
+def _inclinic_transfer_cleanup_summary_for_v2(spec: Any) -> dict[str, Any]:
+    row = {
+        "domain": "inclinic",
+        "domain_label": TRANSFER_CLEANUP_DOMAIN_LABELS["inclinic"],
+        "source_table": spec.source_table,
+        "activity_type": INCLINIC_TRANSFER_CLEANUP_ACTIVITY_TYPES.get(spec.source_table, ""),
+        "raw_table": f"{spec.raw_schema}.{spec.raw_table}",
+        "legacy_raw_table": "",
+        "key_column": spec.key_column,
+        "source_pk_column": spec.key_column,
+        "reporting_source": "V2 transaction table",
+        "total_rows": 0,
+        "unique_keys": 0,
+        "latest_ingested_at": "",
+        "latest_ingestion_run_id": "",
+        "cleanup_counts": _cleanup_counts_for_source("inclinic", spec.source_table),
+        "error": "",
+    }
+    columns = _table_columns(spec.raw_schema, spec.raw_table) if _table_exists(spec.raw_schema, spec.raw_table) else set()
+    if spec.key_column not in columns:
+        row["error"] = "V2 transaction reporting table is not available yet."
+        return row
+    latest_expr = _sql_first_text_field(columns, "source_updated_at", "migrated_at", "source_created_at", "old_updated_at", "old_created_at")
+    count_rows = _fetch_dicts(
+        sql.SQL(
+            """
+            SELECT
+                COUNT(*)::text AS total_rows,
+                COUNT(DISTINCT NULLIF({key_column}::text, ''))::text AS unique_keys,
+                COALESCE(MAX({latest_expr}), '') AS latest_ingested_at
+            FROM {schema}.{table}
+            WHERE COALESCE({key_column}::text, '') <> ''
+            """
+        ).format(
+            key_column=sql.Identifier(spec.key_column),
+            latest_expr=latest_expr,
+            schema=sql.Identifier(spec.raw_schema),
+            table=sql.Identifier(spec.raw_table),
+        )
+    )
+    if count_rows:
+        row["total_rows"] = int(count_rows[0].get("total_rows") or 0)
+        row["unique_keys"] = int(count_rows[0].get("unique_keys") or 0)
+        row["latest_ingested_at"] = count_rows[0].get("latest_ingested_at") or ""
+    return row
+
+
+def _inclinic_transfer_cleanup_raw_summary() -> dict[str, Any]:
+    ensure_cleanup_tables()
+    rows = []
+    total_rows = 0
+    total_unique_keys = 0
+    for spec in INCLINIC_SPECS:
+        if spec.source_table == INCLINIC_TRANSFER_CLEANUP_V1_SOURCE_TABLE:
+            row = _inclinic_transfer_cleanup_summary_for_legacy(spec)
+        else:
+            row = _inclinic_transfer_cleanup_summary_for_v2(spec)
+        rows.append(row)
+        total_rows += int(row.get("total_rows") or 0)
+        total_unique_keys += int(row.get("unique_keys") or 0)
+    return {
+        "rows": rows,
+        "table_count": len(rows),
+        "total_rows": total_rows,
+        "total_unique_keys": total_unique_keys,
+        "latest_cleanup": _latest_transfer_cleanup(["inclinic"]),
+    }
+
+
 def _rfa_transfer_cleanup_assert_scope() -> None:
     source_tables = {spec.source_table for spec in RFA_SPECS}
     raw_tables = {(spec.raw_schema, spec.raw_table) for spec in RFA_SPECS}
@@ -497,6 +793,8 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
     v2_columns = _rfa_transfer_cleanup_v2_columns() if use_v2 else set()
     for spec in RFA_SPECS:
         row = {
+            "domain": "rfa",
+            "domain_label": TRANSFER_CLEANUP_DOMAIN_LABELS["rfa"],
             "source_table": spec.source_table,
             "activity_type": RFA_TRANSFER_CLEANUP_ACTIVITY_TYPES.get(spec.source_table, ""),
             "raw_table": (
@@ -628,6 +926,24 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
         "total_rows": total_rows,
         "total_unique_keys": total_unique_keys,
         "latest_cleanup": latest_cleanup[0] if latest_cleanup else None,
+    }
+
+
+def _transfer_cleanup_raw_summary(selected_domain: str) -> dict[str, Any]:
+    ensure_cleanup_tables()
+    domains = _transfer_cleanup_domains(selected_domain)
+    summaries = []
+    if "inclinic" in domains:
+        summaries.append(_inclinic_transfer_cleanup_raw_summary())
+    if "rfa" in domains:
+        summaries.append(_rfa_transfer_cleanup_raw_summary())
+    rows = [row for summary in summaries for row in summary.get("rows", [])]
+    return {
+        "rows": rows,
+        "table_count": len(rows),
+        "total_rows": sum(int(summary.get("total_rows") or 0) for summary in summaries),
+        "total_unique_keys": sum(int(summary.get("total_unique_keys") or 0) for summary in summaries),
+        "latest_cleanup": _latest_transfer_cleanup(domains),
     }
 
 
@@ -890,6 +1206,397 @@ def _rfa_transfer_cleanup_raw_records(
         "errors": errors,
         "uses_v2": False,
     }
+
+
+def _inclinic_sql_first_field(columns: set[str], alias: str, *field_names: str) -> sql.Composed:
+    expressions = [
+        sql.SQL("NULLIF(r.{field}::text, '')").format(field=sql.Identifier(field_name))
+        for field_name in field_names
+        if field_name in columns
+    ]
+    if not expressions:
+        return sql.SQL("''::text AS {alias}").format(alias=sql.Identifier(alias))
+    return (
+        sql.SQL("COALESCE(")
+        + sql.SQL(", ").join(expressions)
+        + sql.SQL(", ''::text) AS {alias}").format(alias=sql.Identifier(alias))
+    )
+
+
+def _inclinic_transfer_cleanup_records_from_legacy_raw(
+    spec: Any,
+    *,
+    search: str,
+    cleanup_status: str,
+    run_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not _table_exists(spec.raw_schema, spec.raw_table):
+        return []
+    columns = _table_columns(spec.raw_schema, spec.raw_table)
+    if spec.key_column not in columns:
+        return []
+    cleaned_search = (search or "").strip().lower()
+    cleaned_status = (cleanup_status or "all").strip()
+    cleaned_run_id = (run_id or "").strip()
+    where_parts = [sql.SQL("COALESCE(r.{key_column}::text, '') <> ''").format(key_column=sql.Identifier(spec.key_column))]
+    params: list[Any] = ["inclinic", spec.source_table, f"{spec.raw_schema}.{spec.raw_table}", spec.key_column, spec.source_table]
+
+    if cleaned_search:
+        searchable_fields = [
+            spec.key_column,
+            "_ingestion_run_id",
+            "brand_campaign_id",
+            "doctor_unique_id",
+            "doctor_number",
+            "collateral_id",
+            "field_rep_id",
+            "field_rep_unique_id",
+            "transaction_id",
+        ]
+        table_fields = [field for field in searchable_fields if field in columns]
+        if table_fields:
+            where_parts.append(
+                sql.SQL("(")
+                + sql.SQL(" OR ").join(
+                    sql.SQL("LOWER(COALESCE(r.{field}::text, '')) LIKE %s").format(field=sql.Identifier(field))
+                    for field in table_fields
+                )
+                + sql.SQL(")")
+            )
+            params.extend([f"%{cleaned_search}%"] * len(table_fields))
+
+    if cleaned_status and cleaned_status != "all":
+        if cleaned_status == "never_cleaned":
+            where_parts.append(sql.SQL("m.delete_status IS NULL"))
+        else:
+            where_parts.append(sql.SQL("m.delete_status = %s"))
+            params.append(cleaned_status)
+
+    if cleaned_run_id:
+        where_parts.append(sql.SQL("(r.\"_ingestion_run_id\" = %s OR m.cleanup_run_id = %s OR m.pipeline_run_id = %s)"))
+        params.extend([cleaned_run_id, cleaned_run_id, cleaned_run_id])
+
+    params.append(limit)
+    query = sql.SQL(
+        """
+        SELECT
+            %s::text AS domain,
+            %s::text AS source_table,
+            %s::text AS raw_table,
+            COALESCE(r.{key_column}::text, '') AS source_pk,
+            %s::text AS source_pk_column,
+            'inclinic_collateral_transaction'::text AS activity_type,
+            {event_at},
+            {campaign_id},
+            {doctor_id},
+            {doctor_phone},
+            {collateral_id},
+            {field_rep_id},
+            ''::text AS patient_id,
+            ''::text AS form_id,
+            ''::text AS overall_flag_code,
+            ''::text AS submission_id,
+            ''::text AS red_flag_id,
+            COALESCE(r."_ingestion_run_id", '') AS ingestion_run_id,
+            COALESCE(r."_ingested_at", '') AS ingested_at,
+            COALESCE(m.cleanup_run_id, '') AS cleanup_run_id,
+            COALESCE(m.pipeline_run_id, '') AS cleanup_pipeline_run_id,
+            COALESCE(m.delete_status, 'NOT_ATTEMPTED') AS cleanup_status,
+            COALESCE(m.deleted_at, '') AS cleanup_status_at,
+            COALESCE(m.delete_error, '') AS cleanup_error
+        FROM {schema}.{table} r
+        LEFT JOIN LATERAL (
+            SELECT cleanup_run_id, pipeline_run_id, delete_status, deleted_at, delete_error
+            FROM control.transfer_cleanup_manifest m
+            WHERE m.domain = 'inclinic'
+              AND m.source_table = %s
+              AND m.source_pk = r.{key_column}::text
+            ORDER BY manifest_id DESC
+            LIMIT 1
+        ) m ON TRUE
+        WHERE {where_clause}
+        ORDER BY r."_ingested_at" DESC NULLS LAST, source_pk
+        LIMIT %s
+        """
+    ).format(
+        key_column=sql.Identifier(spec.key_column),
+        event_at=_inclinic_sql_first_field(columns, "event_at", "transaction_date", "sent_at", "created_at"),
+        campaign_id=_inclinic_sql_first_field(columns, "campaign_id", "brand_campaign_id"),
+        doctor_id=_inclinic_sql_first_field(columns, "doctor_id", "doctor_unique_id"),
+        doctor_phone=_inclinic_sql_first_field(columns, "doctor_phone", "doctor_number"),
+        collateral_id=_inclinic_sql_first_field(columns, "collateral_id", "collateral_id"),
+        field_rep_id=_inclinic_sql_first_field(columns, "field_rep_id", "field_rep_id", "field_rep_unique_id"),
+        schema=sql.Identifier(spec.raw_schema),
+        table=sql.Identifier(spec.raw_table),
+        where_clause=sql.SQL(" AND ").join(where_parts),
+    )
+    return _fetch_dicts(query, params)
+
+
+def _inclinic_transfer_cleanup_records_from_v2(
+    spec: Any,
+    *,
+    legacy_traceability: bool,
+    search: str,
+    cleanup_status: str,
+    run_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not _table_exists(INCLINIC_TRANSFER_CLEANUP_V2_RAW_SCHEMA, INCLINIC_TRANSFER_CLEANUP_V2_RAW_TABLE):
+        return []
+    columns = _table_columns(INCLINIC_TRANSFER_CLEANUP_V2_RAW_SCHEMA, INCLINIC_TRANSFER_CLEANUP_V2_RAW_TABLE)
+    key_column = "source_pk_value" if legacy_traceability else spec.key_column
+    if key_column not in columns:
+        return []
+    cleaned_search = (search or "").strip().lower()
+    cleaned_status = (cleanup_status or "all").strip()
+    cleaned_run_id = (run_id or "").strip()
+    where_parts = [sql.SQL("COALESCE(r.{key_column}::text, '') <> ''").format(key_column=sql.Identifier(key_column))]
+    params: list[Any] = [
+        "inclinic",
+        spec.source_table,
+        f"{INCLINIC_TRANSFER_CLEANUP_V2_RAW_SCHEMA}.{INCLINIC_TRANSFER_CLEANUP_V2_RAW_TABLE}",
+        spec.key_column if not legacy_traceability else "source_pk_value",
+        spec.source_table,
+    ]
+
+    if legacy_traceability:
+        where_parts.append(sql.SQL("r.\"source_table\" = %s"))
+        params.append(INCLINIC_TRANSFER_CLEANUP_V1_SOURCE_TABLE)
+
+    if cleaned_search:
+        searchable_fields = [
+            key_column,
+            "source_table",
+            "source_pk_column",
+            "source_pk_value",
+            "transaction_uuid",
+            "old_id",
+            "old_transaction_id",
+            "legacy_campaign_id",
+            "old_brand_campaign_id",
+            "doctor_uuid",
+            "inclinic_doctor_uuid",
+            "old_doctor_unique_id",
+            "old_doctor_number",
+            "collateral_uuid",
+            "old_collateral_id",
+            "old_field_rep_id",
+            "brand_supplied_field_rep_id",
+        ]
+        table_fields = list(dict.fromkeys(field for field in searchable_fields if field in columns))
+        if table_fields:
+            where_parts.append(
+                sql.SQL("(")
+                + sql.SQL(" OR ").join(
+                    sql.SQL("LOWER(COALESCE(r.{field}::text, '')) LIKE %s").format(field=sql.Identifier(field))
+                    for field in table_fields
+                )
+                + sql.SQL(")")
+            )
+            params.extend([f"%{cleaned_search}%"] * len(table_fields))
+
+    if cleaned_status and cleaned_status != "all":
+        if cleaned_status == "never_cleaned":
+            where_parts.append(sql.SQL("m.delete_status IS NULL"))
+        else:
+            where_parts.append(sql.SQL("m.delete_status = %s"))
+            params.append(cleaned_status)
+
+    if cleaned_run_id:
+        where_parts.append(sql.SQL("(m.cleanup_run_id = %s OR m.pipeline_run_id = %s)"))
+        params.extend([cleaned_run_id, cleaned_run_id])
+
+    params.append(limit)
+    query = sql.SQL(
+        """
+        SELECT
+            %s::text AS domain,
+            %s::text AS source_table,
+            %s::text AS raw_table,
+            COALESCE(r.{key_column}::text, '') AS source_pk,
+            %s::text AS source_pk_column,
+            %s::text AS activity_type,
+            {event_at},
+            {campaign_id},
+            {doctor_id},
+            {doctor_phone},
+            {collateral_id},
+            {field_rep_id},
+            ''::text AS patient_id,
+            ''::text AS form_id,
+            ''::text AS overall_flag_code,
+            ''::text AS submission_id,
+            ''::text AS red_flag_id,
+            ''::text AS ingestion_run_id,
+            {ingested_at},
+            COALESCE(m.cleanup_run_id, '') AS cleanup_run_id,
+            COALESCE(m.pipeline_run_id, '') AS cleanup_pipeline_run_id,
+            COALESCE(m.delete_status, 'NOT_ATTEMPTED') AS cleanup_status,
+            COALESCE(m.deleted_at, '') AS cleanup_status_at,
+            COALESCE(m.delete_error, '') AS cleanup_error
+        FROM {schema}.{table} r
+        LEFT JOIN LATERAL (
+            SELECT cleanup_run_id, pipeline_run_id, delete_status, deleted_at, delete_error
+            FROM control.transfer_cleanup_manifest m
+            WHERE m.domain = 'inclinic'
+              AND m.source_table = %s
+              AND m.source_pk = r.{key_column}::text
+            ORDER BY manifest_id DESC
+            LIMIT 1
+        ) m ON TRUE
+        WHERE {where_clause}
+        ORDER BY event_at DESC NULLS LAST, source_pk
+        LIMIT %s
+        """
+    ).format(
+        key_column=sql.Identifier(key_column),
+        event_at=_inclinic_sql_first_field(columns, "event_at", "old_transaction_date", "old_sent_at", "source_updated_at", "migrated_at", "source_created_at"),
+        campaign_id=_inclinic_sql_first_field(columns, "campaign_id", "legacy_campaign_id", "old_brand_campaign_id", "campaign_uuid"),
+        doctor_id=_inclinic_sql_first_field(columns, "doctor_id", "doctor_uuid", "inclinic_doctor_uuid", "old_doctor_unique_id"),
+        doctor_phone=_inclinic_sql_first_field(columns, "doctor_phone", "doctor_phone_normalized", "old_doctor_number"),
+        collateral_id=_inclinic_sql_first_field(columns, "collateral_id", "collateral_uuid", "old_collateral_id"),
+        field_rep_id=_inclinic_sql_first_field(columns, "field_rep_id", "resolved_field_rep_uuid", "old_field_rep_id", "brand_supplied_field_rep_id"),
+        ingested_at=_inclinic_sql_first_field(columns, "ingested_at", "migrated_at", "source_updated_at", "source_created_at"),
+        schema=sql.Identifier(INCLINIC_TRANSFER_CLEANUP_V2_RAW_SCHEMA),
+        table=sql.Identifier(INCLINIC_TRANSFER_CLEANUP_V2_RAW_TABLE),
+        where_clause=sql.SQL(" AND ").join(where_parts),
+    )
+    params.insert(4, INCLINIC_TRANSFER_CLEANUP_ACTIVITY_TYPES.get(spec.source_table, "inclinic_collateral_transaction"))
+    return _fetch_dicts(query, params)
+
+
+def _inclinic_transfer_cleanup_raw_records(
+    *,
+    specs: tuple[Any, ...],
+    search: str,
+    cleanup_status: str,
+    run_id: str,
+    limit: int,
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for spec in specs:
+        if spec.source_table == INCLINIC_TRANSFER_CLEANUP_V1_SOURCE_TABLE:
+            rows.extend(
+                _inclinic_transfer_cleanup_records_from_legacy_raw(
+                    spec,
+                    search=search,
+                    cleanup_status=cleanup_status,
+                    run_id=run_id,
+                    limit=limit,
+                )
+            )
+            rows.extend(
+                _inclinic_transfer_cleanup_records_from_v2(
+                    spec,
+                    legacy_traceability=True,
+                    search=search,
+                    cleanup_status=cleanup_status,
+                    run_id=run_id,
+                    limit=limit,
+                )
+            )
+        else:
+            rows.extend(
+                _inclinic_transfer_cleanup_records_from_v2(
+                    spec,
+                    legacy_traceability=False,
+                    search=search,
+                    cleanup_status=cleanup_status,
+                    run_id=run_id,
+                    limit=limit,
+                )
+            )
+    rows.sort(key=lambda item: (item.get("event_at") or item.get("ingested_at") or "", item.get("source_table") or "", item.get("source_pk") or ""), reverse=True)
+    return {
+        "rows": rows[:limit],
+        "row_count": len(rows[:limit]),
+        "limit": limit,
+        "is_limited": len(rows) > limit,
+        "errors": [],
+        "uses_v2": True,
+    }
+
+
+def _transfer_cleanup_raw_records(
+    *,
+    selected_domain: str = "all",
+    source_table: str = "all",
+    search: str = "",
+    cleanup_status: str = "all",
+    run_id: str = "",
+    limit: int = TRANSFER_CLEANUP_PAGE_SIZE,
+) -> dict[str, Any]:
+    ensure_cleanup_tables()
+    specs = _transfer_cleanup_specs(selected_domain, source_table)
+    cleaned_search = (search or "").strip().lower()
+    cleaned_status = (cleanup_status or "all").strip()
+    cleaned_run_id = (run_id or "").strip()
+    limit = max(1, min(int(limit or TRANSFER_CLEANUP_PAGE_SIZE), 500))
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    inclinic_specs = tuple(spec for spec in specs if spec.domain == "inclinic")
+    if inclinic_specs:
+        result = _inclinic_transfer_cleanup_raw_records(
+            specs=inclinic_specs,
+            search=cleaned_search,
+            cleanup_status=cleaned_status,
+            run_id=cleaned_run_id,
+            limit=limit,
+        )
+        rows.extend(result["rows"])
+        errors.extend(result.get("errors", []))
+
+    rfa_specs = tuple(spec for spec in specs if spec.domain == "rfa")
+    if rfa_specs:
+        rfa_source_table = "all" if len(rfa_specs) == len(RFA_SPECS) else rfa_specs[0].source_table
+        result = _rfa_transfer_cleanup_raw_records(
+            source_table=rfa_source_table,
+            search=cleaned_search,
+            cleanup_status=cleaned_status,
+            run_id=cleaned_run_id,
+            limit=limit,
+        )
+        for row in result["rows"]:
+            row.setdefault("domain", "rfa")
+            row.setdefault("campaign_id", "")
+            row.setdefault("collateral_id", "")
+            row.setdefault("field_rep_id", "")
+            row.setdefault("doctor_phone", "")
+        rows.extend(result["rows"])
+        errors.extend(result.get("errors", []))
+
+    rows.sort(key=lambda item: (item.get("event_at") or item.get("ingested_at") or "", item.get("domain") or "", item.get("source_table") or "", item.get("source_pk") or ""), reverse=True)
+    return {
+        "rows": rows[:limit],
+        "row_count": len(rows[:limit]),
+        "limit": limit,
+        "is_limited": len(rows) > limit,
+        "errors": errors,
+    }
+
+
+def _transfer_cleanup_recent_runs(selected_domain: str = "all", limit: int = 8) -> list[dict[str, Any]]:
+    ensure_cleanup_tables()
+    domains = set(_transfer_cleanup_domains(selected_domain))
+    rows = _fetch_dicts(
+        """
+        SELECT cleanup_run_id, started_at, ended_at, status, domains, notes
+        FROM control.transfer_cleanup_run_log
+        ORDER BY started_at DESC
+        LIMIT 50
+        """
+    )
+    matched = []
+    for row in rows:
+        run_domains = {item.strip() for item in (row.get("domains") or "").split(",") if item.strip()}
+        if run_domains & domains:
+            matched.append(row)
+        if len(matched) >= limit:
+            break
+    return matched
 
 
 def _rfa_transfer_cleanup_recent_runs(limit: int = 8) -> list[dict[str, Any]]:
@@ -2824,42 +3531,53 @@ def internal_data_admin_raw_dedupe(request: HttpRequest) -> HttpResponse:
 
 @never_cache
 @require_http_methods(["GET", "POST"])
-def internal_data_admin_rfa_transfer_cleanup(request: HttpRequest) -> HttpResponse:
+def internal_data_admin_transfer_cleanup(request: HttpRequest) -> HttpResponse:
     auth_redirect = _require_auth(request)
     if auth_redirect:
         return auth_redirect
 
-    _rfa_transfer_cleanup_assert_scope()
+    _transfer_cleanup_assert_scope()
 
+    selected_domain = (request.GET.get("domain") or request.POST.get("domain") or "all").strip().lower()
     selected_source_table = (request.GET.get("source_table") or request.POST.get("source_table") or "all").strip()
     selected_cleanup_status = (request.GET.get("cleanup_status") or request.POST.get("cleanup_status") or "all").strip()
     search_query = (request.GET.get("q") or request.POST.get("q") or "").strip()
     run_id_filter = (request.GET.get("run_id") or request.POST.get("run_id") or "").strip()
     result = None
 
-    if request.method == "POST" and (request.POST.get("transfer_action") or "") == "run_rfa_cleanup":
+    try:
+        run_domains = _transfer_cleanup_domains(selected_domain)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        selected_domain = "all"
+        run_domains = ["inclinic", "rfa"]
+
+    confirmation_phrase = _transfer_cleanup_confirmation(selected_domain)
+
+    if request.method == "POST" and (request.POST.get("transfer_action") or "") == "run_transfer_cleanup":
         confirmation = (request.POST.get("confirmation") or "").strip()
-        if confirmation != RFA_TRANSFER_CLEANUP_CONFIRMATION:
-            messages.error(request, f"Type the exact confirmation phrase: {RFA_TRANSFER_CLEANUP_CONFIRMATION}")
+        if confirmation != confirmation_phrase:
+            messages.error(request, f"Type the exact confirmation phrase: {confirmation_phrase}")
         else:
             try:
-                result = run_weekly_transfer_cleanup(["rfa"])
+                result = run_weekly_transfer_cleanup(run_domains)
                 status = result.get("status", "UNKNOWN")
                 cleanup_run_id = result.get("cleanup_run_id")
                 if status == "SUCCESS":
-                    messages.success(request, f"RFA ETL + source cleanup completed for cleanup_run_id={cleanup_run_id}.")
+                    messages.success(request, f"ETL + source cleanup completed for cleanup_run_id={cleanup_run_id}.")
                 elif status == "PARTIAL_SUCCESS":
                     messages.warning(
                         request,
-                        f"RFA ETL + source cleanup completed with partial success for cleanup_run_id={cleanup_run_id}.",
+                        f"ETL + source cleanup completed with partial success for cleanup_run_id={cleanup_run_id}.",
                     )
                 else:
-                    messages.error(request, f"RFA ETL + source cleanup failed for cleanup_run_id={cleanup_run_id}.")
+                    messages.error(request, f"ETL + source cleanup failed for cleanup_run_id={cleanup_run_id}.")
             except Exception as exc:
-                messages.error(request, f"RFA ETL + source cleanup could not run: {exc}")
+                messages.error(request, f"ETL + source cleanup could not run: {exc}")
 
     try:
-        records = _rfa_transfer_cleanup_raw_records(
+        records = _transfer_cleanup_raw_records(
+            selected_domain=selected_domain,
             source_table=selected_source_table,
             search=search_query,
             cleanup_status=selected_cleanup_status,
@@ -2868,40 +3586,50 @@ def internal_data_admin_rfa_transfer_cleanup(request: HttpRequest) -> HttpRespon
     except ValueError as exc:
         messages.error(request, str(exc))
         selected_source_table = "all"
-        records = _rfa_transfer_cleanup_raw_records(
+        records = _transfer_cleanup_raw_records(
+            selected_domain=selected_domain,
             source_table=selected_source_table,
             search=search_query,
             cleanup_status=selected_cleanup_status,
             run_id=run_id_filter,
         )
 
+    protected_specs = _transfer_cleanup_specs(selected_domain, "all")
+    protected_source_tables = sorted({spec.source_table for spec in protected_specs})
+    protected_raw_table_values = {f"{spec.raw_schema}.{spec.raw_table}" for spec in protected_specs}
+    if "inclinic" in run_domains:
+        protected_raw_table_values.add(f"{INCLINIC_TRANSFER_CLEANUP_V2_RAW_SCHEMA}.{INCLINIC_TRANSFER_CLEANUP_V2_RAW_TABLE}")
+    if "rfa" in run_domains:
+        protected_raw_table_values.add(f"{RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA}.{RFA_TRANSFER_CLEANUP_V2_RAW_TABLE}")
+    protected_raw_tables = sorted(protected_raw_table_values)
+
     return render(
         request,
         "dashboard/internal_data_admin/rfa_transfer_cleanup.html",
         {
-            "confirmation_phrase": RFA_TRANSFER_CLEANUP_CONFIRMATION,
-            "table_options": _rfa_transfer_cleanup_table_options(selected_source_table),
-            "status_options": [
-                {**option, "is_selected": option["value"] == selected_cleanup_status}
-                for option in RFA_TRANSFER_CLEANUP_STATUS_OPTIONS
-            ],
+            "confirmation_phrase": confirmation_phrase,
+            "domain_options": _transfer_cleanup_domain_options(selected_domain),
+            "table_options": _transfer_cleanup_table_options(selected_domain, selected_source_table),
+            "status_options": _transfer_cleanup_status_options(selected_cleanup_status),
+            "selected_domain": selected_domain,
+            "selected_domain_label": TRANSFER_CLEANUP_DOMAIN_LABELS.get(selected_domain, TRANSFER_CLEANUP_DOMAIN_LABELS["all"]),
             "selected_source_table": selected_source_table,
             "selected_cleanup_status": selected_cleanup_status,
             "search_query": search_query,
             "run_id_filter": run_id_filter,
-            "summary": _rfa_transfer_cleanup_raw_summary(),
+            "summary": _transfer_cleanup_raw_summary(selected_domain),
             "records": records,
-            "recent_runs": _rfa_transfer_cleanup_recent_runs(),
+            "recent_runs": _transfer_cleanup_recent_runs(selected_domain),
             "result": result,
-            "protected_source_tables": sorted(RFA_TRANSFER_CLEANUP_ALLOWED_SOURCE_TABLES),
-            "protected_raw_tables": sorted(
-                {
-                    *(f"{schema}.{table}" for schema, table in RFA_TRANSFER_CLEANUP_ALLOWED_RAW_TABLES),
-                    f"{RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA}.{RFA_TRANSFER_CLEANUP_V2_RAW_TABLE}",
-                }
-            ),
+            "protected_source_tables": protected_source_tables,
+            "protected_raw_tables": protected_raw_tables,
+            "domain_notes": [TRANSFER_CLEANUP_DOMAIN_NOTES[domain] for domain in run_domains],
         },
     )
+
+
+def internal_data_admin_rfa_transfer_cleanup(request: HttpRequest) -> HttpResponse:
+    return internal_data_admin_transfer_cleanup(request)
 
 
 def _bulk_reporting_correction_rows(text: str) -> list[dict[str, str]]:
