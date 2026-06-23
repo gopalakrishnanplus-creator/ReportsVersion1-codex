@@ -43,7 +43,13 @@ from etl.reporting_privacy import (
     list_person_privacy_rules,
 )
 from etl.sapa_growth.specs import MYSQL_TABLE_SPECS
-from etl.weekly_transfer_cleanup import INCLINIC_SPECS, RFA_SPECS, ensure_cleanup_tables, run_weekly_transfer_cleanup
+from etl.weekly_transfer_cleanup import (
+    INCLINIC_SPECS,
+    RFA_SPECS,
+    ensure_cleanup_tables,
+    run_weekly_transfer_cleanup,
+    source_transfer_status_for_spec,
+)
 
 
 SESSION_KEY = "internal_data_admin_authenticated"
@@ -621,6 +627,9 @@ def _transfer_cleanup_status_report_for_evidence(
 def _transfer_cleanup_totals_from_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
     reports = [row.get("cleanup_report") or _empty_transfer_cleanup_status_report(row.get("unique_keys") or 0) for row in rows]
     return {
+        "total_reporting_keys_for_cleanup": sum(int(row.get("reporting_keys_for_cleanup") or row.get("unique_keys") or 0) for row in rows),
+        "total_source_overlap_keys": sum(int(row.get("source_overlap_keys") or 0) for row in rows),
+        "total_already_removed_from_source_keys": sum(int(row.get("already_removed_from_source_keys") or 0) for row in rows),
         "total_action_required": sum(int(report.get("action_required") or 0) for report in reports),
         "total_source_complete": sum(int(report.get("complete") or 0) for report in reports),
         "total_source_deleted": sum(int(report.get("deleted") or 0) for report in reports),
@@ -629,6 +638,27 @@ def _transfer_cleanup_totals_from_rows(rows: list[dict[str, Any]]) -> dict[str, 
         "total_source_pending": sum(int(report.get("pending") or 0) for report in reports),
         "total_source_guard_blocked": sum(int(report.get("guard_blocked") or 0) for report in reports),
         "total_source_failed": sum(int(report.get("failed") or 0) for report in reports),
+    }
+
+
+def _attach_transfer_cleanup_source_status(row: dict[str, Any], spec: Any) -> dict[str, Any]:
+    status = source_transfer_status_for_spec(spec)
+    row.update(status)
+    return row
+
+
+def _filter_transfer_cleanup_summary(summary: dict[str, Any], selected_source_table: str) -> dict[str, Any]:
+    selected = (selected_source_table or "all").strip()
+    if selected == "all":
+        return summary
+    rows = [row for row in summary.get("rows", []) if row.get("source_table") == selected]
+    return {
+        **summary,
+        "rows": rows,
+        "table_count": len(rows),
+        "total_rows": sum(int(row.get("total_rows") or 0) for row in rows),
+        "total_unique_keys": sum(int(row.get("unique_keys") or 0) for row in rows),
+        **_transfer_cleanup_totals_from_rows(rows),
     }
 
 
@@ -747,7 +777,7 @@ def _inclinic_transfer_cleanup_summary_for_legacy(spec: Any) -> dict[str, Any]:
         ),
         params,
     )
-    return row
+    return _attach_transfer_cleanup_source_status(row, spec)
 
 
 def _inclinic_transfer_cleanup_summary_for_v2(spec: Any) -> dict[str, Any]:
@@ -810,7 +840,7 @@ def _inclinic_transfer_cleanup_summary_for_v2(spec: Any) -> dict[str, Any]:
             table=sql.Identifier(spec.raw_table),
         ),
     )
-    return row
+    return _attach_transfer_cleanup_source_status(row, spec)
 
 
 def _inclinic_transfer_cleanup_raw_summary() -> dict[str, Any]:
@@ -1076,7 +1106,7 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
             [spec.source_table],
         )
         row["cleanup_counts"] = {item["delete_status"] or "UNKNOWN": int(item["row_count"] or 0) for item in status_rows}
-        rows.append(row)
+        rows.append(_attach_transfer_cleanup_source_status(row, spec))
 
     latest_cleanup = _fetch_dicts(
         """
@@ -3751,9 +3781,6 @@ def internal_data_admin_transfer_cleanup(request: HttpRequest) -> HttpResponse:
 
     selected_domain = (request.GET.get("domain") or request.POST.get("domain") or "all").strip().lower()
     selected_source_table = (request.GET.get("source_table") or request.POST.get("source_table") or "all").strip()
-    selected_cleanup_status = (request.GET.get("cleanup_status") or request.POST.get("cleanup_status") or "all").strip()
-    search_query = (request.GET.get("q") or request.POST.get("q") or "").strip()
-    run_id_filter = (request.GET.get("run_id") or request.POST.get("run_id") or "").strip()
     result = None
     selected_specs: tuple[Any, ...]
 
@@ -3771,11 +3798,6 @@ def internal_data_admin_transfer_cleanup(request: HttpRequest) -> HttpResponse:
         selected_source_table = "all"
         selected_specs = _transfer_cleanup_specs(selected_domain, selected_source_table)
 
-    selected_source_tables_to_clean = None if selected_source_table == "all" else [selected_source_table]
-    if selected_source_tables_to_clean:
-        spec_domains = [spec.domain for spec in selected_specs if spec.domain in run_domains]
-        run_domains = list(dict.fromkeys(spec_domains))
-
     confirmation_phrase = _transfer_cleanup_confirmation(selected_domain)
 
     if request.method == "POST" and (request.POST.get("transfer_action") or "") == "run_transfer_cleanup":
@@ -3784,7 +3806,7 @@ def internal_data_admin_transfer_cleanup(request: HttpRequest) -> HttpResponse:
             messages.error(request, f"Type the exact confirmation phrase: {confirmation_phrase}")
         else:
             try:
-                result = run_weekly_transfer_cleanup(run_domains, source_tables=selected_source_tables_to_clean)
+                result = run_weekly_transfer_cleanup(run_domains)
                 status = result.get("status", "UNKNOWN")
                 cleanup_run_id = result.get("cleanup_run_id")
                 if status == "SUCCESS":
@@ -3799,24 +3821,7 @@ def internal_data_admin_transfer_cleanup(request: HttpRequest) -> HttpResponse:
             except Exception as exc:
                 messages.error(request, f"ETL + source cleanup could not run: {exc}")
 
-    try:
-        records = _transfer_cleanup_raw_records(
-            selected_domain=selected_domain,
-            source_table=selected_source_table,
-            search=search_query,
-            cleanup_status=selected_cleanup_status,
-            run_id=run_id_filter,
-        )
-    except ValueError as exc:
-        messages.error(request, str(exc))
-        selected_source_table = "all"
-        records = _transfer_cleanup_raw_records(
-            selected_domain=selected_domain,
-            source_table=selected_source_table,
-            search=search_query,
-            cleanup_status=selected_cleanup_status,
-            run_id=run_id_filter,
-        )
+    summary = _filter_transfer_cleanup_summary(_transfer_cleanup_raw_summary(selected_domain), selected_source_table)
 
     protected_specs = _transfer_cleanup_specs(selected_domain, "all")
     protected_source_tables = sorted({spec.source_table for spec in protected_specs})
@@ -3834,22 +3839,17 @@ def internal_data_admin_transfer_cleanup(request: HttpRequest) -> HttpResponse:
             "confirmation_phrase": confirmation_phrase,
             "domain_options": _transfer_cleanup_domain_options(selected_domain),
             "table_options": _transfer_cleanup_table_options(selected_domain, selected_source_table),
-            "status_options": _transfer_cleanup_status_options(selected_cleanup_status),
             "selected_domain": selected_domain,
             "selected_domain_label": TRANSFER_CLEANUP_DOMAIN_LABELS.get(selected_domain, TRANSFER_CLEANUP_DOMAIN_LABELS["all"]),
             "selected_source_table": selected_source_table,
-            "selected_cleanup_status": selected_cleanup_status,
-            "search_query": search_query,
-            "run_id_filter": run_id_filter,
-            "summary": _transfer_cleanup_raw_summary(selected_domain),
-            "records": records,
+            "summary": summary,
             "recent_runs": _transfer_cleanup_recent_runs(selected_domain),
             "recent_step_logs": _transfer_cleanup_recent_step_logs(selected_domain, selected_source_table),
             "result": result,
             "protected_source_tables": protected_source_tables,
             "protected_raw_tables": protected_raw_tables,
             "domain_notes": [TRANSFER_CLEANUP_DOMAIN_NOTES[domain] for domain in run_domains],
-            "selected_source_tables_to_clean": selected_source_tables_to_clean or ["all approved transfer tables"],
+            "selected_source_tables_to_clean": ["all protected tables for selected system"],
             "deploy_cleanup_status": {
                 "label": "Not automatic in GitHub deploy",
                 "short": "Off during deploy",
