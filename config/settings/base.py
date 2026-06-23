@@ -317,8 +317,8 @@ REPORTS_EMAIL = {
 }
 
 INTERNAL_DATA_ADMIN = {
-    "USERNAME": _env("INTERNAL_DATA_ADMIN_USERNAME", default="internal_admin"),
-    "PASSWORD": _env("INTERNAL_DATA_ADMIN_PASSWORD", default="ChangeMeLocalOnly!"),
+    "USERNAME": _env("INTERNAL_DATA_ADMIN_USERNAME", default="internaladmin"),
+    "PASSWORD": _env("INTERNAL_DATA_ADMIN_PASSWORD", default="!"),
 }
 
 SOURCE_EXTRACTOR_BACKEND = _env("SOURCE_EXTRACTOR_BACKEND", default="mysql").strip().lower()
