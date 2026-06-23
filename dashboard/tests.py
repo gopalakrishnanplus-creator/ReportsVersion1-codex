@@ -12,7 +12,7 @@ from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 
 import dashboard.views
-from etl import inclinic_pipeline
+from etl import inclinic_pipeline, weekly_transfer_cleanup
 from etl.pe_reports import silver as pe_silver
 from etl.pipelines import bronze_transform, raw_ingestion, silver_transform, v2_reporting
 from etl.sapa_growth import silver as sapa_silver
@@ -73,6 +73,7 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(resolve("/_internal/data-admin/cleanup/").view_name, "internal-data-admin-cleanup")
         self.assertEqual(resolve("/_internal/data-admin/raw-downloads/").view_name, "internal-data-admin-raw-downloads")
         self.assertEqual(resolve("/_internal/data-admin/raw-dedupe/").view_name, "internal-data-admin-raw-dedupe")
+        self.assertEqual(resolve("/_internal/data-admin/rfa-transfer-cleanup/").view_name, "internal-data-admin-rfa-transfer-cleanup")
         self.assertEqual(resolve("/_internal/data-admin/privacy/").view_name, "internal-data-admin-privacy")
         self.assertEqual(
             resolve("/_internal/data-admin/raw-downloads/raw_server1/campaign_fieldrep/download/").view_name,
@@ -1679,6 +1680,138 @@ class DashboardAccessViewTests(SimpleTestCase):
             target=("raw_server2", "large_table"),
             max_rows=RAW_DEDUPE_BATCH_SIZE,
         )
+
+    def _rfa_transfer_cleanup_page_patches(self, **extra):
+        summary = {
+            "rows": [
+                {
+                    "source_table": "redflags_patientsubmission",
+                    "raw_table": "raw_sapa_mysql.redflags_patientsubmission_raw",
+                    "key_column": "record_id",
+                    "total_rows": 2,
+                    "unique_keys": 2,
+                    "latest_ingested_at": "2026-06-23T10:00:00+00:00",
+                    "latest_ingestion_run_id": "etl-run-1",
+                    "cleanup_counts": {"DELETED": 1},
+                    "error": "",
+                }
+            ],
+            "table_count": 4,
+            "total_rows": 2,
+            "total_unique_keys": 2,
+            "latest_cleanup": {"status": "SUCCESS"},
+        }
+        records = {
+            "rows": [
+                {
+                    "source_table": "redflags_patientsubmission",
+                    "raw_table": "raw_sapa_mysql.redflags_patientsubmission_raw",
+                    "source_pk": "SUB-1",
+                    "patient_id": "PAT-1",
+                    "doctor_id": "DOC-1",
+                    "form_id": "FORM-1",
+                    "overall_flag_code": "RED",
+                    "submission_id": "",
+                    "red_flag_id": "",
+                    "ingestion_run_id": "etl-run-1",
+                    "ingested_at": "2026-06-23T10:00:00+00:00",
+                    "cleanup_status": "DELETED",
+                    "cleanup_run_id": "cleanup-1",
+                    "cleanup_error": "",
+                }
+            ],
+            "row_count": 1,
+            "limit": 100,
+            "is_limited": False,
+            "errors": [],
+        }
+        patches = [
+            patch("dashboard.internal_data_admin._require_auth", return_value=None),
+            patch("dashboard.internal_data_admin._rfa_transfer_cleanup_assert_scope"),
+            patch("dashboard.internal_data_admin._rfa_transfer_cleanup_raw_summary", return_value=summary),
+            patch("dashboard.internal_data_admin._rfa_transfer_cleanup_raw_records", return_value=records),
+            patch("dashboard.internal_data_admin._rfa_transfer_cleanup_recent_runs", return_value=[]),
+        ]
+        patches.extend(extra.values())
+        return patches
+
+    def test_internal_data_admin_rfa_transfer_cleanup_page_renders_records(self):
+        patches = self._rfa_transfer_cleanup_page_patches()
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            response = self.client.get(
+                "/_internal/data-admin/rfa-transfer-cleanup/?source_table=redflags_patientsubmission&q=DOC&cleanup_status=DELETED"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "RFA Transfer Cleanup")
+        self.assertContains(response, "redflags_patientsubmission")
+        self.assertContains(response, "SUB-1")
+        self.assertContains(response, "Run RFA ETL + Cleanup")
+        self.assertContains(response, "redflags_metricevent")
+
+    def test_internal_data_admin_rfa_transfer_cleanup_post_requires_confirmation(self):
+        run_cleanup = patch("dashboard.internal_data_admin.run_weekly_transfer_cleanup")
+        patches = self._rfa_transfer_cleanup_page_patches(run_cleanup=run_cleanup)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as run_mock:
+            response = self.client.post(
+                "/_internal/data-admin/rfa-transfer-cleanup/",
+                {"transfer_action": "run_rfa_cleanup", "confirmation": "WRONG"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        run_mock.assert_not_called()
+
+    def test_internal_data_admin_rfa_transfer_cleanup_post_runs_only_rfa(self):
+        run_result = {
+            "cleanup_run_id": "cleanup-1",
+            "status": "SUCCESS",
+            "domains": {
+                "rfa": {
+                    "cleanup": {
+                        "redflags_patientsubmission": {
+                            "rows_copied": 2,
+                            "rows_manifested": 2,
+                            "rows_deleted": 2,
+                            "rows_already_absent": 0,
+                            "rows_guard_blocked": 0,
+                            "rows_failed": 0,
+                        }
+                    }
+                }
+            },
+        }
+        run_cleanup = patch("dashboard.internal_data_admin.run_weekly_transfer_cleanup", return_value=run_result)
+        patches = self._rfa_transfer_cleanup_page_patches(run_cleanup=run_cleanup)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as run_mock:
+            response = self.client.post(
+                "/_internal/data-admin/rfa-transfer-cleanup/",
+                {
+                    "transfer_action": "run_rfa_cleanup",
+                    "confirmation": "RUN RFA TRANSFER CLEANUP",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        run_mock.assert_called_once_with(["rfa"])
+        self.assertContains(response, "cleanup-1")
+
+    def test_weekly_transfer_cleanup_rfa_uses_all_transferred_raw_keys(self):
+        rfa_spec = next(spec for spec in weekly_transfer_cleanup.RFA_SPECS if spec.source_table == "redflags_patientsubmission")
+        with patch("etl.weekly_transfer_cleanup.fetchall", return_value=[]) as fetch_mock:
+            weekly_transfer_cleanup._raw_rows_for_cleanup(rfa_spec, "etl-run-1")
+
+        query, params = fetch_mock.call_args.args
+        self.assertIn("redflags_patientsubmission_raw", query)
+        self.assertNotIn('"_ingestion_run_id" = %s', query)
+        self.assertEqual(params, [])
+
+        inclinic_spec = weekly_transfer_cleanup.INCLINIC_SPECS[0]
+        with patch("etl.weekly_transfer_cleanup.fetchall", return_value=[]) as fetch_mock:
+            weekly_transfer_cleanup._raw_rows_for_cleanup(inclinic_spec, "etl-run-2")
+
+        query, params = fetch_mock.call_args.args
+        self.assertIn('"_ingestion_run_id" = %s', query)
+        self.assertEqual(params, ["etl-run-2"])
 
     def test_campaign_performance_page_renders_bootstrap_data(self):
         with patch(

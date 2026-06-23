@@ -42,6 +42,8 @@ from etl.reporting_privacy import (
     list_campaign_privacy_allowlist_rules,
     list_person_privacy_rules,
 )
+from etl.sapa_growth.specs import MYSQL_TABLE_SPECS
+from etl.weekly_transfer_cleanup import RFA_SPECS, ensure_cleanup_tables, run_weekly_transfer_cleanup
 
 
 SESSION_KEY = "internal_data_admin_authenticated"
@@ -54,6 +56,27 @@ AUDIT_TABLE = "internal_dashboard_audit"
 RAW_DEDUPE_ARCHIVE_TABLE = "raw_duplicate_archive"
 RAW_DEDUPE_CONFIRM_PREFIX = "ARCHIVE RAW DUPLICATES"
 RAW_DEDUPE_BATCH_SIZE = 20000
+RFA_TRANSFER_CLEANUP_CONFIRMATION = "RUN RFA TRANSFER CLEANUP"
+RFA_TRANSFER_CLEANUP_PAGE_SIZE = 100
+RFA_TRANSFER_CLEANUP_STATUS_OPTIONS = (
+    {"value": "all", "label": "All cleanup statuses"},
+    {"value": "never_cleaned", "label": "Not attempted yet"},
+    {"value": "PENDING", "label": "Pending"},
+    {"value": "DELETED", "label": "Deleted from source"},
+    {"value": "ALREADY_ABSENT", "label": "Already absent from source"},
+    {"value": "GUARD_BLOCKED", "label": "Guard blocked"},
+    {"value": "FAILED", "label": "Failed"},
+)
+RFA_TRANSFER_CLEANUP_ALLOWED_SOURCE_TABLES = frozenset(spec.source_table for spec in RFA_SPECS)
+RFA_TRANSFER_CLEANUP_ALLOWED_RAW_TABLES = frozenset((spec.raw_schema, spec.raw_table) for spec in RFA_SPECS)
+RFA_TRANSFER_CLEANUP_DISPLAY_FIELDS = (
+    "patient_id",
+    "doctor_id",
+    "form_id",
+    "overall_flag_code",
+    "submission_id",
+    "red_flag_id",
+)
 RAW_AUDIT_COLUMN_NAMES = frozenset(
     {
         "_ingestion_run_id",
@@ -371,6 +394,279 @@ def _table_exists(schema: str, table: str) -> bool:
         [schema, table],
     )
     return bool(rows)
+
+
+def _rfa_transfer_cleanup_assert_scope() -> None:
+    source_tables = {spec.source_table for spec in RFA_SPECS}
+    raw_tables = {(spec.raw_schema, spec.raw_table) for spec in RFA_SPECS}
+    expected_source_tables = {
+        "redflags_patientsubmission",
+        "gnd_gndpatientsubmission",
+        "redflags_submissionredflag",
+        "gnd_gndsubmissionredflag",
+    }
+    expected_raw_tables = {
+        ("raw_sapa_mysql", "redflags_patientsubmission_raw"),
+        ("raw_sapa_mysql", "gnd_gndpatientsubmission_raw"),
+        ("raw_sapa_mysql", "redflags_submissionredflag_raw"),
+        ("raw_sapa_mysql", "gnd_gndsubmissionredflag_raw"),
+    }
+    if source_tables != expected_source_tables or raw_tables != expected_raw_tables:
+        raise RuntimeError("RFA transfer cleanup scope changed; source deletion is blocked until reviewed.")
+
+
+def _rfa_transfer_cleanup_table_options(selected_source_table: str = "all") -> list[dict[str, Any]]:
+    options = [
+        {
+            "value": "all",
+            "label": "All approved RFA transfer tables",
+            "is_selected": selected_source_table == "all",
+        }
+    ]
+    for spec in RFA_SPECS:
+        options.append(
+            {
+                "value": spec.source_table,
+                "label": spec.source_table,
+                "raw_table": f"{spec.raw_schema}.{spec.raw_table}",
+                "key_column": spec.key_column,
+                "is_selected": selected_source_table == spec.source_table,
+            }
+        )
+    return options
+
+
+def _rfa_transfer_cleanup_source_columns(spec: Any) -> set[str]:
+    source_spec = MYSQL_TABLE_SPECS.get(spec.source_table)
+    return set(source_spec.columns if source_spec else ())
+
+
+def _rfa_transfer_cleanup_selected_specs(source_table: str) -> tuple[Any, ...]:
+    selected = (source_table or "all").strip()
+    if selected == "all":
+        return RFA_SPECS
+    matches = tuple(spec for spec in RFA_SPECS if spec.source_table == selected)
+    if not matches:
+        raise ValueError("Select one of the approved RFA transfer tables.")
+    return matches
+
+
+def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
+    ensure_cleanup_tables()
+    rows: list[dict[str, Any]] = []
+    total_rows = 0
+    total_unique_keys = 0
+    for spec in RFA_SPECS:
+        row = {
+            "source_table": spec.source_table,
+            "raw_table": f"{spec.raw_schema}.{spec.raw_table}",
+            "key_column": spec.key_column,
+            "total_rows": 0,
+            "unique_keys": 0,
+            "latest_ingested_at": "",
+            "latest_ingestion_run_id": "",
+            "cleanup_counts": {},
+            "error": "",
+        }
+        if not _table_exists(spec.raw_schema, spec.raw_table):
+            row["error"] = "Reporting RAW table is not available yet."
+            rows.append(row)
+            continue
+
+        count_rows = _fetch_dicts(
+            sql.SQL(
+                """
+                SELECT
+                    COUNT(*)::text AS total_rows,
+                    COUNT(DISTINCT NULLIF({key_column}, ''))::text AS unique_keys,
+                    COALESCE(MAX("_ingested_at"), '') AS latest_ingested_at
+                FROM {schema}.{table}
+                """
+            ).format(
+                key_column=sql.Identifier(spec.key_column),
+                schema=sql.Identifier(spec.raw_schema),
+                table=sql.Identifier(spec.raw_table),
+            )
+        )
+        if count_rows:
+            row["total_rows"] = int(count_rows[0].get("total_rows") or 0)
+            row["unique_keys"] = int(count_rows[0].get("unique_keys") or 0)
+            row["latest_ingested_at"] = count_rows[0].get("latest_ingested_at") or ""
+            total_rows += row["total_rows"]
+            total_unique_keys += row["unique_keys"]
+
+        latest_run_rows = _fetch_dicts(
+            sql.SQL(
+                """
+                SELECT COALESCE("_ingestion_run_id", '') AS latest_ingestion_run_id
+                FROM {schema}.{table}
+                ORDER BY "_ingested_at" DESC NULLS LAST
+                LIMIT 1
+                """
+            ).format(schema=sql.Identifier(spec.raw_schema), table=sql.Identifier(spec.raw_table))
+        )
+        if latest_run_rows:
+            row["latest_ingestion_run_id"] = latest_run_rows[0].get("latest_ingestion_run_id") or ""
+
+        status_rows = _fetch_dicts(
+            """
+            SELECT delete_status, COUNT(*)::text AS row_count
+            FROM control.transfer_cleanup_manifest
+            WHERE domain = 'rfa'
+              AND source_table = %s
+            GROUP BY delete_status
+            """,
+            [spec.source_table],
+        )
+        row["cleanup_counts"] = {item["delete_status"] or "UNKNOWN": int(item["row_count"] or 0) for item in status_rows}
+        rows.append(row)
+
+    latest_cleanup = _fetch_dicts(
+        """
+        SELECT cleanup_run_id, status, started_at, ended_at
+        FROM control.transfer_cleanup_run_log
+        WHERE domains LIKE %s
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        ["%rfa%"],
+    )
+    return {
+        "rows": rows,
+        "table_count": len(rows),
+        "total_rows": total_rows,
+        "total_unique_keys": total_unique_keys,
+        "latest_cleanup": latest_cleanup[0] if latest_cleanup else None,
+    }
+
+
+def _rfa_transfer_cleanup_sql_field(spec: Any, field_name: str) -> sql.Composed:
+    if field_name in _rfa_transfer_cleanup_source_columns(spec):
+        return sql.SQL("COALESCE(r.{field}::text, '') AS {alias}").format(
+            field=sql.Identifier(field_name),
+            alias=sql.Identifier(field_name),
+        )
+    return sql.SQL("''::text AS {alias}").format(alias=sql.Identifier(field_name))
+
+
+def _rfa_transfer_cleanup_raw_records(
+    *,
+    source_table: str = "all",
+    search: str = "",
+    cleanup_status: str = "all",
+    run_id: str = "",
+    limit: int = RFA_TRANSFER_CLEANUP_PAGE_SIZE,
+) -> dict[str, Any]:
+    ensure_cleanup_tables()
+    specs = _rfa_transfer_cleanup_selected_specs(source_table)
+    cleaned_search = (search or "").strip().lower()
+    cleaned_status = (cleanup_status or "all").strip()
+    cleaned_run_id = (run_id or "").strip()
+    limit = max(1, min(int(limit or RFA_TRANSFER_CLEANUP_PAGE_SIZE), 500))
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for spec in specs:
+        if not _table_exists(spec.raw_schema, spec.raw_table):
+            errors.append(f"{spec.raw_schema}.{spec.raw_table} is not available yet.")
+            continue
+
+        where_parts = [sql.SQL("COALESCE(r.{key_column}::text, '') <> ''").format(key_column=sql.Identifier(spec.key_column))]
+        params: list[Any] = [spec.source_table, f"{spec.raw_schema}.{spec.raw_table}", spec.source_table]
+
+        if cleaned_search:
+            searchable_fields = [spec.key_column, "_ingestion_run_id", *RFA_TRANSFER_CLEANUP_DISPLAY_FIELDS]
+            source_columns = _rfa_transfer_cleanup_source_columns(spec)
+            table_fields = [
+                field
+                for field in searchable_fields
+                if field == spec.key_column or field in source_columns or field.startswith("_")
+            ]
+            where_parts.append(
+                sql.SQL("(")
+                + sql.SQL(" OR ").join(
+                    sql.SQL("LOWER(COALESCE(r.{field}::text, '')) LIKE %s").format(field=sql.Identifier(field))
+                    for field in dict.fromkeys(table_fields)
+                )
+                + sql.SQL(")")
+            )
+            params.extend([f"%{cleaned_search}%"] * len(dict.fromkeys(table_fields)))
+
+        if cleaned_status and cleaned_status != "all":
+            if cleaned_status == "never_cleaned":
+                where_parts.append(sql.SQL("m.delete_status IS NULL"))
+            else:
+                where_parts.append(sql.SQL("m.delete_status = %s"))
+                params.append(cleaned_status)
+
+        if cleaned_run_id:
+            where_parts.append(
+                sql.SQL("(r.\"_ingestion_run_id\" = %s OR m.cleanup_run_id = %s OR m.pipeline_run_id = %s)")
+            )
+            params.extend([cleaned_run_id, cleaned_run_id, cleaned_run_id])
+
+        params.append(limit)
+        query = sql.SQL(
+            """
+            SELECT
+                %s::text AS source_table,
+                %s::text AS raw_table,
+                COALESCE(r.{key_column}::text, '') AS source_pk,
+                {display_fields},
+                COALESCE(r."_ingestion_run_id", '') AS ingestion_run_id,
+                COALESCE(r."_ingested_at", '') AS ingested_at,
+                COALESCE(m.cleanup_run_id, '') AS cleanup_run_id,
+                COALESCE(m.pipeline_run_id, '') AS cleanup_pipeline_run_id,
+                COALESCE(m.delete_status, 'NOT_ATTEMPTED') AS cleanup_status,
+                COALESCE(m.deleted_at, '') AS cleanup_status_at,
+                COALESCE(m.delete_error, '') AS cleanup_error
+            FROM {schema}.{table} r
+            LEFT JOIN LATERAL (
+                SELECT cleanup_run_id, pipeline_run_id, delete_status, deleted_at, delete_error
+                FROM control.transfer_cleanup_manifest m
+                WHERE m.domain = 'rfa'
+                  AND m.source_table = %s
+                  AND m.source_pk = r.{key_column}::text
+                ORDER BY manifest_id DESC
+                LIMIT 1
+            ) m ON TRUE
+            WHERE {where_clause}
+            ORDER BY r."_ingested_at" DESC NULLS LAST, source_pk
+            LIMIT %s
+            """
+        ).format(
+            key_column=sql.Identifier(spec.key_column),
+            display_fields=sql.SQL(", ").join(
+                _rfa_transfer_cleanup_sql_field(spec, field_name) for field_name in RFA_TRANSFER_CLEANUP_DISPLAY_FIELDS
+            ),
+            schema=sql.Identifier(spec.raw_schema),
+            table=sql.Identifier(spec.raw_table),
+            where_clause=sql.SQL(" AND ").join(where_parts),
+        )
+        rows.extend(_fetch_dicts(query, params))
+
+    rows.sort(key=lambda item: (item.get("ingested_at") or "", item.get("source_table") or "", item.get("source_pk") or ""), reverse=True)
+    return {
+        "rows": rows[:limit],
+        "row_count": len(rows[:limit]),
+        "limit": limit,
+        "is_limited": len(rows) > limit,
+        "errors": errors,
+    }
+
+
+def _rfa_transfer_cleanup_recent_runs(limit: int = 8) -> list[dict[str, Any]]:
+    ensure_cleanup_tables()
+    return _fetch_dicts(
+        """
+        SELECT cleanup_run_id, started_at, ended_at, status, domains, notes
+        FROM control.transfer_cleanup_run_log
+        WHERE domains LIKE %s
+        ORDER BY started_at DESC
+        LIMIT %s
+        """,
+        ["%rfa%", limit],
+    )
 
 
 def _managed_table_refs() -> list[dict[str, str]]:
@@ -2285,6 +2581,83 @@ def internal_data_admin_raw_dedupe(request: HttpRequest) -> HttpResponse:
             "phrase": phrase,
             "result": result,
             "batch_size": RAW_DEDUPE_BATCH_SIZE,
+        },
+    )
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
+def internal_data_admin_rfa_transfer_cleanup(request: HttpRequest) -> HttpResponse:
+    auth_redirect = _require_auth(request)
+    if auth_redirect:
+        return auth_redirect
+
+    _rfa_transfer_cleanup_assert_scope()
+
+    selected_source_table = (request.GET.get("source_table") or request.POST.get("source_table") or "all").strip()
+    selected_cleanup_status = (request.GET.get("cleanup_status") or request.POST.get("cleanup_status") or "all").strip()
+    search_query = (request.GET.get("q") or request.POST.get("q") or "").strip()
+    run_id_filter = (request.GET.get("run_id") or request.POST.get("run_id") or "").strip()
+    result = None
+
+    if request.method == "POST" and (request.POST.get("transfer_action") or "") == "run_rfa_cleanup":
+        confirmation = (request.POST.get("confirmation") or "").strip()
+        if confirmation != RFA_TRANSFER_CLEANUP_CONFIRMATION:
+            messages.error(request, f"Type the exact confirmation phrase: {RFA_TRANSFER_CLEANUP_CONFIRMATION}")
+        else:
+            try:
+                result = run_weekly_transfer_cleanup(["rfa"])
+                status = result.get("status", "UNKNOWN")
+                cleanup_run_id = result.get("cleanup_run_id")
+                if status == "SUCCESS":
+                    messages.success(request, f"RFA ETL + source cleanup completed for cleanup_run_id={cleanup_run_id}.")
+                elif status == "PARTIAL_SUCCESS":
+                    messages.warning(
+                        request,
+                        f"RFA ETL + source cleanup completed with partial success for cleanup_run_id={cleanup_run_id}.",
+                    )
+                else:
+                    messages.error(request, f"RFA ETL + source cleanup failed for cleanup_run_id={cleanup_run_id}.")
+            except Exception as exc:
+                messages.error(request, f"RFA ETL + source cleanup could not run: {exc}")
+
+    try:
+        records = _rfa_transfer_cleanup_raw_records(
+            source_table=selected_source_table,
+            search=search_query,
+            cleanup_status=selected_cleanup_status,
+            run_id=run_id_filter,
+        )
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        selected_source_table = "all"
+        records = _rfa_transfer_cleanup_raw_records(
+            source_table=selected_source_table,
+            search=search_query,
+            cleanup_status=selected_cleanup_status,
+            run_id=run_id_filter,
+        )
+
+    return render(
+        request,
+        "dashboard/internal_data_admin/rfa_transfer_cleanup.html",
+        {
+            "confirmation_phrase": RFA_TRANSFER_CLEANUP_CONFIRMATION,
+            "table_options": _rfa_transfer_cleanup_table_options(selected_source_table),
+            "status_options": [
+                {**option, "is_selected": option["value"] == selected_cleanup_status}
+                for option in RFA_TRANSFER_CLEANUP_STATUS_OPTIONS
+            ],
+            "selected_source_table": selected_source_table,
+            "selected_cleanup_status": selected_cleanup_status,
+            "search_query": search_query,
+            "run_id_filter": run_id_filter,
+            "summary": _rfa_transfer_cleanup_raw_summary(),
+            "records": records,
+            "recent_runs": _rfa_transfer_cleanup_recent_runs(),
+            "result": result,
+            "protected_source_tables": sorted(RFA_TRANSFER_CLEANUP_ALLOWED_SOURCE_TABLES),
+            "protected_raw_tables": sorted(f"{schema}.{table}" for schema, table in RFA_TRANSFER_CLEANUP_ALLOWED_RAW_TABLES),
         },
     )
 
