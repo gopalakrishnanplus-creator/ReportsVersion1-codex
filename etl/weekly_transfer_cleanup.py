@@ -136,6 +136,53 @@ def _normalize_domains(domains: Iterable[str]) -> list[str]:
     return normalized
 
 
+def _normalize_source_tables(source_tables: Iterable[str] | None) -> list[str] | None:
+    if source_tables is None:
+        return None
+    normalized: list[str] = []
+    for source_table in source_tables:
+        value = str(source_table or "").strip()
+        if not value or value.lower() == "all":
+            continue
+        if value not in normalized:
+            normalized.append(value)
+    return normalized or None
+
+
+def _scope_domains_to_source_tables(domains: list[str], source_tables: list[str] | None) -> list[str]:
+    if not source_tables:
+        return domains
+    available_tables = {
+        spec.source_table
+        for domain in domains
+        for spec in SPECS_BY_DOMAIN.get(domain, ())
+    }
+    invalid_tables = sorted(set(source_tables) - available_tables)
+    if invalid_tables:
+        raise ValueError(
+            f"Unsupported cleanup source table for selected domain: {', '.join(invalid_tables)}"
+        )
+    scoped_domains = [
+        domain
+        for domain in domains
+        if any(spec.source_table in source_tables for spec in SPECS_BY_DOMAIN.get(domain, ()))
+    ]
+    if not scoped_domains:
+        raise ValueError("No approved cleanup source table matches the selected domain.")
+    return scoped_domains
+
+
+def _specs_for_domain(domain: str, source_tables: list[str] | None = None) -> tuple[CleanupSpec, ...]:
+    specs = SPECS_BY_DOMAIN.get(domain)
+    if specs is None:
+        raise ValueError(f"Unsupported domain: {domain}")
+    if source_tables:
+        specs = tuple(spec for spec in specs if spec.source_table in source_tables)
+    if not specs:
+        raise ValueError(f"No approved cleanup source table matches {domain}.")
+    return specs
+
+
 def ensure_cleanup_tables() -> None:
     execute("CREATE SCHEMA IF NOT EXISTS control;")
     execute(
@@ -164,11 +211,13 @@ def ensure_cleanup_tables() -> None:
             rows_deleted TEXT,
             rows_already_absent TEXT,
             rows_guard_blocked TEXT,
+            rows_failed TEXT,
             status TEXT,
             error_message TEXT
         );
         """
     )
+    execute("ALTER TABLE control.transfer_cleanup_step_log ADD COLUMN IF NOT EXISTS rows_failed TEXT;")
     execute(
         """
         CREATE TABLE IF NOT EXISTS control.transfer_cleanup_manifest (
@@ -243,14 +292,15 @@ def log_cleanup_step(
     rows_deleted: int = 0,
     rows_already_absent: int = 0,
     rows_guard_blocked: int = 0,
+    rows_failed: int = 0,
     error_message: str = "",
 ) -> None:
     execute(
         """
         INSERT INTO control.transfer_cleanup_step_log
         (cleanup_run_id, domain, pipeline_run_id, source_table, started_at, ended_at, rows_copied, rows_manifested,
-         rows_deleted, rows_already_absent, rows_guard_blocked, status, error_message)
-        VALUES (%s, %s, %s, %s, NOW()::text, NOW()::text, %s, %s, %s, %s, %s, %s, %s)
+         rows_deleted, rows_already_absent, rows_guard_blocked, rows_failed, status, error_message)
+        VALUES (%s, %s, %s, %s, NOW()::text, NOW()::text, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         [
             cleanup_run_id,
@@ -262,6 +312,7 @@ def log_cleanup_step(
             str(rows_deleted),
             str(rows_already_absent),
             str(rows_guard_blocked),
+            str(rows_failed),
             status,
             error_message,
         ],
@@ -617,6 +668,7 @@ def _cleanup_specs_for_run(cleanup_run_id: str, pipeline_run_id: str, specs: tup
             rows_deleted=delete_counts["rows_deleted"],
             rows_already_absent=delete_counts["rows_already_absent"],
             rows_guard_blocked=delete_counts["rows_guard_blocked"],
+            rows_failed=delete_counts["rows_failed"],
             error_message=(
                 "One or more source deletes failed."
                 if step_status == "FAIL"
@@ -645,10 +697,14 @@ def _cleanup_status(cleanup_summary: dict[str, Any]) -> str:
     return "PARTIAL_SUCCESS"
 
 
-def _run_domain(cleanup_run_id: str, domain: str) -> dict[str, Any]:
+def _run_domain(cleanup_run_id: str, domain: str, source_tables: list[str] | None = None) -> dict[str, Any]:
     if domain == "inclinic":
         pipeline_result = run_inclinic_pipeline(trigger_type="weekly_transfer_cleanup")
-        cleanup_summary = _cleanup_specs_for_run(cleanup_run_id, pipeline_result["run_id"], INCLINIC_SPECS)
+        cleanup_summary = _cleanup_specs_for_run(
+            cleanup_run_id,
+            pipeline_result["run_id"],
+            _specs_for_domain(domain, source_tables),
+        )
         cleanup_status = _cleanup_status(cleanup_summary)
         domain_status = pipeline_result["status"]
         if cleanup_status == "FAIL":
@@ -664,7 +720,11 @@ def _run_domain(cleanup_run_id: str, domain: str) -> dict[str, Any]:
 
     if domain == "rfa":
         pipeline_result = run_sapa_pipeline(trigger_type="weekly_transfer_cleanup")
-        cleanup_summary = _cleanup_specs_for_run(cleanup_run_id, pipeline_result["run_id"], RFA_SPECS)
+        cleanup_summary = _cleanup_specs_for_run(
+            cleanup_run_id,
+            pipeline_result["run_id"],
+            _specs_for_domain(domain, source_tables),
+        )
         cleanup_status = _cleanup_status(cleanup_summary)
         return {
             "status": cleanup_status,
@@ -685,8 +745,12 @@ def _overall_status(domain_results: dict[str, Any]) -> str:
     return "FAIL"
 
 
-def run_weekly_transfer_cleanup(domains: Iterable[str]) -> dict[str, Any]:
-    normalized_domains = _normalize_domains(domains)
+def run_weekly_transfer_cleanup(
+    domains: Iterable[str],
+    source_tables: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    selected_source_tables = _normalize_source_tables(source_tables)
+    normalized_domains = _scope_domains_to_source_tables(_normalize_domains(domains), selected_source_tables)
     cleanup_run_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     ensure_cleanup_tables()
     log_cleanup_run(cleanup_run_id, "RUNNING", normalized_domains, notes="{}")
@@ -695,7 +759,7 @@ def run_weekly_transfer_cleanup(domains: Iterable[str]) -> dict[str, Any]:
     with cleanup_lock():
         for domain in normalized_domains:
             try:
-                domain_results[domain] = _run_domain(cleanup_run_id, domain)
+                domain_results[domain] = _run_domain(cleanup_run_id, domain, selected_source_tables)
             except Exception as exc:
                 domain_results[domain] = {
                     "status": "FAIL",
@@ -708,4 +772,5 @@ def run_weekly_transfer_cleanup(domains: Iterable[str]) -> dict[str, Any]:
         "cleanup_run_id": cleanup_run_id,
         "status": status,
         "domains": domain_results,
+        "source_tables": selected_source_tables or ["all"],
     }

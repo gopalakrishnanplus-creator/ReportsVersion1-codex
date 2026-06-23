@@ -1746,13 +1746,14 @@ class DashboardAccessViewTests(SimpleTestCase):
             patch("dashboard.internal_data_admin._transfer_cleanup_raw_summary", return_value=summary),
             patch("dashboard.internal_data_admin._transfer_cleanup_raw_records", return_value=records),
             patch("dashboard.internal_data_admin._transfer_cleanup_recent_runs", return_value=[]),
+            patch("dashboard.internal_data_admin._transfer_cleanup_recent_step_logs", return_value=[]),
         ]
         patches.extend(extra.values())
         return patches
 
     def test_internal_data_admin_rfa_transfer_cleanup_page_renders_records(self):
         patches = self._transfer_cleanup_page_patches()
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
             response = self.client.get(
                 "/_internal/data-admin/transfer-cleanup/?domain=rfa&source_table=redflags_patientsubmission&q=DOC&cleanup_status=DELETED"
             )
@@ -1762,13 +1763,14 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "redflags_patientsubmission")
         self.assertContains(response, "rfa_patient_submission")
         self.assertContains(response, "SUB-1")
-        self.assertContains(response, "Run Selected ETL + Source Cleanup")
+        self.assertContains(response, "Run Lookup ETL + Delete Transferred Source Records")
         self.assertContains(response, "redflags_metricevent")
+        self.assertContains(response, "Normal GitHub deploy ETL does not create these logs")
 
     def test_internal_data_admin_rfa_transfer_cleanup_post_requires_confirmation(self):
         run_cleanup = patch("dashboard.internal_data_admin.run_weekly_transfer_cleanup")
         patches = self._transfer_cleanup_page_patches(run_cleanup=run_cleanup)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as run_mock:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6] as run_mock:
             response = self.client.post(
                 "/_internal/data-admin/transfer-cleanup/",
                 {"domain": "rfa", "transfer_action": "run_transfer_cleanup", "confirmation": "WRONG"},
@@ -1798,18 +1800,19 @@ class DashboardAccessViewTests(SimpleTestCase):
         }
         run_cleanup = patch("dashboard.internal_data_admin.run_weekly_transfer_cleanup", return_value=run_result)
         patches = self._transfer_cleanup_page_patches(run_cleanup=run_cleanup)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as run_mock:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6] as run_mock:
             response = self.client.post(
                 "/_internal/data-admin/transfer-cleanup/",
                 {
                     "domain": "rfa",
+                    "source_table": "redflags_patientsubmission",
                     "transfer_action": "run_transfer_cleanup",
                     "confirmation": "RUN RFA TRANSFER CLEANUP",
                 },
             )
 
         self.assertEqual(response.status_code, 200)
-        run_mock.assert_called_once_with(["rfa"])
+        run_mock.assert_called_once_with(["rfa"], source_tables=["redflags_patientsubmission"])
         self.assertContains(response, "cleanup-1")
 
     def test_weekly_transfer_cleanup_rfa_uses_all_transferred_raw_keys(self):

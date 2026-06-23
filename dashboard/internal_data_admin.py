@@ -1621,6 +1621,36 @@ def _transfer_cleanup_recent_runs(selected_domain: str = "all", limit: int = 8) 
     return matched
 
 
+def _transfer_cleanup_recent_step_logs(
+    selected_domain: str = "all",
+    selected_source_table: str = "all",
+    limit: int = 40,
+) -> list[dict[str, Any]]:
+    ensure_cleanup_tables()
+    domains = set(_transfer_cleanup_domains(selected_domain))
+    selected_table = (selected_source_table or "all").strip()
+    rows = _fetch_dicts(
+        """
+        SELECT cleanup_run_id, domain, pipeline_run_id, source_table, started_at, ended_at,
+               rows_copied, rows_manifested, rows_deleted, rows_already_absent,
+               rows_guard_blocked, COALESCE(rows_failed, '0') AS rows_failed, status, error_message
+        FROM control.transfer_cleanup_step_log
+        ORDER BY ended_at DESC, started_at DESC
+        LIMIT 200
+        """
+    )
+    matched = []
+    for row in rows:
+        if row.get("domain") not in domains:
+            continue
+        if selected_table != "all" and row.get("source_table") != selected_table:
+            continue
+        matched.append(row)
+        if len(matched) >= limit:
+            break
+    return matched
+
+
 def _rfa_transfer_cleanup_recent_runs(limit: int = 8) -> list[dict[str, Any]]:
     ensure_cleanup_tables()
     return _fetch_dicts(
@@ -3566,6 +3596,7 @@ def internal_data_admin_transfer_cleanup(request: HttpRequest) -> HttpResponse:
     search_query = (request.GET.get("q") or request.POST.get("q") or "").strip()
     run_id_filter = (request.GET.get("run_id") or request.POST.get("run_id") or "").strip()
     result = None
+    selected_specs: tuple[Any, ...]
 
     try:
         run_domains = _transfer_cleanup_domains(selected_domain)
@@ -3573,6 +3604,18 @@ def internal_data_admin_transfer_cleanup(request: HttpRequest) -> HttpResponse:
         messages.error(request, str(exc))
         selected_domain = "all"
         run_domains = ["inclinic", "rfa"]
+
+    try:
+        selected_specs = _transfer_cleanup_specs(selected_domain, selected_source_table)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        selected_source_table = "all"
+        selected_specs = _transfer_cleanup_specs(selected_domain, selected_source_table)
+
+    selected_source_tables_to_clean = None if selected_source_table == "all" else [selected_source_table]
+    if selected_source_tables_to_clean:
+        spec_domains = [spec.domain for spec in selected_specs if spec.domain in run_domains]
+        run_domains = list(dict.fromkeys(spec_domains))
 
     confirmation_phrase = _transfer_cleanup_confirmation(selected_domain)
 
@@ -3582,7 +3625,7 @@ def internal_data_admin_transfer_cleanup(request: HttpRequest) -> HttpResponse:
             messages.error(request, f"Type the exact confirmation phrase: {confirmation_phrase}")
         else:
             try:
-                result = run_weekly_transfer_cleanup(run_domains)
+                result = run_weekly_transfer_cleanup(run_domains, source_tables=selected_source_tables_to_clean)
                 status = result.get("status", "UNKNOWN")
                 cleanup_run_id = result.get("cleanup_run_id")
                 if status == "SUCCESS":
@@ -3642,10 +3685,20 @@ def internal_data_admin_transfer_cleanup(request: HttpRequest) -> HttpResponse:
             "summary": _transfer_cleanup_raw_summary(selected_domain),
             "records": records,
             "recent_runs": _transfer_cleanup_recent_runs(selected_domain),
+            "recent_step_logs": _transfer_cleanup_recent_step_logs(selected_domain, selected_source_table),
             "result": result,
             "protected_source_tables": protected_source_tables,
             "protected_raw_tables": protected_raw_tables,
             "domain_notes": [TRANSFER_CLEANUP_DOMAIN_NOTES[domain] for domain in run_domains],
+            "selected_source_tables_to_clean": selected_source_tables_to_clean or ["all approved transfer tables"],
+            "deploy_cleanup_status": {
+                "label": "Not automatic in GitHub deploy",
+                "summary": (
+                    "The GitHub deploy runs normal ETL commands only. Source deletion runs only from this page "
+                    "or the run_weekly_transfer_cleanup management command."
+                ),
+                "safety": "deploy.sh refuses deployment if ENABLE_SOURCE_TRANSFER_DELETE_CLEANUP is enabled.",
+            },
         },
     )
 
