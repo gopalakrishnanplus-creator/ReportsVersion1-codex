@@ -11,12 +11,12 @@
 
 <section class="ida-band">
   <div>
-    <h2>Source table cleanup</h2>
-    <p class="ida-muted">Choose a protected V1 or V2 source table, lookup records that already exist in reporting, then delete only those transferred keys from the matching source table.</p>
+    <h2>Transferred source cleanup</h2>
+    <p class="ida-muted">Pick a source system or table. The report below checks V1 and V2 reporting evidence, then the cleanup deletes only matching transferred keys from the matching source table.</p>
   </div>
   <div class="ida-safety-note">
-    <strong>GitHub deploy ETL</strong>
-    <span>{{ deploy_cleanup_status.label }}</span>
+    <strong>GitHub deploy deletion</strong>
+    <span>{{ deploy_cleanup_status.short }}</span>
   </div>
 </section>
 
@@ -26,28 +26,36 @@
     <strong>{{ selected_domain_label }}</strong>
   </div>
   <div class="ida-summary-tile">
-    <span>Tables available</span>
+    <span>Protected source tables</span>
     <strong>{{ protected_source_tables|length }}</strong>
   </div>
   <div class="ida-summary-tile">
-    <span>Records found in reporting</span>
+    <span>Reporting evidence rows</span>
     <strong>{{ summary.total_rows }}</strong>
   </div>
   <div class="ida-summary-tile">
-    <span>Keys eligible to clean</span>
+    <span>Unique transfer keys</span>
     <strong>{{ summary.total_unique_keys }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Need source cleanup</span>
+    <strong>{{ summary.total_action_required }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Deleted / absent</span>
+    <strong>{{ summary.total_source_complete }}</strong>
   </div>
 </section>
 
 <section class="ida-panel">
-  <p class="ida-eyebrow">Simple rule</p>
+  <p class="ida-eyebrow">Operator rule</p>
   <div class="ida-guidance-grid">
     <div>
-      <strong>What this page deletes</strong>
-      <p>Only selected source-table records whose keys are already present in the reporting evidence tables below.</p>
+      <strong>What gets deleted</strong>
+      <p>Only records from the protected source tables when the same key already exists in reporting evidence.</p>
     </div>
     <div>
-      <strong>GitHub deploy behavior</strong>
+      <strong>GitHub deploy ETL</strong>
       <p>{{ deploy_cleanup_status.summary }} {{ deploy_cleanup_status.safety }}</p>
     </div>
     <div>
@@ -62,7 +70,7 @@
 </section>
 
 <section class="ida-panel">
-  <p class="ida-eyebrow">Filters</p>
+  <p class="ida-eyebrow">Table lookup</p>
   <form class="ida-form ida-record-form" method="get">
     <div class="ida-field-grid">
       <label class="ida-field">
@@ -98,14 +106,14 @@
         <input type="search" name="q" value="{{ search_query }}" placeholder="source key, campaign, doctor, collateral, field rep, activity, red flag, or run id">
       </label>
     </div>
-    <button class="ida-button" type="submit">Lookup Records</button>
+    <button class="ida-button" type="submit">Update Report</button>
   </form>
 </section>
 
 <section class="ida-section">
   <div class="ida-section-heading">
-    <h2>Tables you can clean</h2>
-    <span>{{ summary.table_count }} protected source table{{ summary.table_count|pluralize }}</span>
+    <h2>Cleanup report by source table</h2>
+    <span>{{ summary.table_count }} protected V1/V2 source table{{ summary.table_count|pluralize }}</span>
   </div>
   <div class="ida-scroll">
     <table class="ida-data-table">
@@ -115,10 +123,10 @@
           <th>Source table</th>
           <th>Reporting evidence checked</th>
           <th>Key used</th>
-          <th>Records in reporting</th>
-          <th>Unique keys</th>
+          <th>Reporting evidence</th>
+          <th>Current source cleanup status</th>
           <th>Latest evidence</th>
-          <th>Cleanup log counts</th>
+          <th>Latest cleanup</th>
         </tr>
       </thead>
       <tbody>
@@ -131,15 +139,28 @@
           {% if row.error %}
           <td colspan="4">{{ row.error }}</td>
           {% else %}
-          <td>{{ row.total_rows }}</td>
-          <td>{{ row.unique_keys }}</td>
+          <td>
+            <strong>{{ row.total_rows }}</strong> rows<br>
+            <small>{{ row.unique_keys }} unique key{{ row.unique_keys|pluralize }}</small>
+          </td>
+          <td>
+            <strong>{{ row.cleanup_report.action_required }}</strong> need cleanup<br>
+            <small>
+              not attempted {{ row.cleanup_report.not_attempted }} /
+              pending {{ row.cleanup_report.pending }} /
+              deleted {{ row.cleanup_report.deleted }} /
+              absent {{ row.cleanup_report.already_absent }} /
+              blocked {{ row.cleanup_report.guard_blocked }} /
+              failed {{ row.cleanup_report.failed }}
+            </small>
+          </td>
           <td>{{ row.latest_ingested_at|default:"-" }}<br><small>{{ row.latest_ingestion_run_id|default:"" }}</small></td>
           <td>
-            {% for status, count in row.cleanup_counts.items %}
-            <span><code>{{ status }}</code>: {{ count }}</span><br>
-            {% empty %}
-            <span class="ida-muted">No cleanup attempt yet</span>
-            {% endfor %}
+            {% if row.cleanup_report.latest_cleanup_run_id %}
+            <code>{{ row.cleanup_report.latest_cleanup_run_id }}</code><br><small>{{ row.cleanup_report.latest_cleanup_at }}</small>
+            {% else %}
+            <span class="ida-muted">No cleanup run yet</span>
+            {% endif %}
           </td>
           {% endif %}
         </tr>
@@ -153,9 +174,10 @@
 
 <section class="ida-section">
   <div class="ida-section-heading">
-    <h2>Transferred records</h2>
-    <span>Showing {{ records.row_count }} row{{ records.row_count|pluralize }}{% if records.is_limited %} of first {{ records.limit }} matched rows{% endif %}</span>
+    <h2>Optional record lookup</h2>
+    <span>Showing {{ records.row_count }} sample row{{ records.row_count|pluralize }}{% if records.is_limited %} of first {{ records.limit }} matched rows{% endif %}</span>
   </div>
+  <p class="ida-muted">You do not need to manually inspect these rows before running cleanup. This lookup is only for finding a specific transferred key, campaign, doctor, patient, collateral, activity, or run.</p>
   {% if records.errors %}
   <section class="ida-danger-box">
     <strong>Some tables could not be inspected.</strong>
@@ -208,7 +230,7 @@
   <div class="ida-table-meta">
     <div>
       <p class="ida-eyebrow">Run cleanup</p>
-      <h2>Delete transferred records from the selected source table</h2>
+      <h2>Delete already transferred source records</h2>
       <p class="ida-muted">This runs the selected ETL first, refreshes reporting evidence, then deletes only matching transferred keys from: {{ selected_source_tables_to_clean|join:", " }}.</p>
     </div>
     <div class="ida-safety-note">
@@ -228,7 +250,7 @@
       <span>Confirmation</span>
       <input type="text" name="confirmation" placeholder="{{ confirmation_phrase }}" required>
     </label>
-    <button class="ida-button ida-button-danger" type="submit">Run Lookup ETL + Delete Transferred Source Records</button>
+    <button class="ida-button ida-button-danger" type="submit">Run ETL Check + Delete Transferred Source Records</button>
   </form>
 </section>
 
@@ -311,7 +333,7 @@
           <td><strong>{{ log.status }}</strong><br><small>{{ log.error_message }}</small></td>
         </tr>
         {% empty %}
-        <tr><td colspan="10">No source deletion logs exist for the selected system/table. Normal GitHub deploy ETL does not create these logs because it does not run source deletion.</td></tr>
+        <tr><td colspan="10">No source deletion logs exist for the selected system/table. GitHub deploy ETL does not create these logs because source deletion is not run during deployment.</td></tr>
         {% endfor %}
       </tbody>
     </table>

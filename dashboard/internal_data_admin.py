@@ -74,6 +74,8 @@ TRANSFER_CLEANUP_STATUS_OPTIONS = (
     {"value": "FAILED", "label": "Failed"},
 )
 RFA_TRANSFER_CLEANUP_STATUS_OPTIONS = TRANSFER_CLEANUP_STATUS_OPTIONS
+TRANSFER_CLEANUP_SOURCE_COMPLETE_STATUSES = frozenset({"DELETED", "ALREADY_ABSENT"})
+TRANSFER_CLEANUP_SOURCE_ACTION_STATUSES = frozenset({"NOT_ATTEMPTED", "PENDING", "GUARD_BLOCKED", "FAILED"})
 TRANSFER_CLEANUP_DOMAIN_OPTIONS = (
     {"value": "all", "label": "InClinic + RFA/SAPA"},
     {"value": "inclinic", "label": "InClinic only"},
@@ -537,6 +539,99 @@ def _cleanup_counts_for_source(domain: str, source_table: str) -> dict[str, int]
     return {item["delete_status"] or "UNKNOWN": int(item["row_count"] or 0) for item in status_rows}
 
 
+def _empty_transfer_cleanup_status_report(total_eligible: int = 0) -> dict[str, Any]:
+    total_eligible = int(total_eligible or 0)
+    return {
+        "total_eligible": total_eligible,
+        "not_attempted": total_eligible,
+        "pending": 0,
+        "deleted": 0,
+        "already_absent": 0,
+        "guard_blocked": 0,
+        "failed": 0,
+        "complete": 0,
+        "action_required": total_eligible,
+        "status_counts": {"NOT_ATTEMPTED": total_eligible} if total_eligible else {},
+        "latest_cleanup_run_id": "",
+        "latest_cleanup_at": "",
+    }
+
+
+def _transfer_cleanup_status_report_for_evidence(
+    domain: str,
+    source_table: str,
+    evidence_query: sql.Composable,
+    evidence_params: list[Any] | tuple[Any, ...] | None = None,
+) -> dict[str, Any]:
+    rows = _fetch_dicts(
+        sql.SQL(
+            """
+            WITH evidence AS (
+                {evidence_query}
+            ),
+            eligible AS (
+                SELECT DISTINCT NULLIF(source_pk::text, '') AS source_pk
+                FROM evidence
+                WHERE NULLIF(source_pk::text, '') IS NOT NULL
+            ),
+            latest_manifest AS (
+                SELECT DISTINCT ON (source_pk)
+                    source_pk,
+                    delete_status,
+                    cleanup_run_id,
+                    deleted_at,
+                    manifest_id
+                FROM control.transfer_cleanup_manifest
+                WHERE domain = %s
+                  AND source_table = %s
+                ORDER BY source_pk, manifest_id DESC
+            )
+            SELECT
+                COALESCE(latest_manifest.delete_status, 'NOT_ATTEMPTED') AS cleanup_status,
+                COUNT(*)::text AS key_count,
+                COALESCE(MAX(latest_manifest.cleanup_run_id), '') AS latest_cleanup_run_id,
+                COALESCE(MAX(latest_manifest.deleted_at), '') AS latest_cleanup_at
+            FROM eligible
+            LEFT JOIN latest_manifest ON latest_manifest.source_pk = eligible.source_pk
+            GROUP BY COALESCE(latest_manifest.delete_status, 'NOT_ATTEMPTED')
+            """
+        ).format(evidence_query=evidence_query),
+        [*(evidence_params or []), domain, source_table],
+    )
+    status_counts = {
+        str(row.get("cleanup_status") or "UNKNOWN"): int(row.get("key_count") or 0)
+        for row in rows
+    }
+    total_eligible = sum(status_counts.values())
+    report = _empty_transfer_cleanup_status_report(total_eligible)
+    report["status_counts"] = status_counts
+    report["not_attempted"] = status_counts.get("NOT_ATTEMPTED", 0)
+    report["pending"] = status_counts.get("PENDING", 0)
+    report["deleted"] = status_counts.get("DELETED", 0)
+    report["already_absent"] = status_counts.get("ALREADY_ABSENT", 0)
+    report["guard_blocked"] = status_counts.get("GUARD_BLOCKED", 0)
+    report["failed"] = status_counts.get("FAILED", 0)
+    report["complete"] = sum(status_counts.get(status, 0) for status in TRANSFER_CLEANUP_SOURCE_COMPLETE_STATUSES)
+    report["action_required"] = sum(status_counts.get(status, 0) for status in TRANSFER_CLEANUP_SOURCE_ACTION_STATUSES)
+    report["latest_cleanup_run_id"] = max((str(row.get("latest_cleanup_run_id") or "") for row in rows), default="")
+    report["latest_cleanup_at"] = max((str(row.get("latest_cleanup_at") or "") for row in rows), default="")
+    return report
+
+
+def _transfer_cleanup_totals_from_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
+    reports = [row.get("cleanup_report") or _empty_transfer_cleanup_status_report(row.get("unique_keys") or 0) for row in rows]
+    return {
+        "total_action_required": sum(int(report.get("action_required") or 0) for report in reports),
+        "total_source_complete": sum(int(report.get("complete") or 0) for report in reports),
+        "total_source_deleted": sum(int(report.get("deleted") or 0) for report in reports),
+        "total_source_already_absent": sum(int(report.get("already_absent") or 0) for report in reports),
+        "total_source_not_attempted": sum(int(report.get("not_attempted") or 0) for report in reports),
+        "total_source_pending": sum(int(report.get("pending") or 0) for report in reports),
+        "total_source_guard_blocked": sum(int(report.get("guard_blocked") or 0) for report in reports),
+        "total_source_failed": sum(int(report.get("failed") or 0) for report in reports),
+    }
+
+
 def _latest_transfer_cleanup(domains: list[str]) -> dict[str, Any] | None:
     rows = _fetch_dicts(
         """
@@ -581,6 +676,7 @@ def _inclinic_transfer_cleanup_summary_for_legacy(spec: Any) -> dict[str, Any]:
         "latest_ingested_at": "",
         "latest_ingestion_run_id": "",
         "cleanup_counts": _cleanup_counts_for_source("inclinic", spec.source_table),
+        "cleanup_report": _empty_transfer_cleanup_status_report(),
         "error": "",
     }
     parts: list[sql.Composed] = []
@@ -643,6 +739,14 @@ def _inclinic_transfer_cleanup_summary_for_legacy(spec: Any) -> dict[str, Any]:
         row["unique_keys"] = int(summary_rows[0].get("unique_keys") or 0)
         row["latest_ingested_at"] = summary_rows[0].get("latest_ingested_at") or ""
         row["latest_ingestion_run_id"] = summary_rows[0].get("latest_ingestion_run_id") or ""
+    row["cleanup_report"] = _transfer_cleanup_status_report_for_evidence(
+        "inclinic",
+        spec.source_table,
+        sql.SQL("SELECT source_pk FROM ({source_rows}) evidence").format(
+            source_rows=sql.SQL(" UNION ALL ").join(parts)
+        ),
+        params,
+    )
     return row
 
 
@@ -662,6 +766,7 @@ def _inclinic_transfer_cleanup_summary_for_v2(spec: Any) -> dict[str, Any]:
         "latest_ingested_at": "",
         "latest_ingestion_run_id": "",
         "cleanup_counts": _cleanup_counts_for_source("inclinic", spec.source_table),
+        "cleanup_report": _empty_transfer_cleanup_status_report(),
         "error": "",
     }
     columns = _table_columns(spec.raw_schema, spec.raw_table) if _table_exists(spec.raw_schema, spec.raw_table) else set()
@@ -690,6 +795,21 @@ def _inclinic_transfer_cleanup_summary_for_v2(spec: Any) -> dict[str, Any]:
         row["total_rows"] = int(count_rows[0].get("total_rows") or 0)
         row["unique_keys"] = int(count_rows[0].get("unique_keys") or 0)
         row["latest_ingested_at"] = count_rows[0].get("latest_ingested_at") or ""
+    row["cleanup_report"] = _transfer_cleanup_status_report_for_evidence(
+        "inclinic",
+        spec.source_table,
+        sql.SQL(
+            """
+            SELECT {key_column}::text AS source_pk
+            FROM {schema}.{table}
+            WHERE COALESCE({key_column}::text, '') <> ''
+            """
+        ).format(
+            key_column=sql.Identifier(spec.key_column),
+            schema=sql.Identifier(spec.raw_schema),
+            table=sql.Identifier(spec.raw_table),
+        ),
+    )
     return row
 
 
@@ -706,12 +826,14 @@ def _inclinic_transfer_cleanup_raw_summary() -> dict[str, Any]:
         rows.append(row)
         total_rows += int(row.get("total_rows") or 0)
         total_unique_keys += int(row.get("unique_keys") or 0)
+    cleanup_totals = _transfer_cleanup_totals_from_rows(rows)
     return {
         "rows": rows,
         "table_count": len(rows),
         "total_rows": total_rows,
         "total_unique_keys": total_unique_keys,
         "latest_cleanup": _latest_transfer_cleanup(["inclinic"]),
+        **cleanup_totals,
     }
 
 
@@ -815,6 +937,7 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
             "latest_ingested_at": "",
             "latest_ingestion_run_id": "",
             "cleanup_counts": {},
+            "cleanup_report": _empty_transfer_cleanup_status_report(),
             "error": "",
         }
         if use_v2:
@@ -869,6 +992,24 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
             )
             if latest_run_rows:
                 row["latest_ingestion_run_id"] = latest_run_rows[0].get("latest_ingestion_run_id") or ""
+            row["cleanup_report"] = _transfer_cleanup_status_report_for_evidence(
+                "rfa",
+                spec.source_table,
+                sql.SQL(
+                    """
+                    SELECT {key_column}::text AS source_pk
+                    FROM {schema}.{table}
+                    WHERE COALESCE({key_column}::text, '') <> ''
+                      {source_filter}
+                    """
+                ).format(
+                    key_column=sql.Identifier(key_column),
+                    schema=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA),
+                    table=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_TABLE),
+                    source_filter=source_filter,
+                ),
+                source_params,
+            )
         elif not _table_exists(spec.raw_schema, spec.raw_table):
             row["error"] = "Reporting RAW table is not available yet."
             rows.append(row)
@@ -908,6 +1049,21 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
             )
             if latest_run_rows:
                 row["latest_ingestion_run_id"] = latest_run_rows[0].get("latest_ingestion_run_id") or ""
+            row["cleanup_report"] = _transfer_cleanup_status_report_for_evidence(
+                "rfa",
+                spec.source_table,
+                sql.SQL(
+                    """
+                    SELECT {key_column}::text AS source_pk
+                    FROM {schema}.{table}
+                    WHERE COALESCE({key_column}::text, '') <> ''
+                    """
+                ).format(
+                    key_column=sql.Identifier(spec.key_column),
+                    schema=sql.Identifier(spec.raw_schema),
+                    table=sql.Identifier(spec.raw_table),
+                ),
+            )
 
         status_rows = _fetch_dicts(
             """
@@ -938,6 +1094,7 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
         "total_rows": total_rows,
         "total_unique_keys": total_unique_keys,
         "latest_cleanup": latest_cleanup[0] if latest_cleanup else None,
+        **_transfer_cleanup_totals_from_rows(rows),
     }
 
 
@@ -950,12 +1107,14 @@ def _transfer_cleanup_raw_summary(selected_domain: str) -> dict[str, Any]:
     if "rfa" in domains:
         summaries.append(_rfa_transfer_cleanup_raw_summary())
     rows = [row for summary in summaries for row in summary.get("rows", [])]
+    cleanup_totals = _transfer_cleanup_totals_from_rows(rows)
     return {
         "rows": rows,
         "table_count": len(rows),
         "total_rows": sum(int(summary.get("total_rows") or 0) for summary in summaries),
         "total_unique_keys": sum(int(summary.get("total_unique_keys") or 0) for summary in summaries),
         "latest_cleanup": _latest_transfer_cleanup(domains),
+        **cleanup_totals,
     }
 
 
@@ -3693,8 +3852,9 @@ def internal_data_admin_transfer_cleanup(request: HttpRequest) -> HttpResponse:
             "selected_source_tables_to_clean": selected_source_tables_to_clean or ["all approved transfer tables"],
             "deploy_cleanup_status": {
                 "label": "Not automatic in GitHub deploy",
+                "short": "Off during deploy",
                 "summary": (
-                    "The GitHub deploy runs normal ETL commands only. Source deletion runs only from this page "
+                    "No. The GitHub deploy runs normal ETL commands only; source deletion runs only from this page "
                     "or the run_weekly_transfer_cleanup management command."
                 ),
                 "safety": "deploy.sh refuses deployment if ENABLE_SOURCE_TRANSFER_DELETE_CLEANUP is enabled.",

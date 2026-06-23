@@ -1700,12 +1700,34 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "latest_ingested_at": "2026-06-23T10:00:00+00:00",
                     "latest_ingestion_run_id": "etl-run-1",
                     "cleanup_counts": {"DELETED": 1},
+                    "cleanup_report": {
+                        "total_eligible": 2,
+                        "not_attempted": 1,
+                        "pending": 0,
+                        "deleted": 1,
+                        "already_absent": 0,
+                        "guard_blocked": 0,
+                        "failed": 0,
+                        "complete": 1,
+                        "action_required": 1,
+                        "status_counts": {"NOT_ATTEMPTED": 1, "DELETED": 1},
+                        "latest_cleanup_run_id": "cleanup-1",
+                        "latest_cleanup_at": "2026-06-23T10:05:00+00:00",
+                    },
                     "error": "",
                 }
             ],
             "table_count": 4,
             "total_rows": 2,
             "total_unique_keys": 2,
+            "total_action_required": 1,
+            "total_source_complete": 1,
+            "total_source_deleted": 1,
+            "total_source_already_absent": 0,
+            "total_source_not_attempted": 1,
+            "total_source_pending": 0,
+            "total_source_guard_blocked": 0,
+            "total_source_failed": 0,
             "latest_cleanup": {"status": "SUCCESS"},
         }
         records = {
@@ -1763,9 +1785,10 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "redflags_patientsubmission")
         self.assertContains(response, "rfa_patient_submission")
         self.assertContains(response, "SUB-1")
-        self.assertContains(response, "Run Lookup ETL + Delete Transferred Source Records")
+        self.assertContains(response, "Cleanup report by source table")
+        self.assertContains(response, "Run ETL Check + Delete Transferred Source Records")
         self.assertContains(response, "redflags_metricevent")
-        self.assertContains(response, "Normal GitHub deploy ETL does not create these logs")
+        self.assertContains(response, "GitHub deploy ETL does not create these logs")
 
     def test_internal_data_admin_rfa_transfer_cleanup_post_requires_confirmation(self):
         run_cleanup = patch("dashboard.internal_data_admin.run_weekly_transfer_cleanup")
