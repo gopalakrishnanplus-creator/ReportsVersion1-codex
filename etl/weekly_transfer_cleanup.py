@@ -26,6 +26,7 @@ class CleanupSpec:
     key_column: str
     mysql_settings_name: str
     guard_column: str | None = None
+    delete_all_transferred_keys: bool = False
 
 
 INCLINIC_SPECS: tuple[CleanupSpec, ...] = (
@@ -48,6 +49,7 @@ RFA_SPECS: tuple[CleanupSpec, ...] = (
         raw_table="redflags_submissionredflag_raw",
         key_column="id",
         mysql_settings_name="SAPA_MYSQL",
+        delete_all_transferred_keys=True,
     ),
     CleanupSpec(
         domain="rfa",
@@ -56,6 +58,7 @@ RFA_SPECS: tuple[CleanupSpec, ...] = (
         raw_table="gnd_gndsubmissionredflag_raw",
         key_column="id",
         mysql_settings_name="SAPA_MYSQL",
+        delete_all_transferred_keys=True,
     ),
     CleanupSpec(
         domain="rfa",
@@ -64,6 +67,7 @@ RFA_SPECS: tuple[CleanupSpec, ...] = (
         raw_table="redflags_patientsubmission_raw",
         key_column="record_id",
         mysql_settings_name="SAPA_MYSQL",
+        delete_all_transferred_keys=True,
     ),
     CleanupSpec(
         domain="rfa",
@@ -72,6 +76,7 @@ RFA_SPECS: tuple[CleanupSpec, ...] = (
         raw_table="gnd_gndpatientsubmission_raw",
         key_column="id",
         mysql_settings_name="SAPA_MYSQL",
+        delete_all_transferred_keys=True,
     ),
 )
 
@@ -254,17 +259,19 @@ def source_mysql_cursor(settings_name: str):
             yield cursor
 
 
-def _raw_rows_for_run(spec: CleanupSpec, pipeline_run_id: str) -> list[dict[str, Any]]:
+def _raw_rows_for_cleanup(spec: CleanupSpec, pipeline_run_id: str) -> list[dict[str, Any]]:
     guard_sql = f'"{spec.guard_column}" AS guard_value' if spec.guard_column else "NULL::text AS guard_value"
+    run_filter = "" if spec.delete_all_transferred_keys else 'AND "_ingestion_run_id" = %s'
+    params = [] if spec.delete_all_transferred_keys else [pipeline_run_id]
     rows = fetchall(
         f"""
         SELECT DISTINCT "{spec.key_column}" AS source_pk, {guard_sql}
         FROM {spec.raw_schema}.{spec.raw_table}
-        WHERE "_ingestion_run_id" = %s
-          AND COALESCE("{spec.key_column}", '') <> ''
+        WHERE COALESCE("{spec.key_column}", '') <> ''
+          {run_filter}
         ORDER BY "{spec.key_column}"
         """,
-        [pipeline_run_id],
+        params,
     )
     return rows
 
@@ -395,7 +402,7 @@ def _apply_deletes(cleanup_run_id: str, spec: CleanupSpec) -> dict[str, int]:
 def _cleanup_specs_for_run(cleanup_run_id: str, pipeline_run_id: str, specs: tuple[CleanupSpec, ...]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
     for spec in specs:
-        rows = _raw_rows_for_run(spec, pipeline_run_id)
+        rows = _raw_rows_for_cleanup(spec, pipeline_run_id)
         manifested = _manifest_rows(cleanup_run_id, pipeline_run_id, spec, rows)
         delete_counts = _apply_deletes(cleanup_run_id, spec)
         step_status = "SUCCESS"

@@ -1,0 +1,275 @@
+{% extends "dashboard/internal_data_admin/base.html" %}
+
+{% block title %}RFA Transfer Cleanup{% endblock %}
+{% block heading %}RFA Transfer Cleanup{% endblock %}
+
+{% block content %}
+<nav class="ida-toolbar">
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-home' %}">Back to Data Dashboard</a>
+  <a class="ida-button ida-button-secondary" href="{% url 'internal-data-admin-raw-downloads' %}?system=sapa">RAW Data Downloads</a>
+</nav>
+
+<section class="ida-band">
+  <div>
+    <h2>RFA ETL + source cleanup</h2>
+    <p class="ida-muted">Review RFA submission records already transferred into reporting RAW tables, then run the SAPA/RFA ETL and remove only those transferred records from the approved upstream source tables.</p>
+  </div>
+  <div class="ida-safety-note">
+    <strong>Deletion scope</strong>
+    <span>Only the four patient submission and submission-red-flag source tables listed on this page can be cleaned.</span>
+  </div>
+</section>
+
+<section class="ida-summary-grid" aria-label="RFA transfer cleanup totals">
+  <div class="ida-summary-tile">
+    <span>Protected source tables</span>
+    <strong>{{ protected_source_tables|length }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Reporting RAW rows</span>
+    <strong>{{ summary.total_rows }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Unique transferred keys</span>
+    <strong>{{ summary.total_unique_keys }}</strong>
+  </div>
+  <div class="ida-summary-tile">
+    <span>Latest cleanup</span>
+    <strong>{% if summary.latest_cleanup %}{{ summary.latest_cleanup.status }}{% else %}Not run{% endif %}</strong>
+  </div>
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Approved cleanup scope</p>
+  <div class="ida-guidance-grid">
+    <div>
+      <strong>Source tables that may be deleted from</strong>
+      <p>{{ protected_source_tables|join:", " }}</p>
+    </div>
+    <div>
+      <strong>Tables intentionally not touched by source deletion</strong>
+      <p>doctor data, field rep data, campaign/master/reference tables, redflags_followupreminder, redflags_metricevent</p>
+    </div>
+  </div>
+</section>
+
+<section class="ida-section">
+  <div class="ida-section-heading">
+    <h2>RAW transfer summary</h2>
+    <span>{{ summary.table_count }} reporting tables</span>
+  </div>
+  <div class="ida-scroll">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Source table</th>
+          <th>Reporting RAW table</th>
+          <th>Key</th>
+          <th>Rows in reporting</th>
+          <th>Unique keys</th>
+          <th>Latest ingest</th>
+          <th>Cleanup status counts</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in summary.rows %}
+        <tr>
+          <td><code>{{ row.source_table }}</code></td>
+          <td><code>{{ row.raw_table }}</code></td>
+          <td><code>{{ row.key_column }}</code></td>
+          {% if row.error %}
+          <td colspan="4">{{ row.error }}</td>
+          {% else %}
+          <td>{{ row.total_rows }}</td>
+          <td>{{ row.unique_keys }}</td>
+          <td>{{ row.latest_ingested_at|default:"-" }}<br><small>{{ row.latest_ingestion_run_id|default:"" }}</small></td>
+          <td>
+            {% for status, count in row.cleanup_counts.items %}
+            <span><code>{{ status }}</code>: {{ count }}</span><br>
+            {% empty %}
+            <span class="ida-muted">No cleanup attempt yet</span>
+            {% endfor %}
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="ida-panel">
+  <p class="ida-eyebrow">Search transferred records</p>
+  <form class="ida-form ida-record-form" method="get">
+    <div class="ida-field-grid">
+      <label class="ida-field">
+        <span>Source table</span>
+        <select name="source_table">
+          {% for option in table_options %}
+          <option value="{{ option.value }}" {% if option.is_selected %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="ida-field">
+        <span>Cleanup status</span>
+        <select name="cleanup_status">
+          {% for option in status_options %}
+          <option value="{{ option.value }}" {% if option.is_selected %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="ida-field">
+        <span>Run ID</span>
+        <input type="text" name="run_id" value="{{ run_id_filter }}" placeholder="ETL or cleanup run id">
+      </label>
+      <label class="ida-field ida-field-wide">
+        <span>Search</span>
+        <input type="search" name="q" value="{{ search_query }}" placeholder="Source key, patient, doctor, form, red flag, submission, or run id">
+      </label>
+    </div>
+    <button class="ida-button" type="submit">Search Records</button>
+  </form>
+</section>
+
+<section class="ida-section">
+  <div class="ida-section-heading">
+    <h2>Transferred records</h2>
+    <span>Showing {{ records.row_count }} row{{ records.row_count|pluralize }}{% if records.is_limited %} of first {{ records.limit }} matched rows{% endif %}</span>
+  </div>
+  {% if records.errors %}
+  <section class="ida-danger-box">
+    <strong>Some tables could not be inspected.</strong>
+    <span>{{ records.errors|join:" " }}</span>
+  </section>
+  {% endif %}
+  <div class="ida-scroll">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Source table</th>
+          <th>Source key</th>
+          <th>Patient</th>
+          <th>Doctor</th>
+          <th>Form</th>
+          <th>Submission / red flag</th>
+          <th>Ingest run</th>
+          <th>Cleanup status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in records.rows %}
+        <tr>
+          <td><code>{{ row.source_table }}</code><br><small>{{ row.raw_table }}</small></td>
+          <td><code>{{ row.source_pk }}</code></td>
+          <td>{{ row.patient_id|default:"-" }}</td>
+          <td>{{ row.doctor_id|default:"-" }}</td>
+          <td>{{ row.form_id|default:"-" }}<br><small>{{ row.overall_flag_code|default:"" }}</small></td>
+          <td>{{ row.submission_id|default:"-" }}<br><small>{{ row.red_flag_id|default:"" }}</small></td>
+          <td><code>{{ row.ingestion_run_id }}</code><br><small>{{ row.ingested_at }}</small></td>
+          <td><strong>{{ row.cleanup_status }}</strong><br><small>{{ row.cleanup_run_id }} {{ row.cleanup_error }}</small></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8">No transferred records match these filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="ida-panel ida-cleanup-plan">
+  <div class="ida-table-meta">
+    <div>
+      <p class="ida-eyebrow">Run cleanup</p>
+      <h2>Fetch as usual, then remove transferred RFA source rows</h2>
+      <p class="ida-muted">This runs the SAPA/RFA ETL first. Source deletion then uses reporting RAW keys and is restricted to the four approved RFA transfer tables.</p>
+    </div>
+    <div class="ida-safety-note">
+      <strong>Confirmation phrase</strong>
+      <span><code>{{ confirmation_phrase }}</code></span>
+    </div>
+  </div>
+  <form class="ida-form ida-cleanup-execute" method="post">
+    {% csrf_token %}
+    <input type="hidden" name="transfer_action" value="run_rfa_cleanup">
+    <input type="hidden" name="source_table" value="{{ selected_source_table }}">
+    <input type="hidden" name="cleanup_status" value="{{ selected_cleanup_status }}">
+    <input type="hidden" name="q" value="{{ search_query }}">
+    <input type="hidden" name="run_id" value="{{ run_id_filter }}">
+    <label class="ida-field">
+      <span>Confirmation</span>
+      <input type="text" name="confirmation" placeholder="{{ confirmation_phrase }}" required>
+    </label>
+    <button class="ida-button ida-button-danger" type="submit">Run RFA ETL + Cleanup</button>
+  </form>
+</section>
+
+{% if result %}
+<section class="ida-panel">
+  <p class="ida-eyebrow">Run result</p>
+  <h2>{{ result.status }} / {{ result.cleanup_run_id }}</h2>
+  <div class="ida-scroll">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Table</th>
+          <th>Copied/eligible</th>
+          <th>Manifested</th>
+          <th>Deleted</th>
+          <th>Already absent</th>
+          <th>Guard blocked</th>
+          <th>Failed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for table, item in result.domains.rfa.cleanup.items %}
+        <tr>
+          <td><code>{{ table }}</code></td>
+          <td>{{ item.rows_copied }}</td>
+          <td>{{ item.rows_manifested }}</td>
+          <td>{{ item.rows_deleted }}</td>
+          <td>{{ item.rows_already_absent }}</td>
+          <td>{{ item.rows_guard_blocked }}</td>
+          <td>{{ item.rows_failed }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="7">No table cleanup result was returned.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<section class="ida-section">
+  <div class="ida-section-heading">
+    <h2>Recent cleanup runs</h2>
+    <span>{{ recent_runs|length }} runs</span>
+  </div>
+  <div class="ida-scroll">
+    <table class="ida-data-table">
+      <thead>
+        <tr>
+          <th>Cleanup run</th>
+          <th>Status</th>
+          <th>Started</th>
+          <th>Ended</th>
+          <th>Domains</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for run in recent_runs %}
+        <tr>
+          <td><code>{{ run.cleanup_run_id }}</code></td>
+          <td>{{ run.status }}</td>
+          <td>{{ run.started_at }}</td>
+          <td>{{ run.ended_at }}</td>
+          <td>{{ run.domains }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5">No RFA transfer cleanup has run yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
