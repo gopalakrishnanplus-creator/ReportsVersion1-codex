@@ -15,6 +15,8 @@ from etl.inclinic_pipeline import run_pipeline as run_inclinic_pipeline
 from etl.sapa_growth.pipeline import run_pipeline as run_sapa_pipeline
 
 CLEANUP_LOCK_KEY = 991843
+RFA_ACTIVITY_EVENT_RAW_SCHEMA = "raw_sapa_mysql"
+RFA_ACTIVITY_EVENT_RAW_TABLE = "rfa_activity_event_raw"
 
 
 @dataclass(frozen=True)
@@ -259,11 +261,20 @@ def source_mysql_cursor(settings_name: str):
             yield cursor
 
 
-def _raw_rows_for_cleanup(spec: CleanupSpec, pipeline_run_id: str) -> list[dict[str, Any]]:
+def _postgres_table_exists(schema: str, table: str) -> bool:
+    rows = fetchall("SELECT to_regclass(%s) IS NOT NULL AS exists_flag", [f"{schema}.{table}"])
+    if not rows:
+        return False
+    return bool(rows[0].get("exists_flag"))
+
+
+def _raw_rows_from_legacy_table(spec: CleanupSpec, pipeline_run_id: str) -> list[dict[str, Any]]:
+    if not _postgres_table_exists(spec.raw_schema, spec.raw_table):
+        return []
     guard_sql = f'"{spec.guard_column}" AS guard_value' if spec.guard_column else "NULL::text AS guard_value"
     run_filter = "" if spec.delete_all_transferred_keys else 'AND "_ingestion_run_id" = %s'
     params = [] if spec.delete_all_transferred_keys else [pipeline_run_id]
-    rows = fetchall(
+    return fetchall(
         f"""
         SELECT DISTINCT "{spec.key_column}" AS source_pk, {guard_sql}
         FROM {spec.raw_schema}.{spec.raw_table}
@@ -273,7 +284,34 @@ def _raw_rows_for_cleanup(spec: CleanupSpec, pipeline_run_id: str) -> list[dict[
         """,
         params,
     )
-    return rows
+
+
+def _raw_rows_from_rfa_activity_event(spec: CleanupSpec) -> list[dict[str, Any]]:
+    if not spec.delete_all_transferred_keys:
+        return []
+    if spec.domain != "rfa":
+        return []
+    if not _postgres_table_exists(RFA_ACTIVITY_EVENT_RAW_SCHEMA, RFA_ACTIVITY_EVENT_RAW_TABLE):
+        return []
+    return fetchall(
+        f"""
+        SELECT DISTINCT "source_pk_value" AS source_pk, NULL::text AS guard_value
+        FROM {RFA_ACTIVITY_EVENT_RAW_SCHEMA}.{RFA_ACTIVITY_EVENT_RAW_TABLE}
+        WHERE "source_table" = %s
+          AND COALESCE("source_pk_value", '') <> ''
+        ORDER BY "source_pk_value"
+        """,
+        [spec.source_table],
+    )
+
+
+def _raw_rows_for_cleanup(spec: CleanupSpec, pipeline_run_id: str) -> list[dict[str, Any]]:
+    rows_by_key: dict[str, dict[str, Any]] = {}
+    for row in [*_raw_rows_from_legacy_table(spec, pipeline_run_id), *_raw_rows_from_rfa_activity_event(spec)]:
+        source_pk = str(row.get("source_pk") or "").strip()
+        if source_pk:
+            rows_by_key[source_pk] = {"source_pk": source_pk, "guard_value": row.get("guard_value")}
+    return [rows_by_key[key] for key in sorted(rows_by_key)]
 
 
 def _manifest_rows(cleanup_run_id: str, pipeline_run_id: str, spec: CleanupSpec, rows: list[dict[str, Any]]) -> int:

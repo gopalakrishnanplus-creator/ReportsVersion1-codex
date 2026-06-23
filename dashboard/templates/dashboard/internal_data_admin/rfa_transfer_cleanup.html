@@ -12,7 +12,7 @@
 <section class="ida-band">
   <div>
     <h2>RFA ETL + source cleanup</h2>
-    <p class="ida-muted">Review RFA submission records already transferred into reporting RAW tables, then run the SAPA/RFA ETL and remove only those transferred records from the approved upstream source tables.</p>
+    <p class="ida-muted">Review RFA submission records already transferred into V2 reporting activity events, then run the SAPA/RFA ETL and remove only those transferred records from the approved upstream source tables.</p>
   </div>
   <div class="ida-safety-note">
     <strong>Deletion scope</strong>
@@ -63,7 +63,8 @@
       <thead>
         <tr>
           <th>Source table</th>
-          <th>Reporting RAW table</th>
+          <th>Reporting table</th>
+          <th>Activity type</th>
           <th>Key</th>
           <th>Rows in reporting</th>
           <th>Unique keys</th>
@@ -75,8 +76,9 @@
         {% for row in summary.rows %}
         <tr>
           <td><code>{{ row.source_table }}</code></td>
-          <td><code>{{ row.raw_table }}</code></td>
-          <td><code>{{ row.key_column }}</code></td>
+          <td><code>{{ row.raw_table }}</code><br><small>{{ row.reporting_source }}{% if row.legacy_raw_table and row.legacy_raw_table != row.raw_table %} / legacy: {{ row.legacy_raw_table }}{% endif %}</small></td>
+          <td><code>{{ row.activity_type|default:"-" }}</code></td>
+          <td><code>{{ row.key_column }}</code><br><small>source column: {{ row.source_pk_column }}</small></td>
           {% if row.error %}
           <td colspan="4">{{ row.error }}</td>
           {% else %}
@@ -124,7 +126,7 @@
       </label>
       <label class="ida-field ida-field-wide">
         <span>Search</span>
-        <input type="search" name="q" value="{{ search_query }}" placeholder="Source key, patient, doctor, form, red flag, submission, or run id">
+        <input type="search" name="q" value="{{ search_query }}" placeholder="source_pk_value, source_pk_column, patient, doctor, form, red flag, activity type, or run id">
       </label>
     </div>
     <button class="ida-button" type="submit">Search Records</button>
@@ -148,6 +150,7 @@
         <tr>
           <th>Source table</th>
           <th>Source key</th>
+          <th>Activity type</th>
           <th>Patient</th>
           <th>Doctor</th>
           <th>Form</th>
@@ -160,7 +163,8 @@
         {% for row in records.rows %}
         <tr>
           <td><code>{{ row.source_table }}</code><br><small>{{ row.raw_table }}</small></td>
-          <td><code>{{ row.source_pk }}</code></td>
+          <td><code>{{ row.source_pk }}</code><br><small>{{ row.source_pk_column|default:"source_pk_value" }}</small></td>
+          <td><code>{{ row.activity_type|default:"-" }}</code><br><small>{{ row.event_at|default:"" }}</small></td>
           <td>{{ row.patient_id|default:"-" }}</td>
           <td>{{ row.doctor_id|default:"-" }}</td>
           <td>{{ row.form_id|default:"-" }}<br><small>{{ row.overall_flag_code|default:"" }}</small></td>
@@ -169,7 +173,7 @@
           <td><strong>{{ row.cleanup_status }}</strong><br><small>{{ row.cleanup_run_id }} {{ row.cleanup_error }}</small></td>
         </tr>
         {% empty %}
-        <tr><td colspan="8">No transferred records match these filters.</td></tr>
+        <tr><td colspan="9">No transferred records match these filters.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -181,7 +185,7 @@
     <div>
       <p class="ida-eyebrow">Run cleanup</p>
       <h2>Fetch as usual, then remove transferred RFA source rows</h2>
-      <p class="ida-muted">This runs the SAPA/RFA ETL first. Source deletion then uses reporting RAW keys and is restricted to the four approved RFA transfer tables.</p>
+      <p class="ida-muted">This runs the SAPA/RFA ETL first. Source deletion then uses V2 <code>source_table</code> + <code>source_pk_value</code> reporting keys and is restricted to the four approved RFA transfer tables.</p>
     </div>
     <div class="ida-safety-note">
       <strong>Confirmation phrase</strong>

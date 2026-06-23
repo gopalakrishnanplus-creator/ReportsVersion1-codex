@@ -69,6 +69,15 @@ RFA_TRANSFER_CLEANUP_STATUS_OPTIONS = (
 )
 RFA_TRANSFER_CLEANUP_ALLOWED_SOURCE_TABLES = frozenset(spec.source_table for spec in RFA_SPECS)
 RFA_TRANSFER_CLEANUP_ALLOWED_RAW_TABLES = frozenset((spec.raw_schema, spec.raw_table) for spec in RFA_SPECS)
+RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA = "raw_sapa_mysql"
+RFA_TRANSFER_CLEANUP_V2_RAW_TABLE = "rfa_activity_event_raw"
+RFA_TRANSFER_CLEANUP_V2_SOURCE_TABLE = "rfa_activity_event_v2"
+RFA_TRANSFER_CLEANUP_ACTIVITY_TYPES = {
+    "redflags_patientsubmission": "rfa_patient_submission",
+    "gnd_gndpatientsubmission": "gnd_patient_submission",
+    "redflags_submissionredflag": "rfa_submission_red_flag",
+    "gnd_gndsubmissionredflag": "gnd_submission_red_flag",
+}
 RFA_TRANSFER_CLEANUP_DISPLAY_FIELDS = (
     "patient_id",
     "doctor_id",
@@ -396,6 +405,19 @@ def _table_exists(schema: str, table: str) -> bool:
     return bool(rows)
 
 
+def _table_columns(schema: str, table: str) -> set[str]:
+    rows = _fetch_dicts(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = %s
+        """,
+        [schema, table],
+    )
+    return {row["column_name"] for row in rows}
+
+
 def _rfa_transfer_cleanup_assert_scope() -> None:
     source_tables = {spec.source_table for spec in RFA_SPECS}
     raw_tables = {(spec.raw_schema, spec.raw_table) for spec in RFA_SPECS}
@@ -441,6 +463,21 @@ def _rfa_transfer_cleanup_source_columns(spec: Any) -> set[str]:
     return set(source_spec.columns if source_spec else ())
 
 
+def _rfa_transfer_cleanup_v2_available() -> bool:
+    return _table_exists(RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA, RFA_TRANSFER_CLEANUP_V2_RAW_TABLE)
+
+
+def _rfa_transfer_cleanup_v2_columns() -> set[str]:
+    if not _rfa_transfer_cleanup_v2_available():
+        return set()
+    return _table_columns(RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA, RFA_TRANSFER_CLEANUP_V2_RAW_TABLE)
+
+
+def _rfa_transfer_cleanup_v2_usable() -> bool:
+    columns = _rfa_transfer_cleanup_v2_columns()
+    return {"source_table", "source_pk_value"}.issubset(columns)
+
+
 def _rfa_transfer_cleanup_selected_specs(source_table: str) -> tuple[Any, ...]:
     selected = (source_table or "all").strip()
     if selected == "all":
@@ -456,11 +493,21 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     total_rows = 0
     total_unique_keys = 0
+    use_v2 = _rfa_transfer_cleanup_v2_usable()
+    v2_columns = _rfa_transfer_cleanup_v2_columns() if use_v2 else set()
     for spec in RFA_SPECS:
         row = {
             "source_table": spec.source_table,
-            "raw_table": f"{spec.raw_schema}.{spec.raw_table}",
-            "key_column": spec.key_column,
+            "activity_type": RFA_TRANSFER_CLEANUP_ACTIVITY_TYPES.get(spec.source_table, ""),
+            "raw_table": (
+                f"{RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA}.{RFA_TRANSFER_CLEANUP_V2_RAW_TABLE}"
+                if use_v2
+                else f"{spec.raw_schema}.{spec.raw_table}"
+            ),
+            "legacy_raw_table": f"{spec.raw_schema}.{spec.raw_table}",
+            "key_column": "source_pk_value" if use_v2 else spec.key_column,
+            "source_pk_column": spec.key_column,
+            "reporting_source": "V2 activity events" if use_v2 else "Legacy RAW table",
             "total_rows": 0,
             "unique_keys": 0,
             "latest_ingested_at": "",
@@ -468,45 +515,89 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
             "cleanup_counts": {},
             "error": "",
         }
-        if not _table_exists(spec.raw_schema, spec.raw_table):
+        if use_v2:
+            latest_expr = '"event_at"' if "event_at" in v2_columns else '"_ingested_at"'
+            count_rows = _fetch_dicts(
+                sql.SQL(
+                    """
+                    SELECT
+                        COUNT(*)::text AS total_rows,
+                        COUNT(DISTINCT NULLIF("source_pk_value", ''))::text AS unique_keys,
+                        COALESCE(MAX({latest_expr}), '') AS latest_ingested_at
+                    FROM {schema}.{table}
+                    WHERE "source_table" = %s
+                      AND COALESCE("source_pk_value", '') <> ''
+                    """
+                ).format(
+                    latest_expr=sql.SQL(latest_expr),
+                    schema=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA),
+                    table=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_TABLE),
+                ),
+                [spec.source_table],
+            )
+            if count_rows:
+                row["total_rows"] = int(count_rows[0].get("total_rows") or 0)
+                row["unique_keys"] = int(count_rows[0].get("unique_keys") or 0)
+                row["latest_ingested_at"] = count_rows[0].get("latest_ingested_at") or ""
+                total_rows += row["total_rows"]
+                total_unique_keys += row["unique_keys"]
+
+            latest_run_rows = _fetch_dicts(
+                sql.SQL(
+                    """
+                    SELECT COALESCE("_ingestion_run_id", '') AS latest_ingestion_run_id
+                    FROM {schema}.{table}
+                    WHERE "source_table" = %s
+                    ORDER BY "_ingested_at" DESC NULLS LAST
+                    LIMIT 1
+                    """
+                ).format(
+                    schema=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA),
+                    table=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_TABLE),
+                ),
+                [spec.source_table],
+            )
+            if latest_run_rows:
+                row["latest_ingestion_run_id"] = latest_run_rows[0].get("latest_ingestion_run_id") or ""
+        elif not _table_exists(spec.raw_schema, spec.raw_table):
             row["error"] = "Reporting RAW table is not available yet."
             rows.append(row)
             continue
-
-        count_rows = _fetch_dicts(
-            sql.SQL(
-                """
-                SELECT
-                    COUNT(*)::text AS total_rows,
-                    COUNT(DISTINCT NULLIF({key_column}, ''))::text AS unique_keys,
-                    COALESCE(MAX("_ingested_at"), '') AS latest_ingested_at
-                FROM {schema}.{table}
-                """
-            ).format(
-                key_column=sql.Identifier(spec.key_column),
-                schema=sql.Identifier(spec.raw_schema),
-                table=sql.Identifier(spec.raw_table),
+        else:
+            count_rows = _fetch_dicts(
+                sql.SQL(
+                    """
+                    SELECT
+                        COUNT(*)::text AS total_rows,
+                        COUNT(DISTINCT NULLIF({key_column}, ''))::text AS unique_keys,
+                        COALESCE(MAX("_ingested_at"), '') AS latest_ingested_at
+                    FROM {schema}.{table}
+                    """
+                ).format(
+                    key_column=sql.Identifier(spec.key_column),
+                    schema=sql.Identifier(spec.raw_schema),
+                    table=sql.Identifier(spec.raw_table),
+                )
             )
-        )
-        if count_rows:
-            row["total_rows"] = int(count_rows[0].get("total_rows") or 0)
-            row["unique_keys"] = int(count_rows[0].get("unique_keys") or 0)
-            row["latest_ingested_at"] = count_rows[0].get("latest_ingested_at") or ""
-            total_rows += row["total_rows"]
-            total_unique_keys += row["unique_keys"]
+            if count_rows:
+                row["total_rows"] = int(count_rows[0].get("total_rows") or 0)
+                row["unique_keys"] = int(count_rows[0].get("unique_keys") or 0)
+                row["latest_ingested_at"] = count_rows[0].get("latest_ingested_at") or ""
+                total_rows += row["total_rows"]
+                total_unique_keys += row["unique_keys"]
 
-        latest_run_rows = _fetch_dicts(
-            sql.SQL(
-                """
-                SELECT COALESCE("_ingestion_run_id", '') AS latest_ingestion_run_id
-                FROM {schema}.{table}
-                ORDER BY "_ingested_at" DESC NULLS LAST
-                LIMIT 1
-                """
-            ).format(schema=sql.Identifier(spec.raw_schema), table=sql.Identifier(spec.raw_table))
-        )
-        if latest_run_rows:
-            row["latest_ingestion_run_id"] = latest_run_rows[0].get("latest_ingestion_run_id") or ""
+            latest_run_rows = _fetch_dicts(
+                sql.SQL(
+                    """
+                    SELECT COALESCE("_ingestion_run_id", '') AS latest_ingestion_run_id
+                    FROM {schema}.{table}
+                    ORDER BY "_ingested_at" DESC NULLS LAST
+                    LIMIT 1
+                    """
+                ).format(schema=sql.Identifier(spec.raw_schema), table=sql.Identifier(spec.raw_table))
+            )
+            if latest_run_rows:
+                row["latest_ingestion_run_id"] = latest_run_rows[0].get("latest_ingestion_run_id") or ""
 
         status_rows = _fetch_dicts(
             """
@@ -549,6 +640,142 @@ def _rfa_transfer_cleanup_sql_field(spec: Any, field_name: str) -> sql.Composed:
     return sql.SQL("''::text AS {alias}").format(alias=sql.Identifier(field_name))
 
 
+def _rfa_transfer_cleanup_v2_sql_field(columns: set[str], field_name: str, alias: str | None = None) -> sql.Composed:
+    output_alias = alias or field_name
+    if field_name in columns:
+        return sql.SQL("COALESCE(r.{field}::text, '') AS {alias}").format(
+            field=sql.Identifier(field_name),
+            alias=sql.Identifier(output_alias),
+        )
+    return sql.SQL("''::text AS {alias}").format(alias=sql.Identifier(output_alias))
+
+
+def _rfa_transfer_cleanup_raw_records_v2(
+    *,
+    specs: tuple[Any, ...],
+    search: str,
+    cleanup_status: str,
+    run_id: str,
+    limit: int,
+) -> dict[str, Any]:
+    columns = _rfa_transfer_cleanup_v2_columns()
+    cleaned_search = (search or "").strip().lower()
+    cleaned_status = (cleanup_status or "all").strip()
+    cleaned_run_id = (run_id or "").strip()
+    rows: list[dict[str, Any]] = []
+
+    for spec in specs:
+        where_parts = [
+            sql.SQL("r.\"source_table\" = %s"),
+            sql.SQL("COALESCE(r.\"source_pk_value\", '') <> ''"),
+        ]
+        params: list[Any] = [
+            spec.source_table,
+            f"{RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA}.{RFA_TRANSFER_CLEANUP_V2_RAW_TABLE}",
+            spec.source_table,
+            spec.source_table,
+        ]
+
+        if cleaned_search:
+            searchable_fields = [
+                "source_table",
+                "source_pk_column",
+                "source_pk_value",
+                "activity_type",
+                "patient_id_raw",
+                "doctor_uuid",
+                "form_id_raw",
+                "red_flag_id_raw",
+                "overall_flag_code",
+                "_ingestion_run_id",
+            ]
+            table_fields = [field for field in searchable_fields if field in columns]
+            where_parts.append(
+                sql.SQL("(")
+                + sql.SQL(" OR ").join(
+                    sql.SQL("LOWER(COALESCE(r.{field}::text, '')) LIKE %s").format(field=sql.Identifier(field))
+                    for field in table_fields
+                )
+                + sql.SQL(")")
+            )
+            params.extend([f"%{cleaned_search}%"] * len(table_fields))
+
+        if cleaned_status and cleaned_status != "all":
+            if cleaned_status == "never_cleaned":
+                where_parts.append(sql.SQL("m.delete_status IS NULL"))
+            else:
+                where_parts.append(sql.SQL("m.delete_status = %s"))
+                params.append(cleaned_status)
+
+        if cleaned_run_id:
+            where_parts.append(
+                sql.SQL("(r.\"_ingestion_run_id\" = %s OR m.cleanup_run_id = %s OR m.pipeline_run_id = %s)")
+            )
+            params.extend([cleaned_run_id, cleaned_run_id, cleaned_run_id])
+
+        params.append(limit)
+        query = sql.SQL(
+            """
+            SELECT
+                %s::text AS source_table,
+                %s::text AS raw_table,
+                COALESCE(r."source_pk_value", '') AS source_pk,
+                {source_pk_column},
+                {activity_type},
+                {event_at},
+                {patient_id},
+                {doctor_id},
+                {form_id},
+                {overall_flag_code},
+                ''::text AS submission_id,
+                {red_flag_id},
+                COALESCE(r."_ingestion_run_id", '') AS ingestion_run_id,
+                COALESCE(r."_ingested_at", '') AS ingested_at,
+                COALESCE(m.cleanup_run_id, '') AS cleanup_run_id,
+                COALESCE(m.pipeline_run_id, '') AS cleanup_pipeline_run_id,
+                COALESCE(m.delete_status, 'NOT_ATTEMPTED') AS cleanup_status,
+                COALESCE(m.deleted_at, '') AS cleanup_status_at,
+                COALESCE(m.delete_error, '') AS cleanup_error
+            FROM {schema}.{table} r
+            LEFT JOIN LATERAL (
+                SELECT cleanup_run_id, pipeline_run_id, delete_status, deleted_at, delete_error
+                FROM control.transfer_cleanup_manifest m
+                WHERE m.domain = 'rfa'
+                  AND m.source_table = %s
+                  AND m.source_pk = r."source_pk_value"
+                ORDER BY manifest_id DESC
+                LIMIT 1
+            ) m ON TRUE
+            WHERE {where_clause}
+            ORDER BY r."_ingested_at" DESC NULLS LAST, source_pk
+            LIMIT %s
+            """
+        ).format(
+            source_pk_column=_rfa_transfer_cleanup_v2_sql_field(columns, "source_pk_column"),
+            activity_type=_rfa_transfer_cleanup_v2_sql_field(columns, "activity_type"),
+            event_at=_rfa_transfer_cleanup_v2_sql_field(columns, "event_at"),
+            patient_id=_rfa_transfer_cleanup_v2_sql_field(columns, "patient_id_raw", "patient_id"),
+            doctor_id=_rfa_transfer_cleanup_v2_sql_field(columns, "doctor_uuid", "doctor_id"),
+            form_id=_rfa_transfer_cleanup_v2_sql_field(columns, "form_id_raw", "form_id"),
+            overall_flag_code=_rfa_transfer_cleanup_v2_sql_field(columns, "overall_flag_code"),
+            red_flag_id=_rfa_transfer_cleanup_v2_sql_field(columns, "red_flag_id_raw", "red_flag_id"),
+            schema=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA),
+            table=sql.Identifier(RFA_TRANSFER_CLEANUP_V2_RAW_TABLE),
+            where_clause=sql.SQL(" AND ").join(where_parts),
+        )
+        rows.extend(_fetch_dicts(query, params))
+
+    rows.sort(key=lambda item: (item.get("event_at") or item.get("ingested_at") or "", item.get("source_table") or "", item.get("source_pk") or ""), reverse=True)
+    return {
+        "rows": rows[:limit],
+        "row_count": len(rows[:limit]),
+        "limit": limit,
+        "is_limited": len(rows) > limit,
+        "errors": [],
+        "uses_v2": True,
+    }
+
+
 def _rfa_transfer_cleanup_raw_records(
     *,
     source_table: str = "all",
@@ -565,6 +792,15 @@ def _rfa_transfer_cleanup_raw_records(
     limit = max(1, min(int(limit or RFA_TRANSFER_CLEANUP_PAGE_SIZE), 500))
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
+
+    if _rfa_transfer_cleanup_v2_usable():
+        return _rfa_transfer_cleanup_raw_records_v2(
+            specs=specs,
+            search=cleaned_search,
+            cleanup_status=cleaned_status,
+            run_id=cleaned_run_id,
+            limit=limit,
+        )
 
     for spec in specs:
         if not _table_exists(spec.raw_schema, spec.raw_table):
@@ -652,6 +888,7 @@ def _rfa_transfer_cleanup_raw_records(
         "limit": limit,
         "is_limited": len(rows) > limit,
         "errors": errors,
+        "uses_v2": False,
     }
 
 
@@ -2657,7 +2894,12 @@ def internal_data_admin_rfa_transfer_cleanup(request: HttpRequest) -> HttpRespon
             "recent_runs": _rfa_transfer_cleanup_recent_runs(),
             "result": result,
             "protected_source_tables": sorted(RFA_TRANSFER_CLEANUP_ALLOWED_SOURCE_TABLES),
-            "protected_raw_tables": sorted(f"{schema}.{table}" for schema, table in RFA_TRANSFER_CLEANUP_ALLOWED_RAW_TABLES),
+            "protected_raw_tables": sorted(
+                {
+                    *(f"{schema}.{table}" for schema, table in RFA_TRANSFER_CLEANUP_ALLOWED_RAW_TABLES),
+                    f"{RFA_TRANSFER_CLEANUP_V2_RAW_SCHEMA}.{RFA_TRANSFER_CLEANUP_V2_RAW_TABLE}",
+                }
+            ),
         },
     )
 
