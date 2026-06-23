@@ -411,6 +411,30 @@ def _activity_value(row: dict[str, Any], payload: dict[str, Any], *fields: str) 
     return None
 
 
+def _activity_slug(value: Any) -> str:
+    return "".join(ch for ch in ((clean_text(value) or "").lower().replace("-", "_")) if ch.isalnum())
+
+
+def _activity_form_event_type(row: dict[str, Any], payload: dict[str, Any]) -> str:
+    return _activity_slug(_activity_value(row, payload, "event_type", "patient_form_event_type", "form_event_type"))
+
+
+def _activity_submission_source_table(row: dict[str, Any], payload: dict[str, Any], activity_slug: str) -> str:
+    source_system = _activity_slug(_activity_value(row, payload, "source_system"))
+    if source_system == "gnd" or activity_slug == "gndpatientsubmission" or _activity_value(row, payload, "gnd_submission_id"):
+        return "gnd_gndpatientsubmission"
+    return "redflags_patientsubmission"
+
+
+def _is_submitted_form_activity(row: dict[str, Any], payload: dict[str, Any], source_table: str) -> bool:
+    event_type = _activity_form_event_type(row, payload)
+    if event_type in {"urlresolved", "urlopened", "urlopen"}:
+        return False
+    if source_table == "redflags_patient_form_activity" or event_type:
+        return event_type == "formsubmitted"
+    return True
+
+
 def _json_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -436,11 +460,14 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
     for row in events:
         source_table = clean_text(row.get("source_table"))
         activity_type = (clean_text(row.get("activity_type")) or "").lower().replace("-", "_")
-        activity_slug = "".join(ch for ch in activity_type if ch.isalnum())
+        activity_slug = _activity_slug(activity_type)
+        payload = _activity_payload(row)
         if source_table not in legacy_rows:
             if activity_slug in {"fieldreplogin", "fieldreploggedin"}:
                 source_table = "redflags_metricevent"
             elif activity_slug in {
+                "rfapatientsubmission",
+                "gndpatientsubmission",
                 "patientsubmission",
                 "patientsubmitted",
                 "screeningsubmission",
@@ -455,33 +482,38 @@ def _activity_events_as_legacy_rows(events: list[dict[str, Any]]) -> dict[str, l
                 "redflagspatientsubmission",
                 "gndgndpatientsubmission",
             }:
-                source_table = "redflags_patientsubmission"
+                source_table = _activity_submission_source_table(row, payload, activity_slug)
+            elif source_table == "redflags_patient_form_activity":
+                source_table = _activity_submission_source_table(row, payload, activity_slug)
         if source_table not in legacy_rows:
             continue
-        payload = _activity_payload(row)
         if source_table == "redflags_patientsubmission":
+            if not _is_submitted_form_activity(row, payload, clean_text(row.get("source_table")) or source_table):
+                continue
             legacy_rows[source_table].append(
                 {
-                    "record_id": _activity_value(row, payload, "record_id", "source_event_id", "source_pk_value"),
+                    "record_id": _activity_value(row, payload, "record_id", "submission_record_id", "patient_submission_id", "source_event_id", "source_pk_value"),
                     "language_code": _activity_value(row, payload, "language_code"),
                     "submitted_at": _activity_value(row, payload, "submitted_at", "event_at", "source_created_at"),
                     "patient_id": _activity_value(row, payload, "patient_id", "patient_id_raw"),
                     "doctor_id": _activity_value(row, payload, "doctor_id", "doctor_uuid"),
-                    "campaign_id": _activity_value(row, payload, "campaign_id", "campaign_uuid"),
+                    "campaign_id": _activity_value(row, payload, "campaign_id", "campaign_uuid", "campaign_id_raw"),
                     "field_rep_id": _activity_value(row, payload, "field_rep_id", "field_rep_uuid_at_event_time"),
                     "form_id": _activity_value(row, payload, "form_id", "form_id_raw"),
                     "overall_flag_code": _activity_value(row, payload, "overall_flag_code"),
                 }
             )
         elif source_table == "gnd_gndpatientsubmission":
+            if not _is_submitted_form_activity(row, payload, clean_text(row.get("source_table")) or source_table):
+                continue
             legacy_rows[source_table].append(
                 {
-                    "id": _activity_value(row, payload, "id", "source_event_id", "source_pk_value"),
+                    "id": _activity_value(row, payload, "id", "gnd_submission_id", "submission_record_id", "patient_submission_id", "source_event_id", "source_pk_value"),
                     "patient_id": _activity_value(row, payload, "patient_id", "patient_id_raw"),
                     "language_code": _activity_value(row, payload, "language_code"),
                     "submitted_at": _activity_value(row, payload, "submitted_at", "event_at", "source_created_at"),
                     "doctor_id": _activity_value(row, payload, "doctor_id", "doctor_uuid"),
-                    "campaign_id": _activity_value(row, payload, "campaign_id", "campaign_uuid"),
+                    "campaign_id": _activity_value(row, payload, "campaign_id", "campaign_uuid", "campaign_id_raw"),
                     "field_rep_id": _activity_value(row, payload, "field_rep_id", "field_rep_uuid_at_event_time"),
                     "form_id": _activity_value(row, payload, "form_id", "form_id_raw"),
                     "overall_flag_code": _activity_value(row, payload, "overall_flag_code"),
