@@ -136,6 +136,9 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertTrue(MYSQL_TABLE_SPECS["campaign_campaignfieldrep"].current_snapshot)
         self.assertFalse(MYSQL_TABLE_SPECS["rfa_activity_event"].current_snapshot)
         self.assertEqual(MYSQL_TABLE_SPECS["rfa_activity_event"].lookback_days, 45)
+        self.assertIn("event_type", MYSQL_TABLE_SPECS["rfa_activity_event"].columns)
+        self.assertIn("source_system", MYSQL_TABLE_SPECS["rfa_activity_event"].columns)
+        self.assertIn("submitted_at", MYSQL_TABLE_SPECS["rfa_activity_event"].columns)
         self.assertEqual(MYSQL_TABLE_SPECS["redflags_patientsubmission"].lookback_days, 45)
         self.assertEqual(MYSQL_TABLE_SPECS["gnd_gndpatientsubmission"].lookback_days, 45)
 
@@ -313,6 +316,60 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(submission["doctor_id"], "DOC001")
         self.assertEqual(submission["campaign_id"], "599a2023-3ab9-4227-b82c-5f0a1bc36579")
         self.assertEqual(submission["overall_flag_code"], "RED")
+
+    def test_patient_form_activity_only_counts_form_submitted_events(self):
+        converted = _activity_events_as_legacy_rows(
+            [
+                {
+                    "source_table": "redflags_patient_form_activity",
+                    "activity_type": "rfa_patient_submission",
+                    "event_type": "url_resolved",
+                    "source_event_id": "resolved-1",
+                    "source_system": "rfa",
+                    "url_resolved_at": "2026-06-13 09:50:00",
+                    "submitted_at": "",
+                    "doctor_uuid": "DOC001",
+                    "patient_id": "PAT001",
+                    "campaign_id": "camp-a",
+                    "form_id": "FORM001",
+                },
+                {
+                    "source_table": "redflags_patient_form_activity",
+                    "activity_type": "rfa_patient_submission",
+                    "event_type": "form_submitted",
+                    "source_event_id": "submitted-1",
+                    "source_system": "rfa",
+                    "patient_submission_id": "sub-rfa-1",
+                    "submitted_at": "2026-06-13 09:55:00",
+                    "doctor_uuid": "DOC001",
+                    "patient_id": "PAT001",
+                    "campaign_id": "camp-a",
+                    "form_id": "FORM001",
+                    "language_code": "en",
+                },
+                {
+                    "source_table": "redflags_patient_form_activity",
+                    "activity_type": "gnd_patient_submission",
+                    "event_type": "form_submitted",
+                    "source_event_id": "submitted-2",
+                    "source_system": "gnd",
+                    "gnd_submission_id": "sub-gnd-1",
+                    "submitted_at": "2026-06-13 10:05:00",
+                    "doctor_uuid": "DOC002",
+                    "patient_id": "PAT002",
+                    "campaign_id_raw": "camp-b",
+                    "form_id": "FORM002",
+                    "language_code": "hi",
+                },
+            ]
+        )
+
+        self.assertEqual(len(converted["redflags_patientsubmission"]), 1)
+        self.assertEqual(converted["redflags_patientsubmission"][0]["record_id"], "sub-rfa-1")
+        self.assertEqual(converted["redflags_patientsubmission"][0]["submitted_at"], "2026-06-13 09:55:00")
+        self.assertEqual(len(converted["gnd_gndpatientsubmission"]), 1)
+        self.assertEqual(converted["gnd_gndpatientsubmission"][0]["id"], "sub-gnd-1")
+        self.assertEqual(converted["gnd_gndpatientsubmission"][0]["campaign_id"], "camp-b")
 
     def test_rfa_activity_v2_payloads_fall_back_to_bridge_columns(self):
         converted = _activity_events_as_legacy_rows(
