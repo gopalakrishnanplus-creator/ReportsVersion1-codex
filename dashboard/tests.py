@@ -1698,9 +1698,8 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "total_rows": 2,
                     "unique_keys": 2,
                     "reporting_keys_for_cleanup": 2,
-                    "source_overlap_keys": 1,
+                    "source_pending_cleanup_keys": 1,
                     "already_removed_from_source_keys": 1,
-                    "source_overlap_error": "",
                     "latest_ingested_at": "2026-06-23T10:00:00+00:00",
                     "latest_ingestion_run_id": "etl-run-1",
                     "cleanup_counts": {"DELETED": 1},
@@ -1725,7 +1724,7 @@ class DashboardAccessViewTests(SimpleTestCase):
             "total_rows": 2,
             "total_unique_keys": 2,
             "total_reporting_keys_for_cleanup": 2,
-            "total_source_overlap_keys": 1,
+            "total_source_pending_cleanup_keys": 1,
             "total_already_removed_from_source_keys": 1,
             "total_action_required": 1,
             "total_source_complete": 1,
@@ -1758,7 +1757,7 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "Transfer Source Cleanup")
         self.assertContains(response, "redflags_patientsubmission")
         self.assertContains(response, "Source cleanup report")
-        self.assertContains(response, "Still in source")
+        self.assertContains(response, "Need cleanup")
         self.assertContains(response, "Delete Transferred Source Records For Selected System")
         self.assertContains(response, "GitHub deploy ETL does not run source deletion")
 
@@ -1879,29 +1878,6 @@ class DashboardAccessViewTests(SimpleTestCase):
         v2_query, v2_params = fetch_mock.call_args_list[5].args
         self.assertIn("inclinic_collateral_transaction_v2", v2_query)
         self.assertEqual(v2_params, ["sharing_management_collateraltransaction"])
-
-    def test_weekly_transfer_cleanup_source_status_counts_live_source_overlap(self):
-        spec = weekly_transfer_cleanup.INCLINIC_SPECS[0]
-        cursor = MagicMock()
-        cursor.fetchall.return_value = [{"source_pk": "txn-1"}, {"source_pk": "txn-3"}]
-
-        with patch(
-            "etl.weekly_transfer_cleanup._raw_rows_for_cleanup",
-            return_value=[
-                {"source_pk": "txn-1", "guard_value": None},
-                {"source_pk": "txn-2", "guard_value": None},
-                {"source_pk": "txn-3", "guard_value": None},
-            ],
-        ), patch("etl.weekly_transfer_cleanup.source_mysql_cursor", return_value=nullcontext(cursor)):
-            status = weekly_transfer_cleanup.source_transfer_status_for_spec(spec)
-
-        self.assertEqual(status["reporting_keys_for_cleanup"], 3)
-        self.assertEqual(status["source_overlap_keys"], 2)
-        self.assertEqual(status["already_removed_from_source_keys"], 1)
-        self.assertEqual(status["source_overlap_error"], "")
-        executed_sql, executed_params = cursor.execute.call_args.args
-        self.assertIn("sharing_management_collateraltransaction", executed_sql)
-        self.assertEqual(executed_params, ["txn-1", "txn-2", "txn-3"])
 
     def test_campaign_performance_page_renders_bootstrap_data(self):
         with patch(

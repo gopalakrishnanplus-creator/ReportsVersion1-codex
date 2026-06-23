@@ -591,52 +591,6 @@ def _apply_no_guard_deletes(cursor: Any, spec: CleanupSpec, pending: list[dict[s
     }
 
 
-def _source_existing_keys(spec: CleanupSpec, source_keys: list[str]) -> set[str]:
-    if not source_keys:
-        return set()
-    existing: set[str] = set()
-    with source_mysql_cursor(spec.mysql_settings_name) as cursor:
-        for chunk in _chunks(source_keys, SOURCE_DELETE_BATCH_SIZE):
-            placeholders = ", ".join(["%s"] * len(chunk))
-            cursor.execute(
-                f"""
-                SELECT DISTINCT CAST(`{spec.key_column}` AS CHAR) AS source_pk
-                FROM `{spec.source_table}`
-                WHERE `{spec.key_column}` IN ({placeholders})
-                """,
-                chunk,
-            )
-            existing.update(str(row.get("source_pk") or "") for row in cursor.fetchall() if row.get("source_pk") is not None)
-    return existing
-
-
-def source_transfer_status_for_spec(spec: CleanupSpec) -> dict[str, Any]:
-    rows = _raw_rows_for_cleanup(spec, "__transfer_cleanup_status__")
-    reporting_keys = sorted({str(row.get("source_pk") or "").strip() for row in rows if str(row.get("source_pk") or "").strip()})
-    if not reporting_keys:
-        return {
-            "reporting_keys_for_cleanup": 0,
-            "source_overlap_keys": 0,
-            "already_removed_from_source_keys": 0,
-            "source_overlap_error": "",
-        }
-    try:
-        source_keys = _source_existing_keys(spec, reporting_keys)
-    except Exception as exc:
-        return {
-            "reporting_keys_for_cleanup": len(reporting_keys),
-            "source_overlap_keys": 0,
-            "already_removed_from_source_keys": 0,
-            "source_overlap_error": str(exc),
-        }
-    return {
-        "reporting_keys_for_cleanup": len(reporting_keys),
-        "source_overlap_keys": len(source_keys),
-        "already_removed_from_source_keys": max(0, len(reporting_keys) - len(source_keys)),
-        "source_overlap_error": "",
-    }
-
-
 def _apply_deletes(cleanup_run_id: str, spec: CleanupSpec) -> dict[str, int]:
     pending = _pending_manifests(cleanup_run_id, spec)
     deleted = 0

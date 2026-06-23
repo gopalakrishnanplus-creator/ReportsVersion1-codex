@@ -11,7 +11,7 @@
 <section class="ida-band">
   <div>
     <h2>Source cleanup report</h2>
-    <p class="ida-muted">Select a system and review which transferred records still exist in source. The delete button runs system-wide for the protected V1/V2 transfer tables only.</p>
+    <p class="ida-muted">Select a system and review transferred records that are not yet deleted from source. The delete button runs system-wide for the protected V1/V2 transfer tables only.</p>
   </div>
   <div class="ida-safety-note">
     <strong>GitHub deploy deletion</strong>
@@ -57,8 +57,8 @@
     <strong>{{ summary.total_reporting_keys_for_cleanup }}</strong>
   </div>
   <div class="ida-summary-tile">
-    <span>Still in source</span>
-    <strong>{{ summary.total_source_overlap_keys }}</strong>
+    <span>Need cleanup</span>
+    <strong>{{ summary.total_source_pending_cleanup_keys }}</strong>
   </div>
   <div class="ida-summary-tile">
     <span>Already removed</span>
@@ -73,7 +73,7 @@
 <section class="ida-section">
   <div class="ida-section-heading">
     <h2>Tables</h2>
-    <span>Records already in reporting and still present in source need cleanup</span>
+    <span>Records already in reporting and not deleted from source yet</span>
   </div>
   <div class="ida-scroll">
     <table class="ida-data-table">
@@ -84,7 +84,7 @@
           <th>Reporting evidence</th>
           <th>Key</th>
           <th>In reporting</th>
-          <th>Still in source</th>
+          <th>Need cleanup</th>
           <th>Already removed</th>
           <th>Latest cleanup</th>
         </tr>
@@ -98,19 +98,9 @@
           <td><code>{{ row.source_pk_column }}</code></td>
           {% if row.error %}
           <td colspan="4">{{ row.error }}</td>
-          {% elif row.source_overlap_error %}
-          <td>{{ row.reporting_keys_for_cleanup }}</td>
-          <td colspan="2">{{ row.source_overlap_error }}</td>
-          <td>
-            {% if row.cleanup_report.latest_cleanup_run_id %}
-            <code>{{ row.cleanup_report.latest_cleanup_run_id }}</code>
-            {% else %}
-            <span class="ida-muted">No cleanup run yet</span>
-            {% endif %}
-          </td>
           {% else %}
           <td>{{ row.reporting_keys_for_cleanup }}</td>
-          <td><strong>{{ row.source_overlap_keys }}</strong></td>
+          <td><strong>{{ row.source_pending_cleanup_keys }}</strong></td>
           <td>{{ row.already_removed_from_source_keys }}</td>
           <td>
             {% if row.cleanup_report.latest_cleanup_run_id %}

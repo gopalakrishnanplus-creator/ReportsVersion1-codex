@@ -48,7 +48,6 @@ from etl.weekly_transfer_cleanup import (
     RFA_SPECS,
     ensure_cleanup_tables,
     run_weekly_transfer_cleanup,
-    source_transfer_status_for_spec,
 )
 
 
@@ -628,7 +627,7 @@ def _transfer_cleanup_totals_from_rows(rows: list[dict[str, Any]]) -> dict[str, 
     reports = [row.get("cleanup_report") or _empty_transfer_cleanup_status_report(row.get("unique_keys") or 0) for row in rows]
     return {
         "total_reporting_keys_for_cleanup": sum(int(row.get("reporting_keys_for_cleanup") or row.get("unique_keys") or 0) for row in rows),
-        "total_source_overlap_keys": sum(int(row.get("source_overlap_keys") or 0) for row in rows),
+        "total_source_pending_cleanup_keys": sum(int(row.get("source_pending_cleanup_keys") or 0) for row in rows),
         "total_already_removed_from_source_keys": sum(int(row.get("already_removed_from_source_keys") or 0) for row in rows),
         "total_action_required": sum(int(report.get("action_required") or 0) for report in reports),
         "total_source_complete": sum(int(report.get("complete") or 0) for report in reports),
@@ -641,9 +640,11 @@ def _transfer_cleanup_totals_from_rows(rows: list[dict[str, Any]]) -> dict[str, 
     }
 
 
-def _attach_transfer_cleanup_source_status(row: dict[str, Any], spec: Any) -> dict[str, Any]:
-    status = source_transfer_status_for_spec(spec)
-    row.update(status)
+def _attach_transfer_cleanup_source_status(row: dict[str, Any]) -> dict[str, Any]:
+    report = row.get("cleanup_report") or _empty_transfer_cleanup_status_report(row.get("unique_keys") or 0)
+    row["reporting_keys_for_cleanup"] = int(report.get("total_eligible") or row.get("unique_keys") or 0)
+    row["source_pending_cleanup_keys"] = int(report.get("action_required") or 0)
+    row["already_removed_from_source_keys"] = int(report.get("complete") or 0)
     return row
 
 
@@ -777,7 +778,7 @@ def _inclinic_transfer_cleanup_summary_for_legacy(spec: Any) -> dict[str, Any]:
         ),
         params,
     )
-    return _attach_transfer_cleanup_source_status(row, spec)
+    return _attach_transfer_cleanup_source_status(row)
 
 
 def _inclinic_transfer_cleanup_summary_for_v2(spec: Any) -> dict[str, Any]:
@@ -840,7 +841,7 @@ def _inclinic_transfer_cleanup_summary_for_v2(spec: Any) -> dict[str, Any]:
             table=sql.Identifier(spec.raw_table),
         ),
     )
-    return _attach_transfer_cleanup_source_status(row, spec)
+    return _attach_transfer_cleanup_source_status(row)
 
 
 def _inclinic_transfer_cleanup_raw_summary() -> dict[str, Any]:
@@ -1106,7 +1107,7 @@ def _rfa_transfer_cleanup_raw_summary() -> dict[str, Any]:
             [spec.source_table],
         )
         row["cleanup_counts"] = {item["delete_status"] or "UNKNOWN": int(item["row_count"] or 0) for item in status_rows}
-        rows.append(_attach_transfer_cleanup_source_status(row, spec))
+        rows.append(_attach_transfer_cleanup_source_status(row))
 
     latest_cleanup = _fetch_dicts(
         """
