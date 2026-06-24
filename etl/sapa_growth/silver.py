@@ -610,6 +610,16 @@ def _screening_identity(row: dict[str, Any]) -> str:
     form_identifier = clean_text(row.get("form_identifier"))
     source_table = clean_text(row.get("source_table")) or ""
     campaign_token = _norm_id(row.get("campaign_key"))
+    if submitted_at and patient_id:
+        return "|".join(
+            [
+                "submitted_patient",
+                campaign_token,
+                source_table,
+                patient_id,
+                submitted_at,
+            ]
+        )
     if submitted_at and doctor_key and patient_id:
         return "|".join(
             [

@@ -547,6 +547,50 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertIs(source_index[("gnd_gndpatientsubmission", "native-gnd-1")][0], rows[0])
         self.assertIs(source_index[("gnd_gndpatientsubmission", "activity-gnd-1")][0], rows[0])
 
+    def test_screening_fact_dedupes_same_visible_gnd_submission_with_different_doctor_keys(self):
+        rows, _ = _dedupe_screening_rows(
+            [
+                {
+                    "submission_key": "gnd_gndpatientsubmission:native-gnd-1:campaign:camp-a",
+                    "source_table": "gnd_gndpatientsubmission",
+                    "source_submission_id": "native-gnd-1",
+                    "doctor_key": "legacy-doc::campaign:camp-a",
+                    "campaign_key": "camp-a",
+                    "patient_id": "PAT001",
+                    "form_identifier": "GND002",
+                    "language_code": "en",
+                    "submitted_at": "2026-06-22 14:41:45.795434",
+                    "overall_flag_code": "red",
+                    "doctor_display_name": "PALAK SHARMA",
+                    "state": "DELHI",
+                    "field_rep_id": "401318",
+                    "is_red_tag": "true",
+                    "is_yellow_tag": "false",
+                    "is_green_tag": "false",
+                },
+                {
+                    "submission_key": "gnd_gndpatientsubmission:activity-gnd-1:campaign:camp-a",
+                    "source_table": "gnd_gndpatientsubmission",
+                    "source_submission_id": "activity-gnd-1",
+                    "doctor_key": "v2-doc::campaign:camp-a",
+                    "campaign_key": "camp-a",
+                    "patient_id": "PAT001",
+                    "form_identifier": "GND002",
+                    "language_code": "en",
+                    "submitted_at": "2026-06-22 14:41:45.786544",
+                    "overall_flag_code": "red",
+                    "doctor_display_name": "PALAK SHARMA",
+                    "state": "DELHI",
+                    "field_rep_id": "401318",
+                    "is_red_tag": "true",
+                    "is_yellow_tag": "false",
+                    "is_green_tag": "false",
+                },
+            ]
+        )
+
+        self.assertEqual(len(rows), 1)
+
     def test_screening_fact_keeps_same_patient_forms_in_different_seconds(self):
         rows, _ = _dedupe_screening_rows(
             [
