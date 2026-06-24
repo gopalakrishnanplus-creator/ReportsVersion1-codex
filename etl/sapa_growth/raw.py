@@ -11,7 +11,6 @@ from etl.sapa_growth.control import get_watermark, log_step, upsert_watermark
 from etl.sapa_growth.mysql import SapaMySQLExtractionError, extract_rows
 from etl.sapa_growth.specs import (
     API_TABLE_SPECS,
-    LEGACY_ACTIVITY_TABLES_REPLACED_BY_RFA_ACTIVITY_V2,
     MYSQL_TABLE_SPECS,
     RAW_API_SCHEMA,
     RAW_AUDIT_COLUMNS,
@@ -53,6 +52,12 @@ def _legacy_v2_fallback_enabled() -> bool:
     return bool(settings.SAPA_ETL.get("ENABLE_LEGACY_V2_FALLBACKS", False))
 
 
+def _fallback_source_tables_for_spec(spec) -> tuple[str, ...]:
+    if _legacy_v2_fallback_enabled() or spec.current_snapshot:
+        return spec.fallback_source_tables
+    return ()
+
+
 def ensure_raw_tables() -> None:
     for spec in MYSQL_TABLE_SPECS.values():
         ensure_text_table(RAW_MYSQL_SCHEMA, spec.raw_table, spec.columns + RAW_AUDIT_COLUMNS)
@@ -60,10 +65,11 @@ def ensure_raw_tables() -> None:
         ensure_text_table(RAW_API_SCHEMA, spec["raw_table"], spec["columns"] + RAW_AUDIT_COLUMNS)
 
 
-def _extract_spec_rows(name: str, spec, watermark_start: str | None) -> tuple[str, list[dict[str, Any]]]:
+def _extract_spec_batches(name: str, spec, watermark_start: str | None) -> list[tuple[str, list[dict[str, Any]]]]:
     errors: list[str] = []
-    fallback_source_tables = spec.fallback_source_tables if _legacy_v2_fallback_enabled() else ()
+    fallback_source_tables = _fallback_source_tables_for_spec(spec)
     candidates = (spec.source_table, *fallback_source_tables)
+    batches: list[tuple[str, list[dict[str, Any]]]] = []
     for index, source_table in enumerate(candidates):
         uses_current_snapshot = _uses_current_snapshot(spec, source_table)
         try:
@@ -73,15 +79,27 @@ def _extract_spec_rows(name: str, spec, watermark_start: str | None) -> tuple[st
                 watermark_field=spec.watermark_field,
                 watermark_start=None if uses_current_snapshot else watermark_start,
             )
-            if rows or not spec.fallback_source_tables or index == len(candidates) - 1:
-                return source_table, rows
-            errors.append(f"{source_table} returned zero rows; trying fallback")
+            batches.append((source_table, rows))
+            if rows:
+                continue
+            if spec.fallback_source_tables and index < len(candidates) - 1:
+                errors.append(f"{source_table} returned zero rows; trying fallback")
         except SapaMySQLExtractionError as exc:
             errors.append(str(exc))
+            if source_table == spec.source_table:
+                continue
+    if batches:
+        if any(rows for _, rows in batches) or not errors:
+            return batches
     error_summary = " | ".join(errors)
     raise SapaMySQLExtractionError(
         f"SAPA MySQL extract failed for entity '{name}' from all configured source tables: {error_summary}"
     )
+
+
+def _extract_spec_rows(name: str, spec, watermark_start: str | None) -> tuple[str, list[dict[str, Any]]]:
+    batches = _extract_spec_batches(name, spec, watermark_start)
+    return next(((source_table, rows) for source_table, rows in batches if rows), batches[-1])
 
 
 def _uses_current_snapshot(spec, source_table: str) -> bool:
@@ -97,39 +115,27 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
     max_watermarks: dict[str, str] = {}
 
     for name, spec in MYSQL_TABLE_SPECS.items():
-        if name in LEGACY_ACTIVITY_TABLES_REPLACED_BY_RFA_ACTIVITY_V2 and not _legacy_v2_fallback_enabled():
-            counts[name] = 0
-            skipped_counts[name] = 0
-            extracted_counts[name] = 0
-            log_step(
-                run_id,
-                "extract_mysql",
-                name,
-                "SKIPPED",
-                rows_read=0,
-                rows_written=0,
-                error_message="Replaced by rfa_activity_event_v2; set SAPA_ENABLE_LEGACY_V2_FALLBACKS=1 to re-enable legacy extract.",
-            )
-            continue
-        fallback_source_tables = spec.fallback_source_tables if _legacy_v2_fallback_enabled() else ()
+        fallback_source_tables = _fallback_source_tables_for_spec(spec)
         candidate_source_tables = (spec.source_table, *fallback_source_tables)
         watermark_start = _watermark_start("mysql", name, spec.watermark_field, spec.lookback_days)
         try:
-            source_table, rows = _extract_spec_rows(name, spec, watermark_start)
-            uses_current_snapshot = _uses_current_snapshot(spec, source_table)
+            source_batches = _extract_spec_batches(name, spec, watermark_start)
             prepared_rows: list[dict[str, Any]] = []
+            prepared_rows_by_source: dict[str, list[dict[str, Any]]] = {source_table: [] for source_table in candidate_source_tables}
             max_watermark_value: str | None = None
-            for row in rows:
-                values = [row.get(column) for column in spec.columns]
-                payload = {column: row.get(column) for column in spec.columns}
-                payload.update(_audit_payload(run_id, "sapa_mysql", source_table, extracted_at, values))
-                prepared_rows.append(payload)
-                if spec.watermark_field:
-                    candidate = clean_text(row.get(spec.watermark_field))
-                    if candidate and (max_watermark_value is None or candidate > max_watermark_value):
-                        max_watermark_value = candidate
+            for source_table, rows in source_batches:
+                for row in rows:
+                    values = [row.get(column) for column in spec.columns]
+                    payload = {column: row.get(column) for column in spec.columns}
+                    payload.update(_audit_payload(run_id, "sapa_mysql", source_table, extracted_at, values))
+                    prepared_rows.append(payload)
+                    prepared_rows_by_source.setdefault(source_table, []).append(payload)
+                    if spec.watermark_field:
+                        candidate = clean_text(row.get(spec.watermark_field))
+                        if candidate and (max_watermark_value is None or candidate > max_watermark_value):
+                            max_watermark_value = candidate
 
-            fingerprint_columns = spec.columns + ["_source_table"] if uses_current_snapshot or source_table.lower().endswith("_v2") else spec.columns
+            fingerprint_columns = spec.columns + ["_source_table"] if spec.current_snapshot or spec.source_table.lower().endswith("_v2") or fallback_source_tables else spec.columns
             inserted_count = insert_new_source_rows(
                 RAW_MYSQL_SCHEMA,
                 spec.raw_table,
@@ -138,31 +144,20 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
                 prepared_rows,
                 fingerprint_columns=fingerprint_columns,
             )
-            if uses_current_snapshot:
+            if spec.current_snapshot:
                 for candidate_source_table in candidate_source_tables:
-                    if candidate_source_table == source_table:
-                        continue
                     record_v2_current_snapshot(
                         raw_schema=RAW_MYSQL_SCHEMA,
                         raw_table=spec.raw_table,
                         source_table=candidate_source_table,
                         key_columns=spec.key_columns,
-                        rows=[],
+                        rows=prepared_rows_by_source.get(candidate_source_table, []),
                         run_id=run_id,
                         extracted_at=extracted_at,
                     )
-                record_v2_current_snapshot(
-                    raw_schema=RAW_MYSQL_SCHEMA,
-                    raw_table=spec.raw_table,
-                    source_table=source_table,
-                    key_columns=spec.key_columns,
-                    rows=prepared_rows,
-                    run_id=run_id,
-                    extracted_at=extracted_at,
-                )
             counts[name] = inserted_count
             skipped_counts[name] = len(prepared_rows) - inserted_count
-            extracted_counts[name] = len(rows)
+            extracted_counts[name] = len(prepared_rows)
             if max_watermark_value:
                 max_watermarks[name] = max_watermark_value
             current_watermark = get_watermark("mysql", name)
@@ -173,10 +168,10 @@ def ingest_mysql_sources(run_id: str, extracted_at: str) -> dict[str, Any]:
                 spec.watermark_field,
                 max_watermark_value or previous_value,
                 spec.lookback_days,
-                "full_snapshot" if uses_current_snapshot else "incremental" if spec.watermark_field else "full_snapshot",
+                "full_snapshot" if spec.current_snapshot else "incremental" if spec.watermark_field else "full_snapshot",
                 run_id,
             )
-            log_step(run_id, "extract_mysql", name, "SUCCESS", rows_read=len(rows), rows_written=inserted_count)
+            log_step(run_id, "extract_mysql", name, "SUCCESS", rows_read=len(prepared_rows), rows_written=inserted_count)
         except SapaMySQLExtractionError as exc:
             counts[name] = 0
             skipped_counts[name] = 0

@@ -8,7 +8,6 @@ from django.conf import settings
 from etl.sapa_growth.specs import (
     API_TABLE_SPECS,
     BRONZE_SCHEMA,
-    LEGACY_ACTIVITY_TABLES_REPLACED_BY_RFA_ACTIVITY_V2,
     MYSQL_TABLE_SPECS,
     RAW_AUDIT_COLUMNS,
     RAW_API_SCHEMA,
@@ -82,6 +81,12 @@ def _legacy_v2_fallback_enabled() -> bool:
     return bool(settings.SAPA_ETL.get("ENABLE_LEGACY_V2_FALLBACKS", False))
 
 
+def _fallback_source_tables_for_spec(spec) -> tuple[str, ...]:
+    if _legacy_v2_fallback_enabled() or spec.current_snapshot:
+        return spec.fallback_source_tables
+    return ()
+
+
 def _rows_for_source_table(rows: list[dict[str, Any]], source_table: str) -> list[dict[str, Any]]:
     source_rows = [row for row in rows if clean_text(row.get("_source_table")) == source_table]
     if source_rows or any(clean_text(row.get("_source_table")) for row in rows):
@@ -90,20 +95,36 @@ def _rows_for_source_table(rows: list[dict[str, Any]], source_table: str) -> lis
 
 
 def _active_source_rows_for_spec(rows: list[dict[str, Any]], spec) -> list[dict[str, Any]]:
-    fallback_source_tables = spec.fallback_source_tables if _legacy_v2_fallback_enabled() else ()
-    for source_table in (spec.source_table, *fallback_source_tables):
+    fallback_source_tables = _fallback_source_tables_for_spec(spec)
+    source_tables = (spec.source_table, *fallback_source_tables)
+    active_rows_by_source: dict[str, list[dict[str, Any]]] = {}
+    for source_table in source_tables:
         source_rows = _rows_for_source_table(rows, source_table)
-        if not source_rows:
-            continue
         current_keys = (
             current_v2_snapshot_keys(RAW_MYSQL_SCHEMA, spec.raw_table, source_table)
             if spec.current_snapshot
             else None
         )
-        active_rows = _active_source_rows(source_rows, source_table, spec.key_columns, current_keys)
-        if active_rows or not spec.current_snapshot:
-            return active_rows
-    return []
+        active_rows_by_source[source_table] = _active_source_rows(source_rows, source_table, spec.key_columns, current_keys)
+
+    primary_rows = active_rows_by_source.get(spec.source_table, [])
+    if not fallback_source_tables:
+        return primary_rows
+
+    primary_keys = {
+        _coalesced_key(row, spec.key_columns)
+        for row in primary_rows
+        if any(clean_text(row.get(column)) for column in spec.key_columns)
+    }
+    backfill_rows: list[dict[str, Any]] = []
+    for source_table in fallback_source_tables:
+        for row in active_rows_by_source.get(source_table, []):
+            row_key = _coalesced_key(row, spec.key_columns)
+            if row_key in primary_keys:
+                continue
+            primary_keys.add(row_key)
+            backfill_rows.append(row)
+    return primary_rows + backfill_rows
 
 
 def build_bronze() -> dict[str, int]:
@@ -123,16 +144,6 @@ def build_bronze() -> dict[str, int]:
             )
         if name == "redflags_metricevent":
             extra_columns.append("ts_parseable")
-
-        if name in LEGACY_ACTIVITY_TABLES_REPLACED_BY_RFA_ACTIVITY_V2 and not _legacy_v2_fallback_enabled():
-            replace_table(
-                BRONZE_SCHEMA,
-                name,
-                spec.columns + RAW_AUDIT_COLUMNS + ["_bronze_deduped_at", "_bronze_source_raw_ingested_at"] + extra_columns,
-                [],
-            )
-            counts[name] = 0
-            continue
 
         raw_rows = fetch_table(RAW_MYSQL_SCHEMA, spec.raw_table)
         raw_rows = _active_source_rows_for_spec(raw_rows, spec)

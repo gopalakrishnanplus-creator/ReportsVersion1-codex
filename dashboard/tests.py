@@ -207,6 +207,22 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(merged[0]["old_end_date"], "2026-06-15")
         self.assertEqual(merged[0]["source_table"], "collateral_management_campaigncollateral")
 
+    def test_field_rep_state_fallback_is_not_disabled_by_v2_flag(self):
+        with patch.dict(os.environ, {"INCLINIC_REPORTING_ENABLE_LEGACY_V2_FALLBACKS": "0"}), patch(
+            "etl.pipelines.v2_reporting.table_exists",
+            return_value=True,
+        ), patch(
+            "etl.pipelines.v2_reporting.fetch_table",
+            side_effect=[
+                [{"id": "3105", "state": "Delhi"}],
+                [{"id": "9999", "state_normalized": "North East"}],
+            ],
+        ):
+            fallback = v2_reporting._field_rep_state_fallback_by_id()
+
+        self.assertEqual(fallback["3105"], "Delhi")
+        self.assertEqual(fallback["9999"], "North East")
+
     def test_schedule_rows_resolve_legacy_campaign_without_campaign_uuid(self):
         source = {
             "campaign_v2": [{"id": "campaign-demo", "campaign_uuid": "campaign-helper-uuid"}],

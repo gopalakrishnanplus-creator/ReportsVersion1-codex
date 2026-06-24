@@ -167,7 +167,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
         ]
 
         with patch("etl.sapa_growth.bronze.current_v2_snapshot_keys", return_value={"admin-1"}):
-            self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [])
+            self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [rows[1]])
         with patch("etl.sapa_growth.bronze.current_v2_snapshot_keys", return_value={"old-v2"}):
             self.assertEqual(sapa_bronze._active_source_rows_for_spec(rows, spec), [rows[0]])
 
@@ -217,8 +217,8 @@ class SapaGrowthLogicTests(SimpleTestCase):
 
         self.assertEqual(source_table, "doctor_v2")
         self.assertEqual(rows, primary_rows)
-        self.assertEqual(extract_mock.call_count, 1)
-        self.assertIsNone(extract_mock.call_args.kwargs["watermark_start"])
+        self.assertEqual(extract_mock.call_count, 2)
+        self.assertEqual([call.kwargs["watermark_start"] for call in extract_mock.call_args_list], [None, None])
 
     def test_incremental_event_sources_keep_watermark(self):
         spec = MYSQL_TABLE_SPECS["rfa_activity_event"]
