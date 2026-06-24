@@ -54,6 +54,7 @@ class SourceTableSpec:
     source_filters: dict[str, str] | None = None
     fallback_source_table: str | None = None
     use_current_snapshot: bool = False
+    force_fallback_when_primary_empty: bool = False
 
 
 PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
@@ -176,6 +177,7 @@ PORTAL_TABLE_SPECS: dict[str, SourceTableSpec] = {
         key_columns=["campaign_id"],
         watermark_field="updated_at",
         fallback_source_table="publisher_campaign",
+        force_fallback_when_primary_empty=True,
     ),
     "catalog_therapyarea": SourceTableSpec(
         source_table="pe_content_item_v2",

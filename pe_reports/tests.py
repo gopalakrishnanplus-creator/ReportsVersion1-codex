@@ -114,18 +114,17 @@ class PeReportsLogicTests(SimpleTestCase):
             bronze_table="publisher_campaign",
             columns=["campaign_id"],
             key_columns=["campaign_id"],
+            force_fallback_when_primary_empty=True,
         )
         rows = [
             {"campaign_id": "legacy-campaign", "_source_table": "publisher_campaign"},
             {"campaign_id": "old-v2", "_source_table": "pe_campaign_v2"},
         ]
 
-        self.assertEqual(pe_bronze._active_source_rows(rows, spec, set()), [])
-        with patch("etl.pe_reports.bronze._legacy_v2_fallback_enabled", return_value=True):
-            self.assertEqual(
-                pe_bronze._active_source_rows(rows, spec, set()),
-                [{"campaign_id": "legacy-campaign", "_source_table": "publisher_campaign"}],
-            )
+        self.assertEqual(
+            pe_bronze._active_source_rows(rows, spec, set()),
+            [{"campaign_id": "legacy-campaign", "_source_table": "publisher_campaign"}],
+        )
 
     def test_bronze_merges_fallback_rows_missing_from_v2_snapshot(self):
         spec = SourceTableSpec(
@@ -135,6 +134,7 @@ class PeReportsLogicTests(SimpleTestCase):
             bronze_table="publisher_campaign",
             columns=["campaign_id"],
             key_columns=["campaign_id"],
+            force_fallback_when_primary_empty=True,
         )
         rows = [
             {"campaign_id": "camp-v2", "_source_table": "pe_campaign_v2"},
@@ -144,16 +144,11 @@ class PeReportsLogicTests(SimpleTestCase):
 
         self.assertEqual(
             pe_bronze._active_source_rows(rows, spec, {"camp-v2"}),
-            [{"campaign_id": "camp-v2", "_source_table": "pe_campaign_v2"}],
+            [
+                {"campaign_id": "camp-v2", "_source_table": "pe_campaign_v2"},
+                {"campaign_id": "camp-fallback-only", "_source_table": "publisher_campaign"},
+            ],
         )
-        with patch("etl.pe_reports.bronze._legacy_v2_fallback_enabled", return_value=True):
-            self.assertEqual(
-                pe_bronze._active_source_rows(rows, spec, {"camp-v2"}),
-                [
-                    {"campaign_id": "camp-v2", "_source_table": "pe_campaign_v2"},
-                    {"campaign_id": "camp-fallback-only", "_source_table": "publisher_campaign"},
-                ],
-            )
 
     def test_bronze_merges_legacy_share_events_missing_from_v2(self):
         spec = SourceTableSpec(
@@ -350,6 +345,7 @@ class PeReportsLogicTests(SimpleTestCase):
             columns=["campaign_id", "updated_at"],
             key_columns=["campaign_id"],
             watermark_field="updated_at",
+            force_fallback_when_primary_empty=True,
         )
 
         def fake_extract(table, columns, watermark_field, watermark_start):
@@ -386,6 +382,49 @@ class PeReportsLogicTests(SimpleTestCase):
         )
         snapshot_rows = snapshot_mock.call_args.kwargs["rows"]
         self.assertEqual([(row["campaign_id"], row["_source_table"]) for row in snapshot_rows], [("camp-v2", "pe_campaign_v2")])
+
+    def test_raw_campaign_spec_uses_legacy_fallback_without_global_flag(self):
+        spec = SourceTableSpec(
+            source_table="pe_campaign_v2",
+            fallback_source_table="publisher_campaign",
+            raw_table="publisher_campaign_raw",
+            bronze_table="publisher_campaign",
+            columns=["campaign_id", "updated_at"],
+            key_columns=["campaign_id"],
+            watermark_field="updated_at",
+            force_fallback_when_primary_empty=True,
+        )
+
+        def fake_extract(table, columns, watermark_field, watermark_start):
+            if table == "pe_campaign_v2":
+                return []
+            if table == "publisher_campaign":
+                return [{"campaign_id": "legacy-only-campaign", "updated_at": "2026-06-04 10:00:00"}]
+            return []
+
+        with patch("etl.pe_reports.raw.insert_new_source_rows", return_value=1) as insert_mock, patch(
+            "etl.pe_reports.raw.record_v2_current_snapshot"
+        ) as snapshot_mock, patch("etl.pe_reports.raw.get_watermark", return_value=None), patch(
+            "etl.pe_reports.raw.upsert_watermark"
+        ), patch("etl.pe_reports.raw.log_step"), patch(
+            "etl.pe_reports.raw.settings.PE_REPORTS",
+            {"ENABLE_LEGACY_V2_FALLBACKS": False, "LOOKBACK_DAYS": 30},
+        ):
+            result = pe_raw._ingest_specs(
+                run_id="run-1",
+                extracted_at="2026-06-04T00:00:00+00:00",
+                schema="raw_pe_portal",
+                specs={"publisher_campaign": spec},
+                source_name="portal",
+                source_system_label="pe_portal",
+                extractor=fake_extract,
+                error_type=Exception,
+            )
+
+        self.assertEqual(result["extracted_counts"]["publisher_campaign"], 1)
+        prepared_rows = insert_mock.call_args.args[4]
+        self.assertEqual([(row["campaign_id"], row["_source_table"]) for row in prepared_rows], [("legacy-only-campaign", "publisher_campaign")])
+        snapshot_mock.assert_not_called()
 
     def test_raw_pe_share_spec_loads_legacy_tracking_fallback(self):
         spec = SourceTableSpec(

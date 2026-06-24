@@ -14,8 +14,8 @@ from etl.pe_reports.utils import clean_text, hash_fields, parse_datetime
 from etl.v2_snapshot import record_v2_current_snapshot
 
 
-def _legacy_v2_fallback_enabled() -> bool:
-    return bool(settings.PE_REPORTS.get("ENABLE_LEGACY_V2_FALLBACKS", False))
+def _legacy_v2_fallback_enabled(spec: SourceTableSpec | None = None) -> bool:
+    return bool(settings.PE_REPORTS.get("ENABLE_LEGACY_V2_FALLBACKS", False)) or bool(spec and spec.force_fallback_when_primary_empty)
 
 
 def _audit_payload(run_id: str, source_system: str, source_table: str, extracted_at: str, values: list[Any]) -> dict[str, Any]:
@@ -81,7 +81,7 @@ def _ingest_specs(
 
     for name, spec in specs.items():
         is_v2_source = spec.source_table.lower().endswith("_v2")
-        allow_legacy_fallback = is_v2_source and bool(spec.fallback_source_table) and _legacy_v2_fallback_enabled()
+        allow_legacy_fallback = is_v2_source and bool(spec.fallback_source_table) and _legacy_v2_fallback_enabled(spec)
         lookback_days = spec.lookback_days or int(settings.PE_REPORTS["LOOKBACK_DAYS"])
         watermark_start = None if is_v2_source else _watermark_start(source_name, name, spec.watermark_field, lookback_days)
         try:
