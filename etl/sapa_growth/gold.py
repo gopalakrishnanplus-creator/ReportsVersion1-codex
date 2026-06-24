@@ -7,7 +7,7 @@ from django.db import connection, transaction
 
 from etl.sapa_growth.specs import GOLD_GLOBAL_SCHEMA, GOLD_SCHEMA, GOLD_STAGE_SCHEMA, SILVER_SCHEMA
 from etl.sapa_growth.storage import ensure_schema, fetch_table, qident, replace_table
-from sapa_growth.logic import clean_text, location_label, parse_date
+from sapa_growth.logic import clean_text, location_label, parse_date, parse_datetime
 from sapa_growth.reporting import build_red_flag_rankings, build_video_rankings, compute_dashboard_metrics, course_status_counts, filter_rows
 from sapa_growth.video_metadata import resolve_video_metadata
 
@@ -25,7 +25,8 @@ def _yes_no(value: bool) -> str:
 
 
 def _campaign_token(value: Any) -> str:
-    token = "".join(ch.lower() for ch in clean_text(value) if ch.isalnum())
+    raw = clean_text(value) or ""
+    token = "".join(ch.lower() for ch in raw if ch.isalnum())
     return token or "unknown"
 
 
@@ -417,6 +418,53 @@ def _with_campaign_fields(row: dict[str, Any], doctor_campaigns: dict[str, dict[
     return item
 
 
+def _screening_submitted_second(value: Any) -> str:
+    parsed = parse_datetime(value)
+    if parsed:
+        return parsed.replace(microsecond=0).isoformat(sep=" ")
+    return clean_text(value) or ""
+
+
+def _screening_event_identity(row: dict[str, Any]) -> tuple[str, ...]:
+    submitted_at = _screening_submitted_second(row.get("submitted_at"))
+    campaign_token = _campaign_token(row.get("campaign_key"))
+    patient_id = clean_text(row.get("patient_id")) or ""
+    if submitted_at and patient_id:
+        return ("submitted_patient", campaign_token, patient_id, submitted_at)
+    return (
+        "source",
+        campaign_token,
+        clean_text(row.get("source_table")) or "",
+        clean_text(row.get("source_submission_id")) or clean_text(row.get("submission_key")) or "",
+    )
+
+
+def _merge_screening_event(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
+    for field, value in incoming.items():
+        if clean_text(existing.get(field)) is None and clean_text(value) is not None:
+            existing[field] = value
+    for flag in ("is_red_tag", "is_yellow_tag", "is_green_tag"):
+        if incoming.get(flag) == "true":
+            existing[flag] = "true"
+    if not clean_text(existing.get("overall_flag_code")) and clean_text(incoming.get("overall_flag_code")):
+        existing["overall_flag_code"] = incoming["overall_flag_code"]
+
+
+def _dedupe_screening_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[str, ...], dict[str, Any]] = {}
+    ordered_rows: list[dict[str, Any]] = []
+    for row in rows:
+        identity = _screening_event_identity(row)
+        existing = deduped.get(identity)
+        if existing is None:
+            existing = dict(row)
+            deduped[identity] = existing
+            ordered_rows.append(existing)
+        else:
+            _merge_screening_event(existing, row)
+    return ordered_rows
+
+
 def _latest_field_rep_login_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     latest: dict[tuple[str, str], dict[str, Any]] = {}
     counts: dict[tuple[str, str], int] = {}
@@ -481,7 +529,7 @@ def build_gold(run_id: str, source_status: str = "SUCCESS", stale_source_flags: 
     doctor_status_history_rows = fetch_table(SILVER_SCHEMA, "fact_doctor_status_daily")
     doctor_status_current_rows = [row for row in doctor_status_history_rows if row.get("as_of_date") == as_of_date.isoformat()]
     certification_rows = fetch_table(SILVER_SCHEMA, "certification_status_prepared")
-    screening_rows = fetch_table(SILVER_SCHEMA, "fact_screening_submission")
+    screening_rows = _dedupe_screening_events(fetch_table(SILVER_SCHEMA, "fact_screening_submission"))
     redflag_rows = fetch_table(SILVER_SCHEMA, "fact_submission_redflag")
     metric_rows = fetch_table(SILVER_SCHEMA, "fact_metric_event")
     followup_rows = fetch_table(SILVER_SCHEMA, "fact_followup_schedule_instance")

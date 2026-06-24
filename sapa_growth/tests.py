@@ -570,7 +570,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
                 },
                 {
                     "submission_key": "gnd_gndpatientsubmission:activity-gnd-1:campaign:camp-a",
-                    "source_table": "gnd_gndpatientsubmission",
+                    "source_table": "redflags_patientsubmission",
                     "source_submission_id": "activity-gnd-1",
                     "doctor_key": "v2-doc::campaign:camp-a",
                     "campaign_key": "camp-a",
@@ -585,6 +585,44 @@ class SapaGrowthLogicTests(SimpleTestCase):
                     "is_red_tag": "true",
                     "is_yellow_tag": "false",
                     "is_green_tag": "false",
+                },
+            ]
+        )
+
+        self.assertEqual(len(rows), 1)
+
+    def test_gold_dedupes_same_visible_screening_before_publish(self):
+        rows = sapa_gold._dedupe_screening_events(
+            [
+                {
+                    "submission_key": "native-gnd-1",
+                    "source_table": "gnd_gndpatientsubmission",
+                    "source_submission_id": "native-gnd-1",
+                    "campaign_key": "1151a492-947b-4c91-83ac-5a224b2d07b1",
+                    "doctor_key": "legacy-doc",
+                    "doctor_display_name": "PALAK SHARMA",
+                    "patient_id": "HmYR7nfPSwOnOmeRIEjsvF5vuzSE6umY",
+                    "form_identifier": "GND001",
+                    "submitted_at": "2026-06-24 14:43:25.731479",
+                    "overall_flag_code": "red",
+                    "state": "DELHI",
+                    "field_rep_id": "401318",
+                    "is_red_tag": "true",
+                },
+                {
+                    "submission_key": "activity-gnd-1",
+                    "source_table": "redflags_patientsubmission",
+                    "source_submission_id": "activity-gnd-1",
+                    "campaign_key": "1151a492947b4c9183ac5a224b2d07b1",
+                    "doctor_key": "v2-doc",
+                    "doctor_display_name": "PALAK SHARMA",
+                    "patient_id": "HmYR7nfPSwOnOmeRIEjsvF5vuzSE6umY",
+                    "form_identifier": "GND001",
+                    "submitted_at": "2026-06-24 14:43:25.688287",
+                    "overall_flag_code": "red",
+                    "state": "DELHI",
+                    "field_rep_id": "401318",
+                    "is_red_tag": "true",
                 },
             ]
         )
