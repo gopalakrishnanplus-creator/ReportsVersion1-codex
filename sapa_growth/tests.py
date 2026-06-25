@@ -1075,7 +1075,11 @@ class SapaGrowthLogicTests(SimpleTestCase):
                 {"doctor_key": "DOC-1", "is_active": "false", "is_inactive": "true"},
                 {"doctor_key": "DOC-2", "is_active": "false", "is_inactive": "true"},
             ],
-            doctor_status_history_rows=[],
+            doctor_status_history_rows=[
+                {"doctor_key": "DOC-1", "as_of_date": "2026-06-23", "is_active": "false", "is_inactive": "true"},
+                {"doctor_key": "DOC-1", "as_of_date": "2026-06-24", "is_active": "true", "is_inactive": "false"},
+                {"doctor_key": "DOC-2", "as_of_date": "2026-06-24", "is_active": "false", "is_inactive": "true"},
+            ],
             certification_rows=[],
             webinar_rows=[],
             screening_rows=[],
@@ -1086,6 +1090,29 @@ class SapaGrowthLogicTests(SimpleTestCase):
 
         self.assertEqual(summary["active_clinics_current"], 1)
         self.assertEqual(summary["inactive_clinics_current"], 1)
+        self.assertEqual(summary["active_clinics_cumulative"], 1)
+        self.assertEqual(summary["inactive_clinics_cumulative"], 1)
+
+    def test_inactive_detail_windows_exclude_clinics_active_in_same_window(self):
+        rows = [
+            {"doctor_key": "DOC-1", "as_of_date": "2026-06-23", "is_active": "false", "is_inactive": "true"},
+            {"doctor_key": "DOC-1", "as_of_date": "2026-06-24", "is_active": "true", "is_inactive": "false"},
+            {"doctor_key": "DOC-2", "as_of_date": "2026-06-24", "is_active": "false", "is_inactive": "true"},
+        ]
+
+        with patch("sapa_growth.services._gold_rows", return_value=rows):
+            counts = sapa_services._inactive_status_history_window_counts(
+                {"campaign_key": None, "state": None, "field_rep_id": None, "doctor_key": None},
+                date(2026, 6, 24),
+            )
+            detail_rows = sapa_services._inactive_status_history_rows_for_window(
+                {"campaign_key": None, "state": None, "field_rep_id": None, "doctor_key": None},
+                as_of=date(2026, 6, 24),
+                window_key="cumulative",
+            )
+
+        self.assertEqual(counts["Cumulative"], 1)
+        self.assertEqual([row["doctor_key"] for row in detail_rows], ["DOC-2"])
 
     def test_transferred_doctor_events_are_attributed_to_one_campaign(self):
         dim_rows = [

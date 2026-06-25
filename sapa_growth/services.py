@@ -1060,6 +1060,29 @@ def _status_history_rows_for_window(
     return output
 
 
+def _inactive_status_history_rows_for_window(
+    filters: dict[str, str | None],
+    *,
+    as_of: date,
+    window_key: str,
+) -> list[dict[str, Any]]:
+    rows = filter_rows(_gold_rows("rpt_doctor_status_history", filters), filters)
+    rows = _filter_rows_by_detail_window(rows, "as_of_date", as_of, window_key)
+    active_keys = {clean_text(row.get("doctor_key")) for row in rows if row.get("is_active") == "true"}
+    inactive_rows = [
+        row
+        for row in rows
+        if row.get("is_inactive") == "true" and clean_text(row.get("doctor_key")) not in active_keys
+    ]
+    output = []
+    for row in _dedupe_latest_rows(inactive_rows, "doctor_key", "as_of_date"):
+        item = dict(row)
+        item["active_flag"] = clean_text(row.get("is_active"))
+        item["inactive_flag"] = clean_text(row.get("is_inactive"))
+        output.append(item)
+    return output
+
+
 def _certified_rows_for_window(filters: dict[str, str | None], as_of: date, window_key: str) -> list[dict[str, Any]]:
     history_rows = filter_rows(_gold_rows("rpt_doctor_status_history", filters), filters)
     history_rows = _filter_rows_by_detail_window(history_rows, "as_of_date", as_of, window_key)
@@ -1091,6 +1114,21 @@ def _status_history_window_counts(
     return _count_window(rows, date_field="as_of_date", as_of=as_of, unique_field="doctor_key", predicate=predicate)
 
 
+def _inactive_status_history_window_counts(filters: dict[str, str | None], as_of: date) -> dict[str, int]:
+    rows = filter_rows(_gold_rows("rpt_doctor_status_history", filters), filters)
+    counts: dict[str, int] = {}
+    for window in DETAIL_WINDOWS:
+        window_rows = _filter_rows_by_detail_window(rows, "as_of_date", as_of, str(window["key"]))
+        active_keys = {clean_text(row.get("doctor_key")) for row in window_rows if row.get("is_active") == "true"}
+        inactive_keys = {
+            clean_text(row.get("doctor_key"))
+            for row in window_rows
+            if row.get("is_inactive") == "true"
+        } - active_keys - {None}
+        counts[str(window["label"])] = len(inactive_keys)
+    return counts
+
+
 def _certified_window_counts(filters: dict[str, str | None], as_of: date) -> dict[str, int]:
     history_rows = filter_rows(_gold_rows("rpt_doctor_status_history", filters), filters)
     course_rows = filter_rows(_gold_rows("rpt_course_detail", filters), filters)
@@ -1112,7 +1150,7 @@ def _metric_summary_cards(metric: str, filters: dict[str, str | None], refresh: 
     if summary_mode == "status_history_active":
         counts = _status_history_window_counts(filters, predicate=lambda row: row.get("is_active") == "true", as_of=as_of)
     elif summary_mode == "status_history_inactive":
-        counts = _status_history_window_counts(filters, predicate=lambda row: row.get("is_inactive") == "true", as_of=as_of)
+        counts = _inactive_status_history_window_counts(filters, as_of)
     elif summary_mode == "status_history_certified":
         counts = _certified_window_counts(filters, as_of)
     elif summary_mode == "current_doctor_login":
@@ -1176,7 +1214,7 @@ def _rows_for_metric(metric: str, filters: dict[str, str | None], selected_windo
     elif summary_mode == "status_history_active" and selected_window:
         rows = _status_history_rows_for_window(filters, predicate=lambda row: row.get("is_active") == "true", as_of=as_of, window_key=selected_window)
     elif summary_mode == "status_history_inactive" and selected_window:
-        rows = _status_history_rows_for_window(filters, predicate=lambda row: row.get("is_inactive") == "true", as_of=as_of, window_key=selected_window)
+        rows = _inactive_status_history_rows_for_window(filters, as_of=as_of, window_key=selected_window)
     elif selected_window:
         is_course_metric = clean_text(metric).startswith("doctor_course_") or clean_text(metric).startswith("paramedic_course_")
         rows = _filter_rows_by_detail_window(

@@ -149,6 +149,8 @@ def compute_dashboard_metrics(
     doctor_course = course_counts.get("doctor", empty_course_counts)
     paramedic_course = course_counts.get("paramedic", empty_course_counts)
     field_rep_login_rows = field_rep_login_rows or []
+    cumulative_active_keys = {row["doctor_key"] for row in doctor_status_history_rows if row.get("is_active") == "true"}
+    cumulative_inactive_keys = {row["doctor_key"] for row in doctor_status_history_rows if row.get("is_inactive") == "true"} - cumulative_active_keys
 
     return {
         "as_of_date": as_of_date.isoformat(),
@@ -178,10 +180,10 @@ def compute_dashboard_metrics(
             end=previous_end,
         ),
         "active_clinics_current": current_active,
-        "active_clinics_cumulative": len({row["doctor_key"] for row in doctor_status_history_rows if row.get("is_active") == "true"}),
+        "active_clinics_cumulative": len(cumulative_active_keys),
         "active_clinics_previous": previous_active,
         "inactive_clinics_current": current_inactive,
-        "inactive_clinics_cumulative": len({row["doctor_key"] for row in doctor_status_history_rows if row.get("is_inactive") == "true"}),
+        "inactive_clinics_cumulative": len(cumulative_inactive_keys),
         "inactive_clinics_previous": previous_inactive,
         "certified_clinics_current": current_certified,
         "certified_clinics_cumulative": cumulative_certified,
