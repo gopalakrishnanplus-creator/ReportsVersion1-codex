@@ -116,12 +116,16 @@ def compute_dashboard_metrics(
                 keys.add(key)
         return len(keys)
 
-    current_active = len({row["doctor_key"] for row in doctor_status_current_rows if row.get("is_active") == "true"})
-    current_inactive = len({row["doctor_key"] for row in doctor_status_current_rows if row.get("is_inactive") == "true"})
+    current_active_keys = {row["doctor_key"] for row in doctor_status_current_rows if row.get("is_active") == "true"}
+    current_inactive_keys = {row["doctor_key"] for row in doctor_status_current_rows if row.get("is_inactive") == "true"} - current_active_keys
+    current_active = len(current_active_keys)
+    current_inactive = len(current_inactive_keys)
     previous_snapshot_date = (as_of_date - timedelta(days=1)).isoformat()
     previous_snapshot_rows = [row for row in doctor_status_history_rows if row.get("as_of_date") == previous_snapshot_date]
-    previous_active = len({row["doctor_key"] for row in previous_snapshot_rows if row.get("is_active") == "true"})
-    previous_inactive = len({row["doctor_key"] for row in previous_snapshot_rows if row.get("is_inactive") == "true"})
+    previous_active_keys = {row["doctor_key"] for row in previous_snapshot_rows if row.get("is_active") == "true"}
+    previous_inactive_keys = {row["doctor_key"] for row in previous_snapshot_rows if row.get("is_inactive") == "true"} - previous_active_keys
+    previous_active = len(previous_active_keys)
+    previous_inactive = len(previous_inactive_keys)
 
     cert_enabled = True
     current_certified = None

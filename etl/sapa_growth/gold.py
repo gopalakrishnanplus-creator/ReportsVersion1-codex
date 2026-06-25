@@ -7,7 +7,7 @@ from django.db import connection, transaction
 
 from etl.sapa_growth.specs import GOLD_GLOBAL_SCHEMA, GOLD_SCHEMA, GOLD_STAGE_SCHEMA, SILVER_SCHEMA
 from etl.sapa_growth.storage import ensure_schema, fetch_table, qident, replace_table
-from sapa_growth.logic import clean_text, location_label, parse_date, parse_datetime
+from sapa_growth.logic import clean_text, location_label, map_course_status, parse_date, parse_datetime
 from sapa_growth.reporting import build_red_flag_rankings, build_video_rankings, compute_dashboard_metrics, course_status_counts, filter_rows
 from sapa_growth.video_metadata import resolve_video_metadata
 
@@ -90,6 +90,8 @@ def _doctor_course_enrollments(course_rows: list[dict[str, Any]]) -> set[str]:
     enrolled: set[str] = set()
     for row in course_rows:
         if clean_text(row.get("course_audience")) != "doctor":
+            continue
+        if map_course_status(row.get("dashboard_status") or row.get("progress_status")) != "Completed":
             continue
         doctor_key = clean_text(row.get("doctor_key"))
         if doctor_key:

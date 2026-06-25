@@ -322,6 +322,9 @@ def _campaign_ids_for_field_rep_login_event(
             if rep_is_assigned(campaign_id):
                 output.append(campaign_id)
                 continue
+            if (clean_text(row.get("event_type")) or "").lower() == "field_rep_login" and rep_identity_values:
+                output.append(campaign_id)
+                continue
             if campaign_rep_membership_ids is not None and not campaign_rep_membership_ids.get(campaign_id):
                 output.append(campaign_id)
         return sorted(output)
@@ -2007,20 +2010,22 @@ def build_silver(run_id: str) -> dict[str, Any]:
     for row in course_progress_rows:
         if clean_text(row.get("course_audience")) != "doctor":
             continue
+        if map_course_status(row.get("dashboard_status") or row.get("progress_status")) != "Completed":
+            continue
         doctor_key = clean_text(row.get("doctor_key"))
         if not doctor_key:
             continue
         existing = doctor_course_enrollments.get(doctor_key)
-        enrolled_at = row.get("enrolled_at") or ""
-        if existing is None or enrolled_at < existing.get("certification_date", ""):
+        certification_date = row.get("completed_at") or row.get("enrolled_at") or ""
+        if existing is None or certification_date < existing.get("certification_date", ""):
             doctor_course_enrollments[doctor_key] = {
                 "doctor_key": doctor_key,
                 "campaign_key": row.get("campaign_key", ""),
                 "campaign_label": row.get("campaign_label", ""),
-                "certification_status": "enrolled",
-                "certification_date": enrolled_at,
-                "certification_source": "doctor_course_enrollment",
-                "derivation_note": "Derived from doctor course enrollment",
+                "certification_status": "completed",
+                "certification_date": certification_date,
+                "certification_source": "doctor_course_completion",
+                "derivation_note": "Derived from completed doctor course status",
                 "support_flag": "true",
             }
     certification_rows.extend(doctor_course_enrollments.values())

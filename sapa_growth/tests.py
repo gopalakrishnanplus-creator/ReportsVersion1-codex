@@ -28,7 +28,7 @@ from etl.sapa_growth.silver import (
 from etl.sapa_growth.specs import MYSQL_TABLE_SPECS, RAW_AUDIT_COLUMNS
 from sapa_growth import services as sapa_services
 from sapa_growth.logic import classify_metric_event, explode_followup_schedule, map_course_status, normalize_phone, webinar_effective_date
-from sapa_growth.reporting import filter_rows
+from sapa_growth.reporting import compute_dashboard_metrics, filter_rows
 from sapa_growth.services import _derived_certified_rows, _enrich_video_rows, dashboard_context, detail_context, export_dashboard_pdf
 from sapa_growth.video_metadata import resolve_video_metadata
 
@@ -747,7 +747,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
 
         self.assertEqual(matched, ["1151a492-947b-4c91-83ac-5a224b2d07b1"])
 
-    def test_field_rep_login_meta_campaign_requires_campaign_assignment(self):
+    def test_field_rep_login_meta_campaign_trusts_explicit_campaign_hint(self):
         matched = _campaign_ids_for_field_rep_login_event(
             rep={"id": "rep-599"},
             row={
@@ -761,7 +761,7 @@ class SapaGrowthLogicTests(SimpleTestCase):
             campaign_rep_membership_ids={"campaign-a": {"different-rep", "FR-DIFFERENT"}},
         )
 
-        self.assertEqual(matched, [])
+        self.assertEqual(matched, ["campaign-a"])
 
     def test_field_rep_login_meta_campaign_is_used_when_membership_source_is_empty(self):
         matched = _campaign_ids_for_field_rep_login_event(
@@ -1049,22 +1049,43 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(metadata["preferred_display_label"], "Example Video Title")
         self.assertEqual(metadata["video_url"], "https://youtu.be/GUtzx5PH7mo?feature=shared")
 
-    def test_certified_rows_require_active_clinic_and_doctor_course_enrollment(self):
+    def test_certified_rows_require_active_clinic_and_completed_doctor_course(self):
         rows = _derived_certified_rows(
             {"campaign_key": None, "state": None, "field_rep_id": None, "doctor_key": None},
             [
                 {"doctor_key": "DOC-1", "doctor_display_name": "Dr A", "active_flag": "true", "city": "Pune", "state": "MH", "field_rep_id": "FR1"},
-                {"doctor_key": "DOC-2", "doctor_display_name": "Dr B", "active_flag": "false", "city": "Delhi", "state": "DL", "field_rep_id": "FR2"},
+                {"doctor_key": "DOC-2", "doctor_display_name": "Dr B", "active_flag": "true", "city": "Delhi", "state": "DL", "field_rep_id": "FR2"},
             ],
             [
-                {"doctor_key": "DOC-1", "course_audience": "doctor", "enrolled_at": "2026-03-01"},
-                {"doctor_key": "DOC-2", "course_audience": "doctor", "enrolled_at": "2026-03-02"},
-                {"doctor_key": "DOC-3", "course_audience": "paramedic", "enrolled_at": "2026-03-03"},
+                {"doctor_key": "DOC-1", "course_audience": "doctor", "dashboard_status": "Completed", "enrolled_at": "2026-03-01", "completed_at": "2026-03-05"},
+                {"doctor_key": "DOC-2", "course_audience": "doctor", "dashboard_status": "In Progress", "enrolled_at": "2026-03-02", "completed_at": ""},
+                {"doctor_key": "DOC-3", "course_audience": "paramedic", "dashboard_status": "Completed", "enrolled_at": "2026-03-03", "completed_at": "2026-03-04"},
             ],
         )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["doctor_key"], "DOC-1")
-        self.assertEqual(rows[0]["certification_status"], "enrolled")
+        self.assertEqual(rows[0]["certification_status"], "completed")
+
+    def test_inactive_clinics_exclude_currently_active_doctors(self):
+        summary = compute_dashboard_metrics(
+            as_of_date=date(2026, 6, 24),
+            doctor_rows=[],
+            doctor_status_current_rows=[
+                {"doctor_key": "DOC-1", "is_active": "true", "is_inactive": "false"},
+                {"doctor_key": "DOC-1", "is_active": "false", "is_inactive": "true"},
+                {"doctor_key": "DOC-2", "is_active": "false", "is_inactive": "true"},
+            ],
+            doctor_status_history_rows=[],
+            certification_rows=[],
+            webinar_rows=[],
+            screening_rows=[],
+            followup_rows=[],
+            reminder_rows=[],
+            course_rows=[],
+        )
+
+        self.assertEqual(summary["active_clinics_current"], 1)
+        self.assertEqual(summary["inactive_clinics_current"], 1)
 
     def test_transferred_doctor_events_are_attributed_to_one_campaign(self):
         dim_rows = [

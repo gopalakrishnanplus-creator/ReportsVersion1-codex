@@ -433,12 +433,14 @@ def _doctor_course_enrollments(course_rows: list[dict[str, Any]]) -> dict[str, s
     for row in course_rows:
         if clean_text(row.get("course_audience")) != "doctor":
             continue
+        if map_course_status(row.get("dashboard_status") or row.get("progress_status")) != "Completed":
+            continue
         doctor_key = clean_text(row.get("doctor_key"))
         if not doctor_key:
             continue
-        enrolled_at = clean_text(row.get("enrolled_at")) or ""
-        if doctor_key not in enrollments or (enrolled_at and enrolled_at < enrollments[doctor_key]):
-            enrollments[doctor_key] = enrolled_at
+        completed_at = clean_text(row.get("completed_at")) or clean_text(row.get("enrolled_at")) or ""
+        if doctor_key not in enrollments or (completed_at and completed_at < enrollments[doctor_key]):
+            enrollments[doctor_key] = completed_at
     return enrollments
 
 
@@ -510,9 +512,9 @@ def _derived_certified_rows(
                 "state": doctor.get("state", ""),
                 "field_rep_id": doctor.get("field_rep_id", ""),
                 "field_rep_name": doctor.get("field_rep_name", ""),
-                "certification_status": "enrolled",
+                "certification_status": "completed",
                 "certification_date": enrolled.get(doctor_key, ""),
-                "certification_source": "doctor_course_enrollment",
+                "certification_source": "doctor_course_completion",
             }
         )
     return rows
