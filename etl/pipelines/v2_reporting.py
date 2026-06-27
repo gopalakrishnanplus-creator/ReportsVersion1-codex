@@ -225,6 +225,64 @@ def _merge_campaign_collateral_sources(
     return list(merged.values())
 
 
+def _legacy_collateral_to_v2(row: dict[str, Any]) -> dict[str, Any]:
+    collateral_id = _field(row, "id")
+    return {
+        "source_system": "inclinic",
+        "source_database": INCLINIC_DEFAULT_DB,
+        "source_table": "collateral_management_collateral",
+        "source_pk_column": "id",
+        "source_pk_value": collateral_id,
+        "source_created_at": _field(row, "created_at"),
+        "source_updated_at": _field(row, "updated_at"),
+        "collateral_uuid": "",
+        "campaign_uuid": "",
+        "content_type_normalized": _field(row, "type").lower(),
+        "status": "active" if _truthy(row.get("is_active")) else "inactive",
+        "old_id": collateral_id,
+        "old_type": _field(row, "type"),
+        "old_title": _field(row, "title"),
+        "old_file": _field(row, "file"),
+        "old_vimeo_url": _field(row, "vimeo_url"),
+        "old_content_id": _field(row, "content_id"),
+        "old_upload_date": _field(row, "upload_date"),
+        "old_is_active": "1" if _truthy(row.get("is_active")) else "0",
+        "old_created_at": _field(row, "created_at"),
+        "old_updated_at": _field(row, "updated_at"),
+        "old_campaign_id": _field(row, "campaign_id"),
+        "old_created_by_id": _field(row, "created_by_id"),
+        "old_description": _field(row, "description"),
+        "old_purpose": _field(row, "purpose"),
+        "old_doctor_name": _field(row, "doctor_name"),
+        "old_webinar_date": _field(row, "webinar_date"),
+        "old_webinar_description": _field(row, "webinar_description"),
+        "old_webinar_title": _field(row, "webinar_title"),
+        "old_webinar_url": _field(row, "webinar_url"),
+        "is_current": "true",
+    }
+
+
+def _merge_collateral_sources(
+    v2_rows: list[dict[str, Any]],
+    legacy_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in v2_rows:
+        merged[_raw_v2_row_key("inclinic_collateral_v2", row)] = row
+
+    for legacy_row in legacy_rows:
+        row = _legacy_collateral_to_v2(legacy_row)
+        key = _raw_v2_row_key("inclinic_collateral_v2", row)
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = row
+            continue
+        if _source_freshness_key(row) >= _source_freshness_key(existing):
+            merged[key] = _merge_non_empty(existing, row)
+
+    return list(merged.values())
+
+
 def _field_rep_merge_key(row: dict[str, Any]) -> tuple[str, ...]:
     rep_id = _field(row, "current_campaign_fieldrep_id", "campaign_fieldrep_id", "id", "source_pk_value")
     if rep_id:
@@ -963,13 +1021,17 @@ def _load_source_from_mysql_v2() -> dict[str, list[dict[str, Any]]]:
         _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "collateral_management_campaigncollateral"),
         inclinic_campaign_rows,
     )
+    collateral_rows = _merge_collateral_sources(
+        _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_collateral_v2"),
+        _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "collateral_management_collateral"),
+    )
     return {
         "campaign_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "campaign_v2"),
         "field_rep_v2": field_rep_rows,
         "campaign_field_rep_assignment_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "campaign_field_rep_assignment_v2"),
         "doctor_field_rep_roster_bridge_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "doctor_field_rep_roster_bridge_v2"),
         "inclinic_assigned_doctor_roster_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_assigned_doctor_roster_v2"),
-        "inclinic_collateral_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_collateral_v2"),
+        "inclinic_collateral_v2": collateral_rows,
         "inclinic_campaign_collateral_v2": campaign_collateral_rows,
         "inclinic_campaign_field_rep_assignment_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_field_rep_assignment_v2"),
         "inclinic_collateral_transaction_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_collateral_transaction_v2"),
@@ -980,8 +1042,8 @@ def _load_source_from_mysql_v2() -> dict[str, list[dict[str, Any]]]:
     }
 
 
-def refresh_raw_v2_from_source(run_id: str) -> dict[str, int]:
-    source = _load_source_from_mysql_v2()
+def refresh_raw_v2_from_source(run_id: str, source: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, int]:
+    source = source or _load_source_from_mysql_v2()
     counts: dict[str, int] = {}
     with transaction.atomic():
         for schema, table_map in RAW_V2_SOURCE_TABLES.items():
@@ -996,8 +1058,8 @@ def refresh_raw_v2_from_source(run_id: str) -> dict[str, int]:
     return counts
 
 
-def _load_source() -> dict[str, list[dict[str, Any]]]:
-    if table_exists(RAW_V2_MASTER_SCHEMA, "campaign_v2") and table_exists(RAW_V2_INCLINIC_SCHEMA, "inclinic_collateral_transaction_v2"):
+def _load_source(prefer_raw_cache: bool = True) -> dict[str, list[dict[str, Any]]]:
+    if prefer_raw_cache and table_exists(RAW_V2_MASTER_SCHEMA, "campaign_v2") and table_exists(RAW_V2_INCLINIC_SCHEMA, "inclinic_collateral_transaction_v2"):
         return _load_source_from_raw_v2()
     return _load_source_from_mysql_v2()
 
@@ -2429,9 +2491,9 @@ def _record_dq_issues(run_id: str, source: dict[str, list[dict[str, Any]]]) -> d
     return dict(issues)
 
 
-def build_v2_reporting(run_id: str) -> dict[str, Any]:
+def build_v2_reporting(run_id: str, source: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, Any]:
     now = _now()
-    source = _load_source()
+    source = source or _load_source()
     _validate_required_v2_source_counts(source)
     privacy_allowlist = active_campaign_privacy_allowlist()
     source = _apply_campaign_privacy_to_source(source, privacy_allowlist)

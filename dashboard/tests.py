@@ -2831,6 +2831,65 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertEqual(merged[0]["state"], "North East")
         self.assertEqual(merged[0]["source_table"], "campaign_fieldrep")
 
+    def test_collateral_merge_uses_live_legacy_collateral_rows(self):
+        merged = v2_reporting._merge_collateral_sources(
+            [
+                {
+                    "old_id": "27",
+                    "old_title": "Stale V2 Title",
+                    "source_updated_at": "2026-05-01 00:00:00",
+                    "is_current": "1",
+                }
+            ],
+            [
+                {
+                    "id": "27",
+                    "type": "pdf",
+                    "title": "First-1000-Days Micronutrient Gaps in Urban India",
+                    "file": "collaterals/first-1000-days.pdf",
+                    "is_active": "1",
+                    "campaign_id": "6",
+                    "created_at": "2026-06-20 09:00:00",
+                    "updated_at": "2026-06-20 10:00:00",
+                }
+            ],
+        )
+
+        collateral_rows = v2_reporting._collateral_rows(
+            {"inclinic_collateral_v2": merged},
+            "2026-06-20T10:00:00+00:00",
+        )
+        schedule_rows = v2_reporting._schedule_rows(
+            {
+                "campaign_v2": [],
+                "campaign_management_campaign": [{"id": "6", "brand_campaign_id": "brand-demo"}],
+                "inclinic_campaign_field_rep_assignment_v2": [],
+                "inclinic_assigned_doctor_roster_v2": [],
+                "inclinic_collateral_transaction_v2": [],
+                "inclinic_share_event_v2": [],
+                "inclinic_campaign_collateral_v2": [
+                    {
+                        "old_id": "31",
+                        "legacy_campaign_id": "brand-demo",
+                        "old_campaign_id": "6",
+                        "old_collateral_id": "27",
+                        "old_start_date": "2026-06-20",
+                        "old_end_date": "2026-07-20",
+                        "is_current": "1",
+                    }
+                ],
+                "inclinic_collateral_v2": merged,
+            },
+            collateral_rows,
+            "2026-06-20T10:00:00+00:00",
+        )
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["old_title"], "First-1000-Days Micronutrient Gaps in Urban India")
+        self.assertEqual(collateral_rows[0]["title"], "First-1000-Days Micronutrient Gaps in Urban India")
+        self.assertEqual(schedule_rows[0]["collateral_id"], "27")
+        self.assertEqual(schedule_rows[0]["collateral_title"], "First-1000-Days Micronutrient Gaps in Urban India")
+
     def test_field_rep_rows_keep_freshest_duplicate_state(self):
         source = {
             "field_rep_v2": [
@@ -2867,23 +2926,29 @@ class V2ReportingPreservationTests(SimpleTestCase):
     @patch("etl.inclinic_pipeline.build_gold")
     @patch("etl.inclinic_pipeline.build_v2_reporting")
     @patch("etl.inclinic_pipeline.refresh_raw_v2_from_source")
+    @patch("etl.inclinic_pipeline._load_source_from_mysql_v2")
     @patch("etl.inclinic_pipeline.ensure_control_tables")
     def test_inclinic_v2_pipeline_refreshes_source_by_default(
         self,
         ensure_control_tables,
+        load_source_from_mysql_v2,
         refresh_raw_v2_from_source,
         build_v2_reporting,
         build_gold,
         log_run,
     ):
         os.environ.pop("INCLINIC_REPORTING_REFRESH_RAW_V2_FROM_SOURCE", None)
+        source = {"inclinic_collateral_v2": [{"old_id": "27"}]}
+        load_source_from_mysql_v2.return_value = source
         refresh_raw_v2_from_source.return_value = {"raw_v2_inclinic.inclinic_field_rep_identity_v2": 1}
         build_v2_reporting.return_value = {"counts": {}, "issues": {}, "preservation_counts": {}}
 
         result = inclinic_pipeline.run_pipeline(run_id="state-refresh-test", trigger_type="manual")
 
         self.assertEqual(result["status"], "SUCCESS")
-        refresh_raw_v2_from_source.assert_called_once_with("state-refresh-test")
+        load_source_from_mysql_v2.assert_called_once_with()
+        refresh_raw_v2_from_source.assert_called_once_with("state-refresh-test", source=source)
+        build_v2_reporting.assert_called_once_with("state-refresh-test", source=source)
         build_gold.assert_called_once_with("state-refresh-test")
         log_run.assert_called_once()
 

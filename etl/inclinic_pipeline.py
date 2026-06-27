@@ -10,7 +10,7 @@ from etl.pipelines.bronze_transform import build_bronze
 from etl.pipelines.gold_aggregations import build_gold
 from etl.pipelines.raw_ingestion import ingest_raw
 from etl.pipelines.silver_transform import build_silver
-from etl.pipelines.v2_reporting import build_v2_reporting, refresh_raw_v2_from_source
+from etl.pipelines.v2_reporting import _load_source_from_mysql_v2, build_v2_reporting, refresh_raw_v2_from_source
 from etl.utils.specs import SOURCE_TABLE_SPECS
 
 
@@ -23,9 +23,11 @@ def run_pipeline(run_id: str | None = None, trigger_type: str = "manual") -> dic
         if source_mode == "v2":
             refresh_counts = {}
             refresh_source_v2 = os.environ.get("INCLINIC_REPORTING_REFRESH_RAW_V2_FROM_SOURCE", "1").strip().lower()
+            source_v2 = None
             if refresh_source_v2 in {"1", "true", "yes", "y", "on"}:
-                refresh_counts = refresh_raw_v2_from_source(run_id)
-            silver_result = build_v2_reporting(run_id)
+                source_v2 = _load_source_from_mysql_v2()
+                refresh_counts = refresh_raw_v2_from_source(run_id, source=source_v2)
+            silver_result = build_v2_reporting(run_id, source=source_v2)
             build_gold(run_id)
             counts = silver_result.get("counts", {})
             issues = silver_result.get("issues", {})
