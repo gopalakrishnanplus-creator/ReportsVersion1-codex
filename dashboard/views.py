@@ -3250,7 +3250,7 @@ def _format_collateral_options(
         if not collateral_id or collateral_id in seen_ids:
             continue
         status_label = _collateral_status_label(row)
-        if status_label == "Upcoming":
+        if status_label == "Upcoming" and collateral_id != selected_id:
             continue
         name = _collateral_display_name(row, f"Collateral {collateral_id}")
         start = _format_schedule_date(_collateral_display_start(row))

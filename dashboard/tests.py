@@ -175,6 +175,22 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(options[0]["collateral_id"], "22")
         self.assertEqual(options[0]["status_label"], "Selected")
 
+    def test_collateral_options_keep_directly_selected_upcoming_collateral(self):
+        rows = [
+            {
+                "collateral_id": "27",
+                "collateral_title": "First-1000-Days Micronutrient Gaps in Urban India",
+                "schedule_start_date": "2099-07-01",
+                "schedule_end_date": "2099-07-31",
+            }
+        ]
+
+        options = dashboard.views._format_collateral_options(rows, "demo", "27")
+
+        self.assertEqual(len(options), 1)
+        self.assertEqual(options[0]["collateral_id"], "27")
+        self.assertEqual(options[0]["status_label"], "Selected")
+
     def test_campaign_collateral_merge_prefers_live_operational_update(self):
         v2_rows = [
             {
@@ -251,6 +267,48 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["campaign_id_resolved"], "campaign-demo")
         self.assertEqual(rows[0]["schedule_end_date"], "2026-06-15")
+
+    def test_schedule_rows_include_activity_collateral_without_schedule_bridge(self):
+        source = {
+            "campaign_v2": [{"id": "campaign-demo", "legacy_campaign_id": "campaign-demo"}],
+            "campaign_management_campaign": [
+                {
+                    "id": "77",
+                    "brand_campaign_id": "campaign-demo",
+                    "start_date": "2026-06-20",
+                    "end_date": "2026-07-20",
+                }
+            ],
+            "inclinic_campaign_field_rep_assignment_v2": [],
+            "inclinic_assigned_doctor_roster_v2": [],
+            "inclinic_collateral_transaction_v2": [
+                {
+                    "legacy_campaign_id": "campaign-demo",
+                    "old_collateral_id": "27",
+                    "old_transaction_date": "2026-06-21 10:00:00",
+                    "is_current": "1",
+                }
+            ],
+            "inclinic_share_event_v2": [],
+            "inclinic_campaign_collateral_v2": [],
+            "inclinic_collateral_v2": [
+                {
+                    "old_id": "27",
+                    "old_title": "First-1000-Days Micronutrient Gaps in Urban India",
+                    "old_campaign_id": "77",
+                    "is_current": "1",
+                }
+            ],
+        }
+        dim_collateral = [{"id": "27", "type": "pdf", "title": "First-1000-Days Micronutrient Gaps in Urban India"}]
+
+        rows = v2_reporting._schedule_rows(source, dim_collateral, "2026-06-21T10:00:00+00:00")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["campaign_id_resolved"], "campaign-demo")
+        self.assertEqual(rows[0]["collateral_id"], "27")
+        self.assertEqual(rows[0]["collateral_title"], "First-1000-Days Micronutrient Gaps in Urban India")
+        self.assertEqual(rows[0]["schedule_start_date"], "2026-06-20")
 
     def test_internal_data_admin_schema_filter(self):
         self.assertTrue(_is_relevant_schema("bronze"))

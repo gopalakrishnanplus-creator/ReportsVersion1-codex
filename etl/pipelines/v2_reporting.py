@@ -1946,8 +1946,68 @@ def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list
     legacy_by_uuid = _campaign_uuid_to_legacy(source)
     collateral_by_uuid = _build_indexes(source["inclinic_collateral_v2"], "collateral_uuid")
     collateral_dim_by_id = {row["id"]: row for row in dim_collateral}
-    rows: list[dict[str, Any]] = []
+    rows_by_campaign_collateral: dict[tuple[str, str], dict[str, Any]] = {}
     source_rows_by_key: dict[tuple[str, ...], dict[str, Any]] = {}
+    campaign_dates: dict[str, dict[str, str]] = {}
+    for campaign in [*source.get("campaign_management_campaign", []), *source.get("campaign_v2", [])]:
+        campaign_id = _field(campaign, "brand_campaign_id", "legacy_campaign_id", "campaign_id", "id")
+        local_id = _field(campaign, "id", "local_campaign_id", "old_campaign_id")
+        dates = {
+            "start": _field(campaign, "start_date", "old_start_date"),
+            "end": _field(campaign, "end_date", "old_end_date"),
+        }
+        for key_value in (campaign_id, local_id, _norm(campaign_id), _norm(local_id)):
+            if key_value:
+                campaign_dates.setdefault(key_value, dates)
+
+    def campaign_dates_for(campaign_id: str, *raw_values: Any) -> dict[str, str]:
+        for value in (campaign_id, *raw_values, _norm(campaign_id), *(_norm(value) for value in raw_values)):
+            key = _clean(value)
+            if key and key in campaign_dates:
+                return campaign_dates[key]
+        return {"start": "", "end": ""}
+
+    def add_schedule_row(
+        *,
+        row_id: str,
+        campaign_id: str,
+        collateral_id: str,
+        start: str,
+        end: str,
+        created_at: str = "",
+        updated_at: str = "",
+    ) -> None:
+        if not campaign_id or not collateral_id:
+            return
+        collateral = collateral_dim_by_id.get(collateral_id, {})
+        candidate = {
+            "id": row_id or _md5("schedule", campaign_id, collateral_id),
+            "start_date": start,
+            "end_date": end,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "campaign_id": campaign_id,
+            "collateral_id": collateral_id,
+            "schedule_start_ts": start,
+            "schedule_end_ts": end,
+            "schedule_start_date": start[:10] if start else "",
+            "schedule_end_date": end[:10] if end else "",
+            "schedule_missing_flag": "1" if not start or not end else "0",
+            "campaign_id_resolved": campaign_id,
+            "collateral_type": _clean(collateral.get("type")),
+            "collateral_title": _clean(collateral.get("title")),
+            "_silver_updated_at": now,
+        }
+        key = (campaign_id, collateral_id)
+        existing = rows_by_campaign_collateral.get(key)
+        if existing is None:
+            rows_by_campaign_collateral[key] = candidate
+            return
+        existing_has_schedule = existing.get("schedule_missing_flag") != "1"
+        candidate_has_schedule = candidate.get("schedule_missing_flag") != "1"
+        if candidate_has_schedule and not existing_has_schedule:
+            rows_by_campaign_collateral[key] = candidate
+
     for row in source["inclinic_campaign_collateral_v2"]:
         if not _row_is_current(row):
             continue
@@ -1970,30 +2030,67 @@ def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list
             old_collateral_id = _field(collateral_source, "old_id")
         if not legacy_campaign_id or not old_collateral_id:
             continue
-        collateral = collateral_dim_by_id.get(old_collateral_id, {})
         start = _field(row, "old_start_date")
         end = _field(row, "old_end_date")
-        rows.append(
-            {
-                "id": _field(row, "old_id", "campaign_collateral_uuid"),
-                "start_date": start,
-                "end_date": end,
-                "created_at": _field(row, "old_created_at", "source_created_at"),
-                "updated_at": _field(row, "old_updated_at", "source_updated_at"),
-                "campaign_id": legacy_campaign_id,
-                "collateral_id": old_collateral_id,
-                "schedule_start_ts": start,
-                "schedule_end_ts": end,
-                "schedule_start_date": start[:10] if start else "",
-                "schedule_end_date": end[:10] if end else "",
-                "schedule_missing_flag": "1" if not start or not end else "0",
-                "campaign_id_resolved": legacy_campaign_id,
-                "collateral_type": _clean(collateral.get("type")),
-                "collateral_title": _clean(collateral.get("title")),
-                "_silver_updated_at": now,
-            }
+        add_schedule_row(
+            row_id=_field(row, "old_id", "campaign_collateral_uuid"),
+            campaign_id=legacy_campaign_id,
+            collateral_id=old_collateral_id,
+            start=start,
+            end=end,
+            created_at=_field(row, "old_created_at", "source_created_at"),
+            updated_at=_field(row, "old_updated_at", "source_updated_at"),
         )
-    return rows
+
+    for activity_table in ("inclinic_collateral_transaction_v2", "inclinic_share_event_v2"):
+        for row in source.get(activity_table, []):
+            if not _row_is_current(row):
+                continue
+            legacy_campaign_id = _resolve_campaign_id(
+                source,
+                row.get("legacy_campaign_id"),
+                row.get("old_brand_campaign_id"),
+                row.get("brand_campaign_id"),
+                row.get("campaign_id"),
+            )
+            old_collateral_id = _field(row, "old_collateral_id", "collateral_id")
+            if not old_collateral_id:
+                collateral_source = collateral_by_uuid.get(_clean(row.get("collateral_uuid")), {})
+                old_collateral_id = _field(collateral_source, "old_id")
+            dates = campaign_dates_for(legacy_campaign_id, row.get("old_campaign_id"), row.get("campaign_id"))
+            add_schedule_row(
+                row_id=_md5("activity_schedule", activity_table, legacy_campaign_id, old_collateral_id),
+                campaign_id=legacy_campaign_id,
+                collateral_id=old_collateral_id,
+                start=dates.get("start", ""),
+                end=dates.get("end", ""),
+                created_at=_field(row, "old_created_at", "source_created_at", "shared_at", "old_share_timestamp", "old_transaction_date"),
+                updated_at=_field(row, "old_updated_at", "source_updated_at"),
+            )
+
+    for collateral in source.get("inclinic_collateral_v2", []):
+        if not _row_is_current(collateral):
+            continue
+        collateral_id = _field(collateral, "old_id")
+        legacy_campaign_id = _resolve_campaign_id(
+            source,
+            collateral.get("legacy_campaign_id"),
+            collateral.get("brand_campaign_id"),
+            collateral.get("old_campaign_id"),
+            collateral.get("campaign_id"),
+        )
+        dates = campaign_dates_for(legacy_campaign_id, collateral.get("old_campaign_id"), collateral.get("campaign_id"))
+        add_schedule_row(
+            row_id=_md5("collateral_schedule", legacy_campaign_id, collateral_id),
+            campaign_id=legacy_campaign_id,
+            collateral_id=collateral_id,
+            start=dates.get("start", ""),
+            end=dates.get("end", ""),
+            created_at=_field(collateral, "old_created_at", "source_created_at"),
+            updated_at=_field(collateral, "old_updated_at", "source_updated_at"),
+        )
+
+    return list(rows_by_campaign_collateral.values())
 
 
 def _doctor_key(campaign_id: str, phone: str, fallback: str) -> str:
