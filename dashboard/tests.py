@@ -175,6 +175,45 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(options[0]["collateral_id"], "22")
         self.assertEqual(options[0]["status_label"], "Selected")
 
+    def test_collateral_options_suppress_campaign_date_fallback_duplicate(self):
+        rows = [
+            {
+                "collateral_id": "27",
+                "collateral_title": "Mini CME First-1000-Days Micronutrient Gaps in Urban India",
+                "schedule_start_date": "2026-06-17",
+                "schedule_end_date": "2026-07-17",
+                "campaign_start_date": "2025-12-01",
+                "campaign_end_date": "2026-12-01",
+            },
+            {
+                "collateral_id": "999",
+                "collateral_title": "Mini CME First-1000-Days Micronutrient Gaps in Urban India",
+                "schedule_start_date": "2025-12-01",
+                "schedule_end_date": "2026-12-01",
+                "campaign_start_date": "2025-12-01",
+                "campaign_end_date": "2026-12-01",
+            },
+            {
+                "collateral_id": "13",
+                "collateral_title": "Mini CME Post-COVID Immune Lag in Children",
+                "schedule_start_date": "2026-05-10",
+                "schedule_end_date": "2026-06-17",
+                "campaign_start_date": "2025-12-01",
+                "campaign_end_date": "2026-12-01",
+            },
+        ]
+
+        options = dashboard.views._format_collateral_options(rows, "demo", "27")
+
+        self.assertEqual(
+            [option["name"] for option in options],
+            [
+                "Mini CME First-1000-Days Micronutrient Gaps in Urban India",
+                "Mini CME Post-COVID Immune Lag in Children",
+            ],
+        )
+        self.assertNotIn("Dec 01, 2025 - Dec 01, 2026", [option["schedule_text"] for option in options])
+
     def test_collateral_options_keep_directly_selected_upcoming_collateral(self):
         rows = [
             {
@@ -2853,6 +2892,32 @@ class V2ReportingPreservationTests(SimpleTestCase):
             ["COL-1", "COL-3"],
         )
         self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_share_event_v2"]], ["COL-1", "COL-3"])
+
+    def test_legacy_keep_only_rule_does_not_filter_v2_inclinic_collaterals(self):
+        rules = [
+            {
+                "system_key": "inclinic",
+                "schema_name": "raw_server2",
+                "table_name": "collateral_management_collateral",
+                "entity_type": "collateral",
+                "record_identifier_normalized": normalize_record_identifier("25"),
+                "rule_mode": "keep_only",
+                "is_active": True,
+            }
+        ]
+        source = {
+            "inclinic_collateral_v2": [{"old_id": "27"}],
+            "inclinic_campaign_collateral_v2": [{"old_collateral_id": "27"}],
+            "inclinic_collateral_transaction_v2": [{"old_collateral_id": "27"}],
+            "inclinic_share_event_v2": [{"old_collateral_id": "27"}],
+        }
+
+        filtered = v2_reporting._apply_raw_visibility_to_source(source, rules)
+
+        self.assertEqual([row["old_id"] for row in filtered["inclinic_collateral_v2"]], ["27"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_campaign_collateral_v2"]], ["27"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_collateral_transaction_v2"]], ["27"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_share_event_v2"]], ["27"])
 
     def test_raw_visibility_filter_hides_pe_content_hierarchy(self):
         rules = [

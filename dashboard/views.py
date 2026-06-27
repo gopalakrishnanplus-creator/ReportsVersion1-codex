@@ -3545,6 +3545,14 @@ def _collateral_dedupe_key(row: dict[str, Any], name: str) -> tuple[str, str, st
     return (_normalize_lookup_key(name), start_key, end_key)
 
 
+def _collateral_uses_campaign_fallback_dates(row: dict[str, Any]) -> bool:
+    start = _parse_schedule_date(_collateral_display_start(row))
+    end = _parse_schedule_date(_collateral_display_end(row))
+    campaign_start = _parse_schedule_date(row.get("campaign_start_date"))
+    campaign_end = _parse_schedule_date(row.get("campaign_end_date"))
+    return bool(start and end and campaign_start and campaign_end and start == campaign_start and end == campaign_end)
+
+
 def _collateral_status_label(row: dict[str, Any]) -> str:
     start = _parse_schedule_date(_collateral_display_start(row))
     end = _parse_schedule_date(_collateral_display_end(row))
@@ -3565,9 +3573,22 @@ def _format_collateral_options(
     options_by_key: dict[tuple[str, str, str], tuple[int, dict[str, str]]] = {}
     seen_ids: set[str] = set()
     selected_id = str(current_collateral_id or "")
+    names_with_specific_schedule = {
+        _normalize_lookup_key(_collateral_display_name(row, ""))
+        for row in schedule_rows
+        if _normalize_lookup_key(_collateral_display_name(row, ""))
+        and not _collateral_uses_campaign_fallback_dates(row)
+    }
     for row in schedule_rows:
         collateral_id = str(row.get("collateral_id") or "").strip()
         if not collateral_id or collateral_id in seen_ids:
+            continue
+        name_key = _normalize_lookup_key(_collateral_display_name(row, ""))
+        if (
+            collateral_id != selected_id
+            and name_key in names_with_specific_schedule
+            and _collateral_uses_campaign_fallback_dates(row)
+        ):
             continue
         status_label = _collateral_status_label(row)
         if status_label == "Upcoming" and collateral_id != selected_id:

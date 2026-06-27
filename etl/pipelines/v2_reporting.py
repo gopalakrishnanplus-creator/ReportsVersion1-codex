@@ -24,13 +24,14 @@ from etl.reporting_corrections import (
     normalize_phone,
 )
 from etl.reporting_privacy import (
+    RAW_VISIBILITY_RULE_MODE_KEEP_ONLY,
     active_campaign_privacy_allowlist,
     active_person_privacy_rules,
     active_raw_visibility_rules,
     filter_rows_by_campaign_fields,
+    normalize_record_identifier,
     person_privacy_allowed_campaigns_for_row,
     raw_visibility_entity_ids,
-    raw_visibility_keep_only_ids,
     row_matches_raw_visibility_ids,
     row_visible_by_person_privacy,
 )
@@ -1136,6 +1137,40 @@ RAW_V2_KEY_CANDIDATES: dict[str, tuple[tuple[str, ...], ...]] = {
 }
 
 
+def _raw_visibility_ids_for_table_refs(
+    rules: list[dict[str, Any]],
+    entity_type: str,
+    *,
+    system_key: str,
+    rule_mode: str,
+    table_refs: set[tuple[str, str]],
+) -> set[str]:
+    selected_system = _clean(system_key).lower()
+    selected_entity = _clean(entity_type).lower()
+    selected_mode = _clean(rule_mode).lower()
+    values: set[str] = set()
+    for row in rules:
+        if not row.get("is_active", True):
+            continue
+        if _clean(row.get("system_key")).lower() != selected_system:
+            continue
+        if _clean(row.get("entity_type")).lower() != selected_entity:
+            continue
+        if _clean(row.get("rule_mode") or "hide").lower() != selected_mode:
+            continue
+        schema_name = _clean(row.get("schema_name"))
+        table_name = _clean(row.get("table_name"))
+        # Rules created before table scoping existed had no schema/table and
+        # intentionally remain global. Scoped legacy rules must not filter V2
+        # source rows after the source system has moved to raw_v2_inclinic.
+        if (schema_name or table_name) and (schema_name, table_name) not in table_refs:
+            continue
+        normalized = normalize_record_identifier(row.get("record_identifier_normalized") or row.get("record_identifier"))
+        if normalized:
+            values.add(normalized)
+    return values
+
+
 def _columns_for_rows(rows: list[dict[str, Any]]) -> list[str]:
     return list(dict.fromkeys(key for row in rows for key in row.keys())) or ["id"]
 
@@ -1522,7 +1557,16 @@ def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw
         }.items():
             remove_hidden(source_key, doctor_ids, fields)
 
-    collateral_keep_ids = raw_visibility_keep_only_ids(raw_visibility_rules, "collateral", system_key="inclinic")
+    collateral_keep_ids = _raw_visibility_ids_for_table_refs(
+        raw_visibility_rules,
+        "collateral",
+        system_key="inclinic",
+        rule_mode=RAW_VISIBILITY_RULE_MODE_KEEP_ONLY,
+        table_refs={
+            (RAW_V2_INCLINIC_SCHEMA, "inclinic_collateral_v2"),
+            (RAW_V2_INCLINIC_SCHEMA, "inclinic_campaign_collateral_v2"),
+        },
+    )
     if collateral_keep_ids:
         for source_key, fields in {
             "inclinic_collateral_v2": ("old_id", "collateral_uuid", "source_pk_value"),
