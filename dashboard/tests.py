@@ -2516,6 +2516,66 @@ class V2ReportingPreservationTests(SimpleTestCase):
 
         v2_reporting._validate_required_v2_source_counts(source)
 
+    def test_legacy_v1_doctor_roster_fallback_builds_required_v2_rows(self):
+        field_rep_rows = v2_reporting._merge_field_rep_sources(
+            [],
+            [
+                {
+                    "id": "2282",
+                    "full_name": "Rakesh Chandran A R",
+                    "brand_supplied_field_rep_id": "FR-2282",
+                    "state": "Kerala",
+                    "is_active": "1",
+                    "user_id": "501",
+                }
+            ],
+            [{"id": "501", "email": "rakesh@example.com"}],
+        )
+        assignment_rows = v2_reporting._merge_assignment_sources(
+            [],
+            [{"id": "901", "campaign_id": "83ce7fc7-c965-433a-b2b9-717394abe3c1", "field_rep_id": "2282"}],
+            field_rep_rows,
+        )
+
+        roster_rows = v2_reporting._legacy_doctor_roster_rows_from_v1(
+            [{"id": "77", "rep_id": "42", "name": "Dr Meera Shah", "phone": "+91 98765 43210"}],
+            [{"id": "42", "field_id": "FR-2282", "email": "rakesh@example.com"}],
+            field_rep_rows,
+            assignment_rows,
+        )
+
+        self.assertEqual(len(roster_rows), 1)
+        self.assertEqual(roster_rows[0]["legacy_campaign_id"], "83ce7fc7-c965-433a-b2b9-717394abe3c1")
+        self.assertEqual(roster_rows[0]["campaign_fieldrep_id"], "2282")
+        self.assertEqual(roster_rows[0]["brand_supplied_field_rep_id"], "FR-2282")
+        self.assertEqual(roster_rows[0]["doctor_name_raw"], "Dr Meera Shah")
+        self.assertEqual(roster_rows[0]["doctor_phone_normalized"], "9876543210")
+
+    def test_v2_source_safety_accepts_v1_fallback_roster_rows(self):
+        field_rep_rows = v2_reporting._merge_field_rep_sources(
+            [],
+            [{"id": "2282", "brand_supplied_field_rep_id": "FR-2282", "is_active": "1"}],
+            [],
+        )
+        assignment_rows = v2_reporting._merge_assignment_sources(
+            [],
+            [{"id": "901", "campaign_id": "campaign-a", "field_rep_id": "2282"}],
+            field_rep_rows,
+        )
+        fallback_roster_rows = v2_reporting._legacy_doctor_roster_rows_from_v1(
+            [{"id": "77", "rep_id": "42", "name": "Dr Meera Shah", "phone": "+91 98765 43210"}],
+            [{"id": "42", "field_id": "FR-2282"}],
+            field_rep_rows,
+            assignment_rows,
+        )
+        source = {key: [{"id": "1"}] for key in v2_reporting.REQUIRED_V2_SOURCE_KEYS}
+        source["campaign_field_rep_assignment_v2"] = assignment_rows
+        source["inclinic_campaign_field_rep_assignment_v2"] = assignment_rows
+        source["doctor_field_rep_roster_bridge_v2"] = fallback_roster_rows
+        source["inclinic_assigned_doctor_roster_v2"] = fallback_roster_rows
+
+        v2_reporting._validate_required_v2_source_counts(source)
+
     def test_campaign_privacy_filter_keeps_only_allowed_inclinic_source_rows(self):
         source = {
             "campaign_v2": [

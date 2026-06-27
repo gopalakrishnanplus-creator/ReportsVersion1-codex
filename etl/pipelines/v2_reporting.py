@@ -363,6 +363,179 @@ def _field(row: dict[str, Any], *names: str) -> str:
     return ""
 
 
+def _legacy_assignment_to_v2(row: dict[str, Any], field_rep_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    assignment_id = _field(row, "id") or _md5(row.get("campaign_id"), row.get("field_rep_id"))
+    campaign_id = _field(row, "campaign_id", "legacy_campaign_id")
+    rep_id = _field(row, "field_rep_id", "campaign_fieldrep_id")
+    field_rep = field_rep_by_id.get(rep_id, {})
+    created_at = _field(row, "created_at", "assigned_at")
+    updated_at = _field(row, "updated_at")
+    return {
+        "source_system": "rfa_master",
+        "source_database": RFA_DEFAULT_DB,
+        "source_table": "campaign_campaignfieldrep",
+        "source_pk_column": "id",
+        "source_pk_value": assignment_id,
+        "source_created_at": created_at,
+        "source_updated_at": updated_at,
+        "campaign_field_rep_assignment_uuid": _md5("campaign_field_rep_assignment", assignment_id, campaign_id, rep_id),
+        "id": assignment_id,
+        "legacy_campaign_fieldrep_id": assignment_id,
+        "campaign_id": campaign_id,
+        "legacy_campaign_id": campaign_id,
+        "legacy_campaign_id_normalized": _norm(campaign_id),
+        "field_rep_id": rep_id,
+        "campaign_fieldrep_id": rep_id,
+        "brand_supplied_field_rep_id": _field(field_rep, "current_brand_supplied_field_rep_id", "brand_supplied_field_rep_id"),
+        "campaign_uuid": _md5("campaign", _norm(campaign_id)),
+        "field_rep_uuid": _md5("field_rep", rep_id),
+        "created_at": created_at,
+        "assigned_at": created_at,
+        "assigned_from": created_at,
+        "assigned_to": "",
+        "assignment_status": _field(row, "assignment_status") or "active",
+        "state": _field(row, "state"),
+        "is_authoritative": "1",
+        "is_current": "1",
+        "raw_payload_json": _json_payload(row),
+    }
+
+
+def _merge_assignment_sources(
+    v2_rows: list[dict[str, Any]],
+    legacy_rows: list[dict[str, Any]],
+    field_rep_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    field_rep_by_id = {
+        _field(row, "current_campaign_fieldrep_id", "campaign_fieldrep_id", "id"): row
+        for row in field_rep_rows
+        if _field(row, "current_campaign_fieldrep_id", "campaign_fieldrep_id", "id")
+    }
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in v2_rows:
+        campaign_id = _field(row, "legacy_campaign_id", "campaign_id")
+        rep_id = _field(row, "field_rep_id", "campaign_fieldrep_id")
+        if campaign_id and rep_id:
+            merged[(campaign_id, rep_id)] = row
+
+    for legacy_row in legacy_rows:
+        row = _legacy_assignment_to_v2(legacy_row, field_rep_by_id)
+        campaign_id = _field(row, "legacy_campaign_id", "campaign_id")
+        rep_id = _field(row, "field_rep_id", "campaign_fieldrep_id")
+        if not campaign_id or not rep_id:
+            continue
+        key = (campaign_id, rep_id)
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = row
+        elif _source_freshness_key(row) >= _source_freshness_key(existing):
+            merged[key] = _merge_non_empty(existing, row)
+    return list(merged.values())
+
+
+def _legacy_doctor_roster_rows_from_v1(
+    doctor_viewer_rows: list[dict[str, Any]],
+    local_user_rows: list[dict[str, Any]],
+    field_rep_rows: list[dict[str, Any]],
+    assignment_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    field_rep_by_id = {
+        _field(row, "current_campaign_fieldrep_id", "campaign_fieldrep_id", "id"): row
+        for row in field_rep_rows
+        if _field(row, "current_campaign_fieldrep_id", "campaign_fieldrep_id", "id")
+    }
+    field_rep_by_brand_id = {
+        _field(row, "current_brand_supplied_field_rep_id", "brand_supplied_field_rep_id"): row
+        for row in field_rep_rows
+        if _field(row, "current_brand_supplied_field_rep_id", "brand_supplied_field_rep_id")
+    }
+    field_rep_by_email = {
+        _field(row, "primary_email", "email", "field_rep_email_best").lower(): row
+        for row in field_rep_rows
+        if _field(row, "primary_email", "email", "field_rep_email_best")
+    }
+    local_user_by_id = {_field(row, "id"): row for row in local_user_rows if _field(row, "id")}
+
+    local_user_resolved_by_id: dict[str, dict[str, Any]] = {}
+    for user in local_user_rows:
+        user_id = _field(user, "id")
+        field_id = _field(user, "field_id")
+        email = _field(user, "email").lower()
+        resolved = field_rep_by_brand_id.get(field_id) or field_rep_by_email.get(email)
+        if user_id and resolved:
+            local_user_resolved_by_id[user_id] = resolved
+
+    assignments_by_rep: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for assignment in assignment_rows:
+        if not _row_is_current(assignment):
+            continue
+        campaign_id = _field(assignment, "legacy_campaign_id", "campaign_id")
+        rep_id = _field(assignment, "campaign_fieldrep_id", "field_rep_id")
+        if campaign_id and rep_id:
+            assignments_by_rep[rep_id].append(assignment)
+
+    rows_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for doctor in doctor_viewer_rows:
+        doctor_rep_id = _field(doctor, "rep_id")
+        phone_norm = _phone(doctor.get("phone"))
+        if not doctor_rep_id or not phone_norm:
+            continue
+        local_user = local_user_by_id.get(doctor_rep_id, {})
+        field_id = _field(local_user, "field_id")
+        email = _field(local_user, "email").lower()
+        field_rep = (
+            local_user_resolved_by_id.get(doctor_rep_id)
+            or field_rep_by_brand_id.get(field_id)
+            or field_rep_by_email.get(email)
+            or field_rep_by_id.get(doctor_rep_id)
+        )
+        rep_id = _field(field_rep or {}, "current_campaign_fieldrep_id", "campaign_fieldrep_id", "id")
+        if not rep_id:
+            continue
+
+        for assignment in assignments_by_rep.get(rep_id, []):
+            campaign_id = _field(assignment, "legacy_campaign_id", "campaign_id")
+            if not campaign_id:
+                continue
+            key = (campaign_id, rep_id, phone_norm)
+            rows_by_key[key] = {
+                "source_system": "inclinic",
+                "source_database": INCLINIC_DEFAULT_DB,
+                "source_table": "doctor_viewer_doctor",
+                "source_pk_column": "id",
+                "source_pk_value": _field(doctor, "id"),
+                "source_created_at": _field(doctor, "created_at"),
+                "source_updated_at": _field(doctor, "updated_at"),
+                "verification_status": "verified",
+                "verification_basis": "v1_doctor_viewer_rep_id_to_user_management_field_id",
+                "is_current": "1",
+                "raw_payload_json": _json_payload(doctor),
+                "doctor_field_rep_roster_bridge_uuid": _md5("doctor_field_rep_roster_bridge", campaign_id, rep_id, phone_norm),
+                "campaign_uuid": _md5("campaign", _norm(campaign_id)),
+                "legacy_campaign_id": campaign_id,
+                "legacy_campaign_id_normalized": _norm(campaign_id),
+                "field_rep_uuid": _md5("field_rep", rep_id),
+                "field_rep_id": rep_id,
+                "campaign_fieldrep_id": rep_id,
+                "brand_supplied_field_rep_id": _field(field_rep or {}, "current_brand_supplied_field_rep_id", "brand_supplied_field_rep_id"),
+                "doctor_uuid": _md5("doctor_phone", phone_norm),
+                "inclinic_doctor_uuid": _md5("doctor_viewer_doctor", _field(doctor, "id")) if _field(doctor, "id") else "",
+                "doctor_name_raw": _field(doctor, "name", "full_name"),
+                "doctor_name_normalized": _field(doctor, "name", "full_name").lower(),
+                "doctor_phone_raw": _field(doctor, "phone"),
+                "doctor_phone_normalized": phone_norm,
+                "assignment_status": "active",
+                "match_status": "matched",
+                "match_basis": "v1_doctor_viewer_rep_id_to_user_management_id_to_campaign_fieldrep",
+                "old_doctor_viewer_id": _field(doctor, "id"),
+                "old_doctor_viewer_rep_id": doctor_rep_id,
+                "old_user_management_user_id": _field(local_user, "id"),
+                "old_user_management_field_id": field_id,
+                "old_user_management_email": _field(local_user, "email"),
+            }
+    return list(rows_by_key.values())
+
+
 def _event_date(row: dict[str, Any], *names: str) -> str:
     return _field(row, *names)
 
@@ -1007,10 +1180,17 @@ def _load_source_from_mysql_v2() -> dict[str, list[dict[str, Any]]]:
     rfa = settings.MYSQL_SERVER_1
     inclinic = settings.MYSQL_SERVER_2
     auth_rows = _fetch_optional_table(rfa, RFA_DEFAULT_DB, "auth_user")
+    legacy_field_rep_rows = _fetch_optional_table(rfa, RFA_DEFAULT_DB, "campaign_fieldrep")
     field_rep_rows = _merge_field_rep_sources(
-        _fetch_table(rfa, RFA_DEFAULT_DB, "field_rep_v2"),
-        _fetch_optional_table(rfa, RFA_DEFAULT_DB, "campaign_fieldrep"),
+        _fetch_optional_table(rfa, RFA_DEFAULT_DB, "field_rep_v2"),
+        legacy_field_rep_rows,
         auth_rows,
+    )
+    legacy_assignment_rows = _fetch_optional_table(rfa, RFA_DEFAULT_DB, "campaign_campaignfieldrep")
+    assignment_rows = _merge_assignment_sources(
+        _fetch_optional_table(rfa, RFA_DEFAULT_DB, "campaign_field_rep_assignment_v2"),
+        legacy_assignment_rows,
+        field_rep_rows,
     )
     inclinic_campaign_rows = (
         _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_v2")
@@ -1025,15 +1205,33 @@ def _load_source_from_mysql_v2() -> dict[str, list[dict[str, Any]]]:
         _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_collateral_v2"),
         _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "collateral_management_collateral"),
     )
+    doctor_roster_rows = _fetch_optional_table(rfa, RFA_DEFAULT_DB, "doctor_field_rep_roster_bridge_v2")
+    inclinic_roster_rows = _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_assigned_doctor_roster_v2")
+    if not doctor_roster_rows or not inclinic_roster_rows:
+        fallback_roster_rows = _legacy_doctor_roster_rows_from_v1(
+            _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "doctor_viewer_doctor"),
+            _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "user_management_user"),
+            field_rep_rows,
+            assignment_rows,
+        )
+        if not doctor_roster_rows:
+            doctor_roster_rows = fallback_roster_rows
+        if not inclinic_roster_rows:
+            inclinic_roster_rows = fallback_roster_rows
+
+    inclinic_assignment_rows = _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_field_rep_assignment_v2")
+    if not inclinic_assignment_rows:
+        inclinic_assignment_rows = assignment_rows
+
     return {
         "campaign_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "campaign_v2"),
         "field_rep_v2": field_rep_rows,
-        "campaign_field_rep_assignment_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "campaign_field_rep_assignment_v2"),
-        "doctor_field_rep_roster_bridge_v2": _fetch_table(rfa, RFA_DEFAULT_DB, "doctor_field_rep_roster_bridge_v2"),
-        "inclinic_assigned_doctor_roster_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_assigned_doctor_roster_v2"),
+        "campaign_field_rep_assignment_v2": assignment_rows,
+        "doctor_field_rep_roster_bridge_v2": doctor_roster_rows,
+        "inclinic_assigned_doctor_roster_v2": inclinic_roster_rows,
         "inclinic_collateral_v2": collateral_rows,
         "inclinic_campaign_collateral_v2": campaign_collateral_rows,
-        "inclinic_campaign_field_rep_assignment_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_campaign_field_rep_assignment_v2"),
+        "inclinic_campaign_field_rep_assignment_v2": inclinic_assignment_rows,
         "inclinic_collateral_transaction_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_collateral_transaction_v2"),
         "inclinic_share_event_v2": _fetch_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_share_event_v2"),
         "inclinic_field_rep_identity_v2": _fetch_optional_table(inclinic, INCLINIC_DEFAULT_DB, "inclinic_field_rep_identity_v2"),
@@ -1820,7 +2018,7 @@ def _assigned_roster_rows(
             if not campaign_id or not rep_id or not phone:
                 continue
             key = (campaign_id, rep_id, phone)
-            if key in rows and rows[key].get("source_table") == "inclinic_assigned_doctor_roster_v2":
+            if key in rows and rows[key].get("_reporting_source_table") == "inclinic_assigned_doctor_roster_v2":
                 continue
             rows[key] = {**row, "_reporting_source_table": table_name}
     return list(rows.values())
