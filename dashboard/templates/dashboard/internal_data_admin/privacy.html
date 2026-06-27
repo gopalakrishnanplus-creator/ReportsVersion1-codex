@@ -11,7 +11,7 @@
 <section class="ida-band">
   <div>
     <h2>Control RAW record reporting visibility</h2>
-    <p class="ida-muted">Select the source system, choose the data group, choose the source table, then paste values to hide or keep. Rules are applied to derived dashboards without deleting RAW data.</p>
+    <p class="ida-muted">Select the source system, choose the data group, choose one identifier type, then paste values to hide or keep. The rule is applied across every supported table in that group without deleting RAW data.</p>
   </div>
   <div class="ida-safety-note">
     <strong>No RAW deletion</strong>
@@ -35,11 +35,10 @@
   <form class="ida-form ida-record-form" method="post">
     {% csrf_token %}
     <input type="hidden" name="privacy_action" value="add_raw_visibility">
-    <input type="hidden" name="identifier_column" id="raw-visibility-identifier-column" value="">
     <div class="ida-field-grid">
       <label class="ida-field">
         <span>Source system</span>
-        <select id="raw-visibility-system" required>
+        <select name="system_key" id="raw-visibility-system" required>
           <option value="">Select source system</option>
           {% for option in raw_visibility_system_options %}
           <option value="{{ option.system_key }}">{{ option.system_label }}</option>
@@ -48,28 +47,27 @@
       </label>
       <label class="ida-field">
         <span>Table group</span>
-        <select id="raw-visibility-entity" required disabled>
+        <select name="entity_type" id="raw-visibility-entity" required disabled>
           <option value="">Select table group</option>
           {% for option in raw_visibility_entity_options %}
           <option value="{{ option.entity_type }}">{{ option.entity_label }}</option>
           {% endfor %}
         </select>
       </label>
-      <label class="ida-field ida-field-wide">
-        <span>Source table</span>
-        <select name="table_ref" id="raw-visibility-table-ref" required disabled>
+      <label class="ida-field">
+        <span>Identifier type</span>
+        <select name="identifier_column" id="raw-visibility-identifier-column" required disabled>
           <option value="">Select source system and table group first</option>
-          {% for option in raw_visibility_table_options %}
+          {% for option in raw_visibility_identifier_options %}
           <option
             value="{{ option.value }}"
             data-system="{{ option.system_key }}"
             data-entity="{{ option.entity_type }}"
-            data-default-column="{{ option.default_identifier_column }}"
-            data-is-v2="{{ option.is_v2_source|yesno:'true,false' }}"
-          >{{ option.label }} - {{ option.schema_name }}.{{ option.table_name }}</option>
+            data-column-help="{{ option.column_help }}"
+          >{{ option.label }}</option>
           {% endfor %}
         </select>
-        <small>The page automatically uses the correct identifier column for the selected table.</small>
+        <small id="raw-visibility-column-help">Rules will be written to every table in the selected group that supports this identifier.</small>
       </label>
       <label class="ida-field">
         <span>Visibility action</span>
@@ -82,7 +80,7 @@
       <label class="ida-field ida-field-wide">
         <span>Values to hide or show</span>
         <textarea name="record_identifiers" rows="4" placeholder="One or more values, comma-separated or one per line" required></textarea>
-        <small>Examples: collateral IDs, campaign IDs, transaction IDs, share IDs, field rep IDs, or doctor phone values from the selected table.</small>
+        <small>Examples: collateral IDs, campaign IDs, transaction IDs, share IDs, field rep IDs, or doctor phone values for the selected group.</small>
       </label>
       <label class="ida-field ida-field-wide">
         <span>Reason</span>
@@ -148,53 +146,57 @@
   (() => {
     const systemSelect = document.getElementById("raw-visibility-system");
     const entitySelect = document.getElementById("raw-visibility-entity");
-    const tableSelect = document.getElementById("raw-visibility-table-ref");
-    const columnInput = document.getElementById("raw-visibility-identifier-column");
+    const identifierSelect = document.getElementById("raw-visibility-identifier-column");
+    const columnHelp = document.getElementById("raw-visibility-column-help");
     const modeSelect = document.getElementById("raw-visibility-rule-mode");
-    if (!systemSelect || !entitySelect || !tableSelect || !columnInput) {
+    if (!systemSelect || !entitySelect || !identifierSelect) {
       return;
     }
-    const tableOptions = Array.from(tableSelect.querySelectorAll("option[data-system]"));
+    const identifierOptions = Array.from(identifierSelect.querySelectorAll("option[data-system]"));
     const entityOptions = Array.from(entitySelect.querySelectorAll("option[value]:not([value=''])"));
-    const resetTables = () => {
+    const resetIdentifierOptions = () => {
       const systemValue = systemSelect.value;
       const entityValue = entitySelect.value;
       entitySelect.disabled = !systemValue;
-      tableSelect.disabled = !systemValue || !entityValue;
-      columnInput.value = "";
+      identifierSelect.disabled = !systemValue || !entityValue;
       entityOptions.forEach((option) => {
-        const hasTables = tableOptions.some((tableOption) => tableOption.dataset.system === systemValue && tableOption.dataset.entity === option.value);
-        option.hidden = Boolean(systemValue) && !hasTables;
-        option.disabled = Boolean(systemValue) && !hasTables;
+        const hasIdentifiers = identifierOptions.some((identifierOption) => identifierOption.dataset.system === systemValue && identifierOption.dataset.entity === option.value);
+        option.hidden = Boolean(systemValue) && !hasIdentifiers;
+        option.disabled = Boolean(systemValue) && !hasIdentifiers;
       });
       if (!systemValue || entitySelect.querySelector(`option[value="${entityValue}"]`)?.disabled) {
         entitySelect.value = "";
       }
       const activeEntity = entitySelect.value;
-      tableSelect.querySelector("option[value='']").textContent = activeEntity ? "Select source table" : "Select source system and table group first";
-      tableOptions.forEach((option) => {
+      identifierSelect.querySelector("option[value='']").textContent = activeEntity ? "Select identifier type" : "Select source system and table group first";
+      identifierOptions.forEach((option) => {
         const visible = option.dataset.system === systemValue && option.dataset.entity === activeEntity;
         option.hidden = !visible;
         option.disabled = !visible;
       });
-      const selectedTable = tableOptions.find((option) => option.value === tableSelect.value && !option.disabled);
-      if (!selectedTable) {
-        tableSelect.value = "";
+      const selectedIdentifier = identifierOptions.find((option) => option.value === identifierSelect.value && !option.disabled);
+      if (!selectedIdentifier) {
+        identifierSelect.value = "";
+      }
+      setColumnHelp();
+    };
+    const setColumnHelp = () => {
+      if (!columnHelp) {
         return;
       }
-      columnInput.value = selectedTable.dataset.defaultColumn || "";
+      const selectedIdentifier = identifierOptions.find((option) => option.value === identifierSelect.value && !option.disabled);
+      const columns = selectedIdentifier ? selectedIdentifier.dataset.columnHelp || "" : "";
+      columnHelp.textContent = columns
+        ? `Applies across matching tables using these source columns: ${columns}.`
+        : "Rules will be written to every table in the selected group that supports this identifier.";
     };
-    const setColumnFromTable = () => {
-      const selectedTable = tableOptions.find((option) => option.value === tableSelect.value && !option.disabled);
-      columnInput.value = selectedTable ? selectedTable.dataset.defaultColumn || "" : "";
-    };
-    systemSelect.addEventListener("change", resetTables);
-    entitySelect.addEventListener("change", resetTables);
-    tableSelect.addEventListener("change", setColumnFromTable);
+    systemSelect.addEventListener("change", resetIdentifierOptions);
+    entitySelect.addEventListener("change", resetIdentifierOptions);
+    identifierSelect.addEventListener("change", setColumnHelp);
     if (modeSelect) {
-      modeSelect.addEventListener("change", setColumnFromTable);
+      modeSelect.addEventListener("change", setColumnHelp);
     }
-    resetTables();
+    resetIdentifierOptions();
   })();
 </script>
 

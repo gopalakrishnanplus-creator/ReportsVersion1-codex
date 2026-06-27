@@ -1512,7 +1512,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "1 active RAW visibility rule")
         self.assertContains(response, "Source system")
         self.assertContains(response, "Table group")
-        self.assertContains(response, "Source table")
+        self.assertContains(response, "Identifier type")
+        self.assertNotContains(response, "Source table</span>")
         self.assertContains(response, "Visibility action")
         self.assertContains(response, "Hide matched values")
         self.assertContains(response, "old_id")
@@ -1530,15 +1531,44 @@ class DashboardAccessViewTests(SimpleTestCase):
             "dashboard.internal_data_admin.transaction.atomic",
             return_value=nullcontext(),
         ), patch(
+            "dashboard.internal_data_admin.list_raw_visibility_table_options",
+            return_value=[
+                {
+                    "value": "inclinic||raw_v2_inclinic||inclinic_collateral_v2",
+                    "system_key": "inclinic",
+                    "system_label": "InClinic Reporting",
+                    "entity_type": "collateral",
+                    "entity_label": "Collateral / content",
+                    "label": "InClinic collateral master",
+                    "schema_name": "raw_v2_inclinic",
+                    "table_name": "inclinic_collateral_v2",
+                    "identifier_fields": ("old_id", "collateral_uuid", "source_pk_value"),
+                    "keep_only_identifier_fields": ("old_id", "collateral_uuid", "source_pk_value"),
+                },
+                {
+                    "value": "inclinic||raw_v2_inclinic||inclinic_campaign_collateral_v2",
+                    "system_key": "inclinic",
+                    "system_label": "InClinic Reporting",
+                    "entity_type": "collateral",
+                    "entity_label": "Collateral / content",
+                    "label": "InClinic campaign-to-collateral link",
+                    "schema_name": "raw_v2_inclinic",
+                    "table_name": "inclinic_campaign_collateral_v2",
+                    "identifier_fields": ("old_collateral_id", "collateral_uuid", "source_pk_value"),
+                    "keep_only_identifier_fields": ("old_collateral_id", "collateral_uuid"),
+                },
+            ],
+        ), patch(
             "dashboard.internal_data_admin.create_raw_visibility_rule",
-            side_effect=["raw-rule-1", "raw-rule-2"],
+            side_effect=["raw-rule-1", "raw-rule-2", "raw-rule-3", "raw-rule-4"],
         ) as create_rule:
             response = self.client.post(
                 "/_internal/data-admin/privacy/",
                 {
                     "privacy_action": "add_raw_visibility",
-                    "table_ref": "inclinic||raw_v2_inclinic||inclinic_collateral_v2",
-                    "identifier_column": "old_id",
+                    "system_key": "inclinic",
+                    "entity_type": "collateral",
+                    "identifier_column": "collateral_id",
                     "rule_mode": "keep_only",
                     "record_identifiers": "COL-1\nCOL-2",
                     "reason": "Source collateral deleted from source",
@@ -1547,7 +1577,7 @@ class DashboardAccessViewTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response["Location"], "/_internal/data-admin/privacy/")
-        self.assertEqual(create_rule.call_count, 2)
+        self.assertEqual(create_rule.call_count, 4)
         create_rule.assert_any_call(
             system_key="inclinic",
             schema_name="raw_v2_inclinic",
@@ -1561,8 +1591,28 @@ class DashboardAccessViewTests(SimpleTestCase):
         create_rule.assert_any_call(
             system_key="inclinic",
             schema_name="raw_v2_inclinic",
+            table_name="inclinic_campaign_collateral_v2",
+            identifier_column="old_collateral_id",
+            record_identifier="COL-1",
+            rule_mode="keep_only",
+            reason="Source collateral deleted from source",
+            created_by="internal_admin",
+        )
+        create_rule.assert_any_call(
+            system_key="inclinic",
+            schema_name="raw_v2_inclinic",
             table_name="inclinic_collateral_v2",
             identifier_column="old_id",
+            record_identifier="COL-2",
+            rule_mode="keep_only",
+            reason="Source collateral deleted from source",
+            created_by="internal_admin",
+        )
+        create_rule.assert_any_call(
+            system_key="inclinic",
+            schema_name="raw_v2_inclinic",
+            table_name="inclinic_campaign_collateral_v2",
+            identifier_column="old_collateral_id",
             record_identifier="COL-2",
             rule_mode="keep_only",
             reason="Source collateral deleted from source",

@@ -3310,11 +3310,186 @@ def _parse_raw_visibility_record_ids(raw_value: str) -> list[str]:
     return _dedupe_text_values(re.split(r"[\n,;\t]+", raw_value or ""))
 
 
-def _parse_raw_visibility_table_ref(raw_value: str) -> tuple[str, str, str]:
-    parts = [part.strip() for part in (raw_value or "").split("||")]
-    if len(parts) != 3 or not all(parts):
-        raise ValueError("Select a system and RAW table.")
-    return parts[0].lower(), parts[1], parts[2]
+RAW_VISIBILITY_GROUP_IDENTIFIER_ALIASES = {
+    "campaign_id": {
+        "label": "Campaign ID",
+        "entities": ("campaign",),
+        "columns": (
+            "brand_campaign_id",
+            "campaign_id",
+            "legacy_campaign_id",
+            "pe_campaign_uuid",
+            "campaign_uuid",
+            "id",
+            "source_pk_value",
+        ),
+    },
+    "campaign_uuid": {"label": "Campaign UUID", "entities": ("campaign",), "columns": ("campaign_uuid", "pe_campaign_uuid")},
+    "collateral_id": {
+        "label": "Collateral ID",
+        "entities": ("collateral",),
+        "columns": ("old_id", "id", "old_collateral_id", "collateral_id", "source_pk_value"),
+    },
+    "collateral_uuid": {"label": "Collateral UUID", "entities": ("collateral",), "columns": ("collateral_uuid",)},
+    "field_rep_id": {
+        "label": "Field Rep ID",
+        "entities": ("field_rep",),
+        "columns": ("current_campaign_fieldrep_id", "field_rep_id", "id", "user_id", "source_pk_value"),
+    },
+    "brand_supplied_field_rep_id": {
+        "label": "Brand-supplied Field Rep ID",
+        "entities": ("field_rep",),
+        "columns": ("brand_supplied_field_rep_id",),
+    },
+    "field_rep_uuid": {"label": "Field Rep UUID", "entities": ("field_rep",), "columns": ("field_rep_uuid",)},
+    "doctor_id": {
+        "label": "Doctor ID",
+        "entities": ("doctor",),
+        "columns": ("doctor_id", "doctor_uuid", "id", "source_pk_value"),
+    },
+    "doctor_phone": {
+        "label": "Doctor phone",
+        "entities": ("doctor",),
+        "columns": ("doctor_phone_normalized", "phone", "whatsapp_no", "clinic_phone"),
+    },
+    "doctor_uuid": {"label": "Doctor UUID", "entities": ("doctor",), "columns": ("doctor_uuid",)},
+    "patient_id": {"label": "Patient ID", "entities": ("patient",), "columns": ("patient_id", "record_id", "id")},
+    "share_id": {
+        "label": "Share ID",
+        "entities": ("share",),
+        "columns": ("old_id", "share_id", "id", "public_id", "share_public_id", "source_pk_value"),
+    },
+    "share_uuid": {"label": "Share UUID", "entities": ("share",), "columns": ("share_event_uuid",)},
+    "transaction_id": {
+        "label": "Transaction ID",
+        "entities": ("transaction",),
+        "columns": ("old_transaction_id", "old_id", "transaction_uuid", "id", "source_pk_value"),
+    },
+    "transaction_uuid": {"label": "Transaction UUID", "entities": ("transaction",), "columns": ("transaction_uuid",)},
+    "activity_id": {
+        "label": "Activity ID",
+        "entities": ("activity",),
+        "columns": ("activity_event_uuid", "source_event_id", "source_banner_click_id", "banner_id", "id", "source_pk_value"),
+    },
+    "content_id": {"label": "Content ID", "entities": ("content",), "columns": ("id", "red_flag_id")},
+    "content_code": {"label": "Content code", "entities": ("content",), "columns": ("code", "video_code", "video_cluster_code")},
+    "content_url": {"label": "Content URL", "entities": ("content",), "columns": ("patient_video_url", "doctor_video_url")},
+    "email": {"label": "Email", "entities": ("doctor", "field_rep"), "columns": ("email",)},
+    "phone": {"label": "Phone", "entities": ("field_rep",), "columns": ("phone", "whatsapp_no", "clinic_phone")},
+    "source_pk_value": {
+        "label": "Source row ID",
+        "entities": ("activity", "campaign", "collateral", "content", "doctor", "field_rep", "patient", "share", "transaction"),
+        "columns": ("source_pk_value", "record_id"),
+    },
+}
+
+
+def _raw_visibility_option_fields(option: dict[str, Any], rule_mode: str) -> tuple[str, ...]:
+    if rule_mode == "keep_only" and option.get("keep_only_identifier_fields"):
+        return tuple(option.get("keep_only_identifier_fields") or ())
+    return tuple(option.get("identifier_fields") or ())
+
+
+def _raw_visibility_identifier_columns(identifier_key: str) -> tuple[str, ...]:
+    identifier_key = (identifier_key or "").strip()
+    alias = RAW_VISIBILITY_GROUP_IDENTIFIER_ALIASES.get(identifier_key)
+    if alias:
+        return tuple(alias["columns"])
+    return (identifier_key,) if identifier_key else ()
+
+
+def _raw_visibility_identifier_options(table_options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped_fields: dict[tuple[str, str], set[str]] = {}
+    labels: dict[tuple[str, str], dict[str, str]] = {}
+    for option in table_options:
+        key = (option["system_key"], option["entity_type"])
+        grouped_fields.setdefault(key, set()).update(option.get("identifier_fields") or ())
+        labels[key] = {
+            "system_label": option["system_label"],
+            "entity_label": option["entity_label"],
+        }
+
+    identifier_options: list[dict[str, Any]] = []
+    for key, available_fields in grouped_fields.items():
+        system_key, entity_type = key
+        covered_fields: set[str] = set()
+        for alias_key, alias in RAW_VISIBILITY_GROUP_IDENTIFIER_ALIASES.items():
+            if entity_type not in alias.get("entities", ()):
+                continue
+            matched_columns = [column for column in alias["columns"] if column in available_fields]
+            if not matched_columns:
+                continue
+            covered_fields.update(matched_columns)
+            identifier_options.append(
+                {
+                    "value": alias_key,
+                    "label": alias["label"],
+                    "system_key": system_key,
+                    "system_label": labels[key]["system_label"],
+                    "entity_type": entity_type,
+                    "entity_label": labels[key]["entity_label"],
+                    "column_help": ", ".join(matched_columns),
+                }
+            )
+        for field in sorted(available_fields - covered_fields):
+            identifier_options.append(
+                {
+                    "value": field,
+                    "label": field,
+                    "system_key": system_key,
+                    "system_label": labels[key]["system_label"],
+                    "entity_type": entity_type,
+                    "entity_label": labels[key]["entity_label"],
+                    "column_help": field,
+                }
+            )
+    return sorted(
+        identifier_options,
+        key=lambda item: (item["system_label"], item["entity_label"], item["label"]),
+    )
+
+
+def _raw_visibility_group_targets(
+    *,
+    table_options: list[dict[str, Any]],
+    system_key: str,
+    entity_type: str,
+    identifier_key: str,
+    rule_mode: str,
+) -> list[dict[str, str]]:
+    system_key = (system_key or "").strip().lower()
+    entity_type = (entity_type or "").strip()
+    identifier_columns = _raw_visibility_identifier_columns(identifier_key)
+    if not system_key:
+        raise ValueError("Select a source system.")
+    if not entity_type:
+        raise ValueError("Select a table group.")
+    alias = RAW_VISIBILITY_GROUP_IDENTIFIER_ALIASES.get((identifier_key or "").strip())
+    if alias and entity_type not in alias.get("entities", ()):
+        raise ValueError("Selected identifier type does not belong to this table group.")
+    if not identifier_columns:
+        raise ValueError("Select the identifier column/type for this table group.")
+
+    targets = []
+    for option in table_options:
+        if option["system_key"] != system_key or option["entity_type"] != entity_type:
+            continue
+        supported_fields = _raw_visibility_option_fields(option, rule_mode)
+        matched_column = next((column for column in identifier_columns if column in supported_fields), "")
+        if not matched_column:
+            continue
+        targets.append(
+            {
+                "system_key": option["system_key"],
+                "schema_name": option["schema_name"],
+                "table_name": option["table_name"],
+                "identifier_column": matched_column,
+            }
+        )
+
+    if not targets:
+        raise ValueError("Selected identifier is not supported for any source table in this system/table group.")
+    return targets
 
 
 def _values_getlist(values: Any, key: str) -> list[str]:
@@ -4014,27 +4189,36 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
 
         if action == "add_raw_visibility":
             try:
-                system_key, schema_name, table_name = _parse_raw_visibility_table_ref(request.POST.get("table_ref", ""))
                 record_ids = _parse_raw_visibility_record_ids(request.POST.get("record_identifiers", ""))
                 rule_mode = (request.POST.get("rule_mode") or "hide").strip()
                 if not record_ids:
                     raise ValueError("Enter at least one record identifier.")
+                raw_visibility_table_options = list_raw_visibility_table_options()
+                targets = _raw_visibility_group_targets(
+                    table_options=raw_visibility_table_options,
+                    system_key=request.POST.get("system_key", ""),
+                    entity_type=request.POST.get("entity_type", ""),
+                    identifier_key=request.POST.get("identifier_column", ""),
+                    rule_mode=rule_mode,
+                )
                 with transaction.atomic():
                     for record_identifier in record_ids:
-                        create_raw_visibility_rule(
-                            system_key=system_key,
-                            schema_name=schema_name,
-                            table_name=table_name,
-                            identifier_column=request.POST.get("identifier_column", ""),
-                            record_identifier=record_identifier,
-                            rule_mode=rule_mode,
-                            reason=request.POST.get("reason", ""),
-                            created_by=actor,
-                        )
+                        for target in targets:
+                            create_raw_visibility_rule(
+                                system_key=target["system_key"],
+                                schema_name=target["schema_name"],
+                                table_name=target["table_name"],
+                                identifier_column=target["identifier_column"],
+                                record_identifier=record_identifier,
+                                rule_mode=rule_mode,
+                                reason=request.POST.get("reason", ""),
+                                created_by=actor,
+                            )
                 action_label = "show-only" if rule_mode == "keep_only" else "hide"
+                rule_count = len(record_ids) * len(targets)
                 messages.success(
                     request,
-                    f"Created {len(record_ids)} RAW {action_label} visibility rule{'' if len(record_ids) == 1 else 's'}. Rerun ETL to refresh derived dashboards.",
+                    f"Created {rule_count} RAW {action_label} visibility rule{'' if rule_count == 1 else 's'} across {len(targets)} source table{'' if len(targets) == 1 else 's'}. Rerun ETL to refresh derived dashboards.",
                 )
                 return redirect("internal-data-admin-privacy")
             except Exception as exc:
@@ -4059,6 +4243,7 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
     raw_visibility_rules = list_raw_visibility_rules(include_inactive=True)
     active_raw_visibility_rules = [rule for rule in raw_visibility_rules if rule.get("is_active")]
     raw_visibility_table_options = list_raw_visibility_table_options()
+    raw_visibility_identifier_options = _raw_visibility_identifier_options(raw_visibility_table_options)
     raw_visibility_system_options = list(
         {
             option["system_key"]: {
@@ -4088,6 +4273,7 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
             "raw_visibility_rules": raw_visibility_rules,
             "active_raw_visibility_rules": active_raw_visibility_rules,
             "raw_visibility_table_options": raw_visibility_table_options,
+            "raw_visibility_identifier_options": raw_visibility_identifier_options,
             "raw_visibility_system_options": raw_visibility_system_options,
             "raw_visibility_entity_options": raw_visibility_entity_options,
             "is_allowlist_active": bool(active_rules),
