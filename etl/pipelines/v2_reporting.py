@@ -1945,6 +1945,11 @@ def _resolve_campaign_id(source: dict[str, list[dict[str, Any]]], *values: Any) 
 def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list[dict[str, Any]], now: str) -> list[dict[str, Any]]:
     legacy_by_uuid = _campaign_uuid_to_legacy(source)
     collateral_by_uuid = _build_indexes(source["inclinic_collateral_v2"], "collateral_uuid")
+    collateral_source_by_old_id = {
+        _field(row, "old_id"): row
+        for row in source.get("inclinic_collateral_v2", [])
+        if _field(row, "old_id")
+    }
     collateral_dim_by_id = {row["id"]: row for row in dim_collateral}
     rows_by_campaign_collateral: dict[tuple[str, str], dict[str, Any]] = {}
     source_rows_by_key: dict[tuple[str, ...], dict[str, Any]] = {}
@@ -1974,12 +1979,14 @@ def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list
         collateral_id: str,
         start: str,
         end: str,
+        collateral_title: str = "",
         created_at: str = "",
         updated_at: str = "",
     ) -> None:
         if not campaign_id or not collateral_id:
             return
         collateral = collateral_dim_by_id.get(collateral_id, {})
+        display_title = collateral_title or _clean(collateral.get("title")) or _clean(collateral.get("collateral_display_name"))
         candidate = {
             "id": row_id or _md5("schedule", campaign_id, collateral_id),
             "start_date": start,
@@ -1995,7 +2002,7 @@ def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list
             "schedule_missing_flag": "1" if not start or not end else "0",
             "campaign_id_resolved": campaign_id,
             "collateral_type": _clean(collateral.get("type")),
-            "collateral_title": _clean(collateral.get("title")),
+            "collateral_title": display_title,
             "_silver_updated_at": now,
         }
         key = (campaign_id, collateral_id)
@@ -2003,10 +2010,14 @@ def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list
         if existing is None:
             rows_by_campaign_collateral[key] = candidate
             return
+        if not _clean(existing.get("collateral_title")) and _clean(candidate.get("collateral_title")):
+            existing["collateral_title"] = candidate["collateral_title"]
+        if not _clean(existing.get("collateral_type")) and _clean(candidate.get("collateral_type")):
+            existing["collateral_type"] = candidate["collateral_type"]
         existing_has_schedule = existing.get("schedule_missing_flag") != "1"
         candidate_has_schedule = candidate.get("schedule_missing_flag") != "1"
         if candidate_has_schedule and not existing_has_schedule:
-            rows_by_campaign_collateral[key] = candidate
+            rows_by_campaign_collateral[key] = _merge_non_empty(candidate, existing)
 
     for row in source["inclinic_campaign_collateral_v2"]:
         if not _row_is_current(row):
@@ -2028,6 +2039,8 @@ def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list
         if not old_collateral_id:
             collateral_source = collateral_by_uuid.get(_clean(row.get("collateral_uuid")), {})
             old_collateral_id = _field(collateral_source, "old_id")
+        else:
+            collateral_source = collateral_source_by_old_id.get(old_collateral_id, {})
         if not legacy_campaign_id or not old_collateral_id:
             continue
         start = _field(row, "old_start_date")
@@ -2038,6 +2051,7 @@ def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list
             collateral_id=old_collateral_id,
             start=start,
             end=end,
+            collateral_title=_field(collateral_source, "old_title", "title"),
             created_at=_field(row, "old_created_at", "source_created_at"),
             updated_at=_field(row, "old_updated_at", "source_updated_at"),
         )
@@ -2057,6 +2071,8 @@ def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list
             if not old_collateral_id:
                 collateral_source = collateral_by_uuid.get(_clean(row.get("collateral_uuid")), {})
                 old_collateral_id = _field(collateral_source, "old_id")
+            else:
+                collateral_source = collateral_source_by_old_id.get(old_collateral_id, {})
             dates = campaign_dates_for(legacy_campaign_id, row.get("old_campaign_id"), row.get("campaign_id"))
             add_schedule_row(
                 row_id=_md5("activity_schedule", activity_table, legacy_campaign_id, old_collateral_id),
@@ -2064,6 +2080,7 @@ def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list
                 collateral_id=old_collateral_id,
                 start=dates.get("start", ""),
                 end=dates.get("end", ""),
+                collateral_title=_field(collateral_source, "old_title", "title"),
                 created_at=_field(row, "old_created_at", "source_created_at", "shared_at", "old_share_timestamp", "old_transaction_date"),
                 updated_at=_field(row, "old_updated_at", "source_updated_at"),
             )
@@ -2086,6 +2103,7 @@ def _schedule_rows(source: dict[str, list[dict[str, Any]]], dim_collateral: list
             collateral_id=collateral_id,
             start=dates.get("start", ""),
             end=dates.get("end", ""),
+            collateral_title=_field(collateral, "old_title", "title"),
             created_at=_field(collateral, "old_created_at", "source_created_at"),
             updated_at=_field(collateral, "old_updated_at", "source_updated_at"),
         )

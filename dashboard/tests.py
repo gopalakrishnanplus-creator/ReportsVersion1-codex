@@ -310,6 +310,43 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(rows[0]["collateral_title"], "First-1000-Days Micronutrient Gaps in Urban India")
         self.assertEqual(rows[0]["schedule_start_date"], "2026-06-20")
 
+    def test_schedule_rows_fill_bridge_title_from_collateral_source(self):
+        source = {
+            "campaign_v2": [{"id": "campaign-demo", "legacy_campaign_id": "campaign-demo"}],
+            "campaign_management_campaign": [{"id": "77", "brand_campaign_id": "campaign-demo"}],
+            "inclinic_campaign_field_rep_assignment_v2": [],
+            "inclinic_assigned_doctor_roster_v2": [],
+            "inclinic_collateral_transaction_v2": [],
+            "inclinic_share_event_v2": [],
+            "inclinic_campaign_collateral_v2": [
+                {
+                    "old_id": "25",
+                    "legacy_campaign_id": "campaign-demo",
+                    "old_campaign_id": "77",
+                    "old_collateral_id": "27",
+                    "old_start_date": "2026-06-17 00:00:00",
+                    "old_end_date": "2026-07-17 00:00:00",
+                    "is_current": "1",
+                }
+            ],
+            "inclinic_collateral_v2": [
+                {
+                    "old_id": "27",
+                    "old_title": "Mini CME First-1000-Days Micronutrient Gaps in Urban India",
+                    "old_campaign_id": "77",
+                    "is_current": "1",
+                }
+            ],
+        }
+
+        rows = v2_reporting._schedule_rows(source, [], "2026-06-27T00:00:00+00:00")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["collateral_id"], "27")
+        self.assertEqual(rows[0]["schedule_start_date"], "2026-06-17")
+        self.assertEqual(rows[0]["schedule_end_date"], "2026-07-17")
+        self.assertEqual(rows[0]["collateral_title"], "Mini CME First-1000-Days Micronutrient Gaps in Urban India")
+
     def test_internal_data_admin_schema_filter(self):
         self.assertTrue(_is_relevant_schema("bronze"))
         self.assertTrue(_is_relevant_schema("bronze_pe"))

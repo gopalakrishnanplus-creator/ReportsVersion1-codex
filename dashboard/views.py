@@ -555,7 +555,11 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
                 ) AS schedule_end_date,
                 cs.campaign_start_date,
                 cs.campaign_end_date,
-                sc.collateral_title,
+                COALESCE(
+                    NULLIF(btrim(sc.collateral_title), ''),
+                    NULLIF(btrim(dc.collateral_display_name), ''),
+                    NULLIF(btrim(dc.title), '')
+                ) AS collateral_title,
                 COALESCE(
                     NULLIF(btrim(cs.brand_name), ''),
                     NULLIF(btrim(cs.company_name), ''),
@@ -576,6 +580,8 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
                     cs.brand_campaign_key,
                     %s
                  )
+            LEFT JOIN silver.dim_collateral dc
+              ON dc.id::text = sc.collateral_id::text
         ),
         schedule_candidates AS (
             SELECT
