@@ -191,6 +191,40 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertEqual(options[0]["collateral_id"], "27")
         self.assertEqual(options[0]["status_label"], "Selected")
 
+    def test_selected_collateral_enrichment_overrides_campaign_name_fallback(self):
+        stale_rows = [
+            {
+                "collateral_id": "27",
+                "collateral_title": "",
+                "campaign_name": "Apex Laboratories",
+                "brand_name": "Apex Laboratories",
+                "schedule_start_date": "2025-12-01",
+                "schedule_end_date": "2026-12-01",
+            }
+        ]
+        source_row = {
+            "collateral_id": "27",
+            "collateral_title": "Mini CME First-1000-Days Micronutrient Gaps in Urban India",
+            "schedule_start_date": "2026-06-17",
+            "schedule_end_date": "2026-07-17",
+            "brand_name": "Apex Laboratories",
+        }
+
+        with patch("dashboard.views._selected_collateral_source_row", return_value=source_row):
+            enriched = dashboard.views._enrich_selected_collateral_schedule_rows(
+                stale_rows,
+                "83ce7fc7c965433ab2b9717394abe3c1",
+                ["83ce7fc7c965433ab2b9717394abe3c1"],
+                "27",
+            )
+
+        self.assertEqual(
+            dashboard.views._collateral_display_name(enriched[0]),
+            "Mini CME First-1000-Days Micronutrient Gaps in Urban India",
+        )
+        self.assertEqual(enriched[0]["schedule_start_date"], "2026-06-17")
+        self.assertEqual(enriched[0]["schedule_end_date"], "2026-07-17")
+
     def test_campaign_collateral_merge_prefers_live_operational_update(self):
         v2_rows = [
             {

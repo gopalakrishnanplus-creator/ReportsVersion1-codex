@@ -492,6 +492,96 @@ def _active_reporting_correction_rules_cte() -> str:
 
 def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
     lookup_key = _normalize_lookup_key(selected_campaign)
+    has_raw_v2_schedule = _optional_table_exists("raw_v2_inclinic", "inclinic_campaign_collateral_v2")
+    has_raw_v2_collateral = _optional_table_exists("raw_v2_inclinic", "inclinic_collateral_v2")
+    raw_v2_schedule_sql = f"""
+        raw_v2_schedule_candidates AS (
+            SELECT
+                rcc.old_collateral_id::text AS collateral_id,
+                CASE
+                    WHEN rcc.old_start_date IS NULL
+                      OR btrim(rcc.old_start_date::text) = ''
+                      OR lower(btrim(rcc.old_start_date::text)) = 'null'
+                    THEN NULL
+                    ELSE rcc.old_start_date::date
+                END AS schedule_start_date,
+                CASE
+                    WHEN rcc.old_end_date IS NULL
+                      OR btrim(rcc.old_end_date::text) = ''
+                      OR lower(btrim(rcc.old_end_date::text)) = 'null'
+                    THEN NULL
+                    ELSE rcc.old_end_date::date
+                END AS schedule_end_date,
+                cs.campaign_start_date,
+                cs.campaign_end_date,
+                COALESCE(
+                    NULLIF(btrim(rc.old_title), ''),
+                    NULLIF(btrim(dc.collateral_display_name), ''),
+                    NULLIF(btrim(dc.title), '')
+                ) AS collateral_title,
+                COALESCE(
+                    NULLIF(btrim(cs.brand_name), ''),
+                    NULLIF(btrim(cs.company_name), ''),
+                    NULLIF(btrim(cs.campaign_name), '')
+                ) AS brand_name,
+                CASE
+                    WHEN cs.company_logo IS NULL OR btrim(cs.company_logo) = '' OR lower(btrim(cs.company_logo)) = 'null'
+                    THEN NULL
+                    ELSE cs.company_logo
+                END AS company_logo,
+                cs.campaign_name,
+                cs.campaign_match_rank,
+                COALESCE(
+                    NULLIF(rcc.source_updated_at::text, ''),
+                    NULLIF(rcc.old_updated_at::text, ''),
+                    NULLIF(rc.source_updated_at::text, ''),
+                    NULLIF(rc.old_updated_at::text, ''),
+                    cs.source_updated_at
+                ) AS source_updated_at,
+                0 AS source_rank
+            FROM campaign_source cs
+            JOIN raw_v2_inclinic.inclinic_campaign_collateral_v2 rcc
+              ON (
+                    {_normalized_sql("COALESCE(NULLIF(rcc.legacy_campaign_id::text, ''), NULLIF(rcc.brand_campaign_id::text, ''), NULLIF(rcc.campaign_id::text, ''))")} IN (
+                        cs.brand_campaign_key,
+                        cs.campaign_id_key,
+                        %s
+                    )
+                    OR NULLIF(btrim(rcc.old_campaign_id::text), '') = cs.id::text
+                 )
+            LEFT JOIN raw_v2_inclinic.inclinic_collateral_v2 rc
+              ON rc.old_id::text = rcc.old_collateral_id::text
+              OR (
+                    COALESCE(NULLIF(btrim(rc.collateral_uuid::text), ''), '') <> ''
+                    AND rc.collateral_uuid::text = rcc.collateral_uuid::text
+                 )
+            LEFT JOIN silver.dim_collateral dc
+              ON dc.id::text = rcc.old_collateral_id::text
+            WHERE COALESCE(NULLIF(btrim(rcc.old_collateral_id::text), ''), '') <> ''
+              AND (
+                    rcc.is_current IS NULL
+                    OR lower(btrim(rcc.is_current::text)) IN ('1', 'true', 't', 'yes', 'y')
+                  )
+        )
+    """ if has_raw_v2_schedule and has_raw_v2_collateral else """
+        raw_v2_schedule_candidates AS (
+            SELECT
+                NULL::text AS collateral_id,
+                NULL::date AS schedule_start_date,
+                NULL::date AS schedule_end_date,
+                NULL::date AS campaign_start_date,
+                NULL::date AS campaign_end_date,
+                NULL::text AS collateral_title,
+                NULL::text AS brand_name,
+                NULL::text AS company_logo,
+                NULL::text AS campaign_name,
+                NULL::integer AS campaign_match_rank,
+                NULL::text AS source_updated_at,
+                0 AS source_rank
+            WHERE FALSE
+        )
+    """
+    raw_v2_params = [lookup_key] if has_raw_v2_schedule and has_raw_v2_collateral else []
     rows = _fetch_dicts(
         f"""
         WITH campaign_row AS (
@@ -530,29 +620,24 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
             SELECT *
             FROM campaign_row
         ),
-        raw_schedule_candidates AS (
+        {raw_v2_schedule_sql},
+        silver_schedule_candidates AS (
             SELECT
                 sc.collateral_id,
-                COALESCE(
-                    CASE
-                        WHEN sc.schedule_start_date IS NULL
-                          OR btrim(sc.schedule_start_date::text) = ''
-                          OR lower(btrim(sc.schedule_start_date::text)) = 'null'
-                        THEN NULL
-                        ELSE sc.schedule_start_date::date
-                    END,
-                    cs.campaign_start_date
-                ) AS schedule_start_date,
-                COALESCE(
-                    CASE
-                        WHEN sc.schedule_end_date IS NULL
-                          OR btrim(sc.schedule_end_date::text) = ''
-                          OR lower(btrim(sc.schedule_end_date::text)) = 'null'
-                        THEN NULL
-                        ELSE sc.schedule_end_date::date
-                    END,
-                    cs.campaign_end_date
-                ) AS schedule_end_date,
+                CASE
+                    WHEN sc.schedule_start_date IS NULL
+                      OR btrim(sc.schedule_start_date::text) = ''
+                      OR lower(btrim(sc.schedule_start_date::text)) = 'null'
+                    THEN NULL
+                    ELSE sc.schedule_start_date::date
+                END AS schedule_start_date,
+                CASE
+                    WHEN sc.schedule_end_date IS NULL
+                      OR btrim(sc.schedule_end_date::text) = ''
+                      OR lower(btrim(sc.schedule_end_date::text)) = 'null'
+                    THEN NULL
+                    ELSE sc.schedule_end_date::date
+                END AS schedule_end_date,
                 cs.campaign_start_date,
                 cs.campaign_end_date,
                 COALESCE(
@@ -572,9 +657,10 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
                 END AS company_logo,
                 cs.campaign_name,
                 cs.campaign_match_rank,
-                cs.source_updated_at
+                COALESCE(NULLIF(sc.updated_at, ''), NULLIF(sc.created_at, ''), cs.source_updated_at) AS source_updated_at,
+                1 AS source_rank
             FROM campaign_source cs
-            LEFT JOIN silver.bridge_campaign_collateral_schedule sc
+            JOIN silver.bridge_campaign_collateral_schedule sc
               ON {_normalized_sql("COALESCE(NULLIF(sc.campaign_id_resolved::text, ''), sc.campaign_id::text)")} IN (
                     cs.campaign_id_key,
                     cs.brand_campaign_key,
@@ -582,18 +668,42 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
                  )
             LEFT JOIN silver.dim_collateral dc
               ON dc.id::text = sc.collateral_id::text
+            WHERE COALESCE(NULLIF(btrim(sc.collateral_id::text), ''), '') <> ''
+        ),
+        raw_schedule_candidates AS (
+            SELECT * FROM raw_v2_schedule_candidates
+            UNION ALL
+            SELECT * FROM silver_schedule_candidates
         ),
         schedule_candidates AS (
-            SELECT
-                *,
+            SELECT DISTINCT ON (collateral_id)
+                collateral_id,
+                COALESCE(schedule_start_date, campaign_start_date) AS schedule_start_date,
+                COALESCE(schedule_end_date, campaign_end_date) AS schedule_end_date,
+                campaign_start_date,
+                campaign_end_date,
+                collateral_title,
+                brand_name,
+                company_logo,
+                campaign_name,
+                campaign_match_rank,
+                source_updated_at,
+                source_rank,
                 CASE
-                    WHEN schedule_start_date <= CURRENT_DATE
-                     AND schedule_end_date >= CURRENT_DATE THEN 0
-                    WHEN schedule_start_date <= CURRENT_DATE THEN 1
-                    WHEN schedule_start_date > CURRENT_DATE THEN 2
+                    WHEN COALESCE(schedule_start_date, campaign_start_date) <= CURRENT_DATE
+                     AND COALESCE(schedule_end_date, campaign_end_date) >= CURRENT_DATE THEN 0
+                    WHEN COALESCE(schedule_start_date, campaign_start_date) <= CURRENT_DATE THEN 1
+                    WHEN COALESCE(schedule_start_date, campaign_start_date) > CURRENT_DATE THEN 2
                     ELSE 3
                 END AS schedule_rank
             FROM raw_schedule_candidates
+            WHERE COALESCE(NULLIF(btrim(collateral_id::text), ''), '') <> ''
+            ORDER BY
+                collateral_id,
+                source_rank ASC,
+                CASE WHEN NULLIF(btrim(collateral_title), '') IS NULL THEN 1 ELSE 0 END,
+                CASE WHEN schedule_start_date IS NULL OR schedule_end_date IS NULL THEN 1 ELSE 0 END,
+                source_updated_at DESC NULLS LAST
         )
         SELECT *
         FROM schedule_candidates
@@ -607,9 +717,213 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
             collateral_id DESC NULLS LAST
         LIMIT 50
         """,
-        [lookup_key, lookup_key, lookup_key, lookup_key, lookup_key, lookup_key],
+        [lookup_key, lookup_key, lookup_key, lookup_key, lookup_key, *raw_v2_params, lookup_key],
     )
     return rows
+
+
+def _selected_collateral_source_row(
+    selected_campaign: str,
+    brand_campaign_variants: list[str],
+    collateral_id: str,
+) -> dict[str, Any]:
+    selected_id = str(collateral_id or "").strip()
+    if not selected_id:
+        return {}
+
+    brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
+    try:
+        if _optional_table_exists("raw_v2_inclinic", "inclinic_collateral_v2"):
+            raw_schedule_join = ""
+            raw_schedule_fields = (
+                "NULL::text AS raw_start_date,"
+                " NULL::text AS raw_end_date,"
+                " NULL::text AS raw_campaign_id,"
+                " NULL::text AS raw_brand_campaign_id,"
+                " NULL::text AS raw_updated_at"
+            )
+            if _optional_table_exists("raw_v2_inclinic", "inclinic_campaign_collateral_v2"):
+                raw_schedule_fields = """
+                    rcc.old_start_date::text AS raw_start_date,
+                    rcc.old_end_date::text AS raw_end_date,
+                    COALESCE(NULLIF(rcc.old_campaign_id::text, ''), NULLIF(rcc.campaign_id::text, '')) AS raw_campaign_id,
+                    COALESCE(NULLIF(rcc.legacy_campaign_id::text, ''), NULLIF(rcc.brand_campaign_id::text, ''), NULLIF(rcc.campaign_id::text, '')) AS raw_brand_campaign_id,
+                    COALESCE(NULLIF(rcc.source_updated_at::text, ''), NULLIF(rcc.old_updated_at::text, '')) AS raw_updated_at
+                """
+                raw_schedule_join = """
+                    LEFT JOIN raw_v2_inclinic.inclinic_campaign_collateral_v2 rcc
+                      ON rcc.old_collateral_id::text = rc.old_id::text
+                     AND (
+                            rcc.is_current IS NULL
+                            OR lower(btrim(rcc.is_current::text)) IN ('1', 'true', 't', 'yes', 'y')
+                         )
+                """
+
+            rows = _fetch_dicts(
+                f"""
+                WITH raw_candidates AS (
+                    SELECT
+                        rc.old_id::text AS collateral_id,
+                        NULLIF(btrim(rc.old_title), '') AS collateral_title,
+                        {raw_schedule_fields},
+                        rc.old_campaign_id::text AS collateral_campaign_id,
+                        COALESCE(NULLIF(rc.source_updated_at::text, ''), NULLIF(rc.old_updated_at::text, '')) AS collateral_updated_at
+                    FROM raw_v2_inclinic.inclinic_collateral_v2 rc
+                    {raw_schedule_join}
+                    WHERE rc.old_id::text = %s
+                      AND (
+                            rc.is_current IS NULL
+                            OR lower(btrim(rc.is_current::text)) IN ('1', 'true', 't', 'yes', 'y')
+                          )
+                ),
+                enriched AS (
+                    SELECT
+                        raw.collateral_id,
+                        COALESCE(
+                            raw.collateral_title,
+                            NULLIF(btrim(dc.collateral_display_name), ''),
+                            NULLIF(btrim(dc.title), '')
+                        ) AS collateral_title,
+                        CASE
+                            WHEN raw.raw_start_date IS NULL OR btrim(raw.raw_start_date) = '' OR lower(btrim(raw.raw_start_date)) = 'null' THEN NULL
+                            ELSE raw.raw_start_date::date
+                        END AS schedule_start_date,
+                        CASE
+                            WHEN raw.raw_end_date IS NULL OR btrim(raw.raw_end_date) = '' OR lower(btrim(raw.raw_end_date)) = 'null' THEN NULL
+                            ELSE raw.raw_end_date::date
+                        END AS schedule_end_date,
+                        CASE
+                            WHEN cm.start_date IS NULL OR btrim(cm.start_date) = '' OR lower(btrim(cm.start_date)) = 'null' THEN NULL
+                            ELSE cm.start_date::date
+                        END AS campaign_start_date,
+                        CASE
+                            WHEN cm.end_date IS NULL OR btrim(cm.end_date) = '' OR lower(btrim(cm.end_date)) = 'null' THEN NULL
+                            ELSE cm.end_date::date
+                        END AS campaign_end_date,
+                        COALESCE(NULLIF(btrim(cm.brand_name), ''), NULLIF(btrim(cm.company_name), ''), NULLIF(btrim(cm.name), '')) AS brand_name,
+                        cm.name AS campaign_name,
+                        CASE
+                            WHEN cm.company_logo IS NULL OR btrim(cm.company_logo) = '' OR lower(btrim(cm.company_logo)) = 'null'
+                            THEN NULL
+                            ELSE cm.company_logo
+                        END AS company_logo,
+                        COALESCE(raw.raw_updated_at, raw.collateral_updated_at, NULLIF(cm.updated_at, ''), NULLIF(cm.created_at, '')) AS source_updated_at
+                    FROM raw_candidates raw
+                    LEFT JOIN bronze.campaign_management_campaign cm
+                      ON cm.id::text = COALESCE(NULLIF(raw.raw_campaign_id, ''), NULLIF(raw.collateral_campaign_id, ''))
+                      OR {_normalized_sql('cm.brand_campaign_id')} IN ({brand_placeholders})
+                    LEFT JOIN silver.dim_collateral dc
+                      ON dc.id::text = raw.collateral_id
+                    WHERE (
+                        {_normalized_sql("COALESCE(raw.raw_brand_campaign_id, '')")} IN ({brand_placeholders})
+                        OR {_normalized_sql('cm.brand_campaign_id')} IN ({brand_placeholders})
+                        OR cm.id::text = COALESCE(NULLIF(raw.raw_campaign_id, ''), NULLIF(raw.collateral_campaign_id, ''))
+                    )
+                )
+                SELECT *
+                FROM enriched
+                ORDER BY
+                    CASE WHEN NULLIF(btrim(collateral_title), '') IS NULL THEN 1 ELSE 0 END,
+                    CASE WHEN schedule_start_date IS NULL OR schedule_end_date IS NULL THEN 1 ELSE 0 END,
+                    source_updated_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                [selected_id, *brand_keys, *brand_keys, *brand_keys],
+            )
+            if rows:
+                return rows[0]
+    except (DatabaseError, OperationalError, ProgrammingError):
+        pass
+
+    try:
+        if _optional_table_exists("bronze", "collateral_management_collateral"):
+            rows = _fetch_dicts(
+                f"""
+                SELECT
+                    c.id::text AS collateral_id,
+                    NULLIF(btrim(c.title), '') AS collateral_title,
+                    sc.schedule_start_date::date AS schedule_start_date,
+                    sc.schedule_end_date::date AS schedule_end_date,
+                    CASE
+                        WHEN cm.start_date IS NULL OR btrim(cm.start_date) = '' OR lower(btrim(cm.start_date)) = 'null' THEN NULL
+                        ELSE cm.start_date::date
+                    END AS campaign_start_date,
+                    CASE
+                        WHEN cm.end_date IS NULL OR btrim(cm.end_date) = '' OR lower(btrim(cm.end_date)) = 'null' THEN NULL
+                        ELSE cm.end_date::date
+                    END AS campaign_end_date,
+                    COALESCE(NULLIF(btrim(cm.brand_name), ''), NULLIF(btrim(cm.company_name), ''), NULLIF(btrim(cm.name), '')) AS brand_name,
+                    cm.name AS campaign_name,
+                    cm.company_logo,
+                    COALESCE(NULLIF(sc.updated_at, ''), NULLIF(c.updated_at, ''), NULLIF(cm.updated_at, '')) AS source_updated_at
+                FROM bronze.collateral_management_collateral c
+                LEFT JOIN bronze.campaign_management_campaign cm
+                  ON cm.id::text = c.campaign_id::text
+                LEFT JOIN silver.bridge_campaign_collateral_schedule sc
+                  ON sc.collateral_id::text = c.id::text
+                 AND (
+                    {_normalized_sql('sc.campaign_id_resolved')} IN ({brand_placeholders})
+                    OR {_normalized_sql('sc.campaign_id')} IN ({brand_placeholders})
+                 )
+                WHERE c.id::text = %s
+                  AND {_normalized_sql('cm.brand_campaign_id')} IN ({brand_placeholders})
+                ORDER BY source_updated_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                [*brand_keys, *brand_keys, selected_id, *brand_keys],
+            )
+            if rows:
+                return rows[0]
+    except (DatabaseError, OperationalError, ProgrammingError):
+        pass
+
+    return {}
+
+
+def _enrich_selected_collateral_schedule_rows(
+    schedule_rows: list[dict[str, Any]],
+    selected_campaign: str,
+    brand_campaign_variants: list[str],
+    requested_collateral_id: str,
+) -> list[dict[str, Any]]:
+    selected_id = str(requested_collateral_id or "").strip()
+    if not selected_id:
+        return schedule_rows
+    source_row = _selected_collateral_source_row(selected_campaign, brand_campaign_variants, selected_id)
+    if not source_row:
+        return schedule_rows
+
+    enriched_rows: list[dict[str, Any]] = []
+    matched = False
+    for row in schedule_rows:
+        if str(row.get("collateral_id") or "").strip() != selected_id:
+            enriched_rows.append(row)
+            continue
+        matched = True
+        merged = dict(row)
+        for key in (
+            "collateral_title",
+            "schedule_start_date",
+            "schedule_end_date",
+            "campaign_start_date",
+            "campaign_end_date",
+            "brand_name",
+            "campaign_name",
+            "company_logo",
+            "source_updated_at",
+        ):
+            value = source_row.get(key)
+            if value:
+                merged[key] = value
+        enriched_rows.append(merged)
+
+    if not matched:
+        enriched = dict(source_row)
+        enriched.setdefault("collateral_id", selected_id)
+        enriched.setdefault("campaign_match_rank", 0)
+        enriched.setdefault("source_rank", 0)
+        enriched_rows.append(enriched)
+    return enriched_rows
 
 
 def _campaign_display_name(selected_campaign: str, brand_campaign_variants: list[str]) -> str | None:
@@ -3946,6 +4260,12 @@ def _build_report_context(
         brand_campaign_variants = _unique_non_empty([selected_campaign, *brand_campaign_variants])
 
         schedule_rows = _current_schedule_rows(requested_campaign)
+        schedule_rows = _enrich_selected_collateral_schedule_rows(
+            schedule_rows,
+            requested_campaign,
+            brand_campaign_variants,
+            requested_collateral_id,
+        )
         collateral_comparison_ids.update(_unique_non_empty(row.get("collateral_id") for row in schedule_rows))
         show_collateral_comparison_extras = len(collateral_comparison_ids) > 1
         current_collateral_ids: list[str] = []
@@ -4546,6 +4866,12 @@ def _build_collateral_field_rep_context(
         selected_campaign_resolved = _normalize_campaign_id(schema_rows[0]["brand_campaign_id"])
         brand_campaign_variants = _unique_non_empty([selected_campaign_resolved, *_campaign_brand_variants(requested_campaign)])
         schedule_rows = _current_schedule_rows(requested_campaign)
+        schedule_rows = _enrich_selected_collateral_schedule_rows(
+            schedule_rows,
+            requested_campaign,
+            brand_campaign_variants,
+            selected_collateral_id,
+        )
         selected_row = next((row for row in schedule_rows if str(row.get("collateral_id") or "").strip() == selected_collateral_id), {})
         if selected_row:
             context["collateral_name"] = _collateral_display_name(selected_row, context["collateral_name"])
