@@ -642,6 +642,94 @@ class DashboardAccessViewTests(SimpleTestCase):
         score = dashboard.views._weekly_engagement_health_score(reached=80, opened=40, consumed=20, total_doctors=100)
         self.assertAlmostEqual(score, 66.7, places=1)
 
+    def test_current_schedule_rows_match_v2_brand_campaign_ids(self):
+        with patch("dashboard.views._fetch_dicts", return_value=[]) as fetch_mock:
+            dashboard.views._current_schedule_rows("brand-demo")
+
+        sql, params = fetch_mock.call_args.args
+        self.assertIn("campaign_id_key", sql)
+        self.assertIn("brand_campaign_key", sql)
+        self.assertIn("COALESCE(NULLIF(sc.campaign_id_resolved::text, ''), sc.campaign_id::text)", sql)
+        self.assertIn("cs.brand_campaign_key", sql)
+        self.assertEqual(params, ["branddemo"] * 6)
+
+    def test_report_context_scopes_current_metrics_to_selected_collateral_only(self):
+        schedule_rows = [
+            {
+                "collateral_id": "24",
+                "collateral_title": "Previous Collateral",
+                "schedule_start_date": "2026-06-01",
+                "schedule_end_date": "2026-06-30",
+                "campaign_start_date": "2026-06-01",
+                "campaign_end_date": "2026-06-30",
+                "schedule_rank": 0,
+                "brand_name": "Apex Laboratories",
+                "campaign_name": "Apex Campaign",
+            },
+            {
+                "collateral_id": "25",
+                "collateral_title": "First-1000-Days Micronutrient Gaps in Urban India",
+                "schedule_start_date": "2026-06-01",
+                "schedule_end_date": "2026-06-30",
+                "campaign_start_date": "2026-06-01",
+                "campaign_end_date": "2026-06-30",
+                "schedule_rank": 0,
+                "brand_name": "Apex Laboratories",
+                "campaign_name": "Apex Campaign",
+            },
+        ]
+        weekly_rows = [
+            {
+                "brand_campaign_id": "brand-demo",
+                "week_index": 1,
+                "week_start_date": "2026-06-01",
+                "week_end_date": "2026-06-07",
+                "doctors_reached_unique": 3,
+                "doctors_opened_unique": 2,
+                "video_viewed_50_unique": 1,
+                "pdf_download_unique": 1,
+                "doctors_consumed_unique": 1,
+                "total_doctors_in_campaign": 100,
+            }
+        ]
+
+        def fetch_side_effect(sql, params=None):
+            if "FROM gold_global.campaign_registry" in sql:
+                return [{"brand_campaign_id": "brand-demo", "gold_schema_name": "gold_campaign_demo"}]
+            return []
+
+        with patch("dashboard.views._fetch_dicts", side_effect=fetch_side_effect), patch(
+            "dashboard.views._campaign_brand_variants",
+            return_value=["brand-demo"],
+        ), patch("dashboard.views._current_schedule_rows", return_value=schedule_rows), patch(
+            "dashboard.views._assigned_doctor_count",
+            return_value=100,
+        ), patch("dashboard.views._field_rep_insight_rows", return_value=[]) as field_rep_mock, patch(
+            "dashboard.views._weekly_rows_for_current_collateral",
+            return_value=weekly_rows,
+        ) as weekly_mock, patch(
+            "dashboard.views._current_collateral_period_metrics",
+            return_value={},
+        ) as period_mock, patch(
+            "dashboard.views._collateral_health_rows",
+            return_value=[],
+        ), patch("dashboard.views._table_exists", return_value=False), patch(
+            "dashboard.views._state_attention_source_rows",
+            return_value=[],
+        ) as state_mock, patch(
+            "dashboard.views._campaign_display_name",
+            return_value="Apex Laboratories",
+        ):
+            context = dashboard.views._build_report_context("brand-demo", selected_collateral_id="25")
+
+        self.assertEqual(context["collateral_name"], "First-1000-Days Micronutrient Gaps in Urban India")
+        self.assertEqual(context["selected_collateral_id"], "25")
+        self.assertIn("collateral_id=25", context["field_rep_detail_url"])
+        self.assertEqual(field_rep_mock.call_args.args[2], ["25"])
+        self.assertEqual(weekly_mock.call_args.args[2], ["25"])
+        self.assertEqual(period_mock.call_args.args[2], ["25"])
+        self.assertEqual(state_mock.call_args.args[5], ["25"])
+
     def test_field_rep_insights_select_brand_supplied_rep_id_for_display(self):
         with patch("dashboard.views._fetch_dicts", return_value=[]) as fetch_mock, patch(
             "dashboard.views._table_exists",

@@ -502,6 +502,8 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
                 cm.brand_name,
                 cm.company_name,
                 cm.company_logo,
+                {_normalized_sql('cm.id::text')} AS campaign_id_key,
+                {_normalized_sql('cm.brand_campaign_id')} AS brand_campaign_key,
                 CASE
                     WHEN cm.start_date IS NULL OR btrim(cm.start_date) = '' OR lower(btrim(cm.start_date)) = 'null' THEN NULL
                     ELSE cm.start_date::date
@@ -569,7 +571,11 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
                 cs.source_updated_at
             FROM campaign_source cs
             LEFT JOIN silver.bridge_campaign_collateral_schedule sc
-              ON sc.campaign_id_resolved::text = cs.id::text
+              ON {_normalized_sql("COALESCE(NULLIF(sc.campaign_id_resolved::text, ''), sc.campaign_id::text)")} IN (
+                    cs.campaign_id_key,
+                    cs.brand_campaign_key,
+                    %s
+                 )
         ),
         schedule_candidates AS (
             SELECT
@@ -595,7 +601,7 @@ def _current_schedule_rows(selected_campaign: str) -> list[dict[str, Any]]:
             collateral_id DESC NULLS LAST
         LIMIT 50
         """,
-        [lookup_key, lookup_key, lookup_key, lookup_key, lookup_key],
+        [lookup_key, lookup_key, lookup_key, lookup_key, lookup_key, lookup_key],
     )
     return rows
 
@@ -3945,23 +3951,11 @@ def _build_report_context(
                 schedule_rows[0],
             )
             current_collateral_id = str(primary_schedule.get("collateral_id") or "").strip() or None
-            primary_rank = primary_schedule.get("schedule_rank")
             display_start_raw = _collateral_display_start(primary_schedule)
             display_end_raw = _collateral_display_end(primary_schedule)
             schedule_start_raw = display_start_raw
             schedule_end_raw = display_end_raw
-            if requested_collateral_id and current_collateral_id:
-                current_collateral_ids = [current_collateral_id]
-            else:
-                current_collateral_ids = _unique_non_empty(
-                    [
-                        row.get("collateral_id")
-                        for row in schedule_rows
-                        if row.get("schedule_rank") == primary_rank
-                        and row.get("schedule_start_date") == primary_schedule.get("schedule_start_date")
-                        and row.get("schedule_end_date") == primary_schedule.get("schedule_end_date")
-                    ]
-                )
+            current_collateral_ids = [current_collateral_id] if current_collateral_id else []
             current_field_rep_collateral_ids = current_collateral_ids
             old_collaterals = _format_collateral_options(schedule_rows, requested_campaign, current_collateral_id, week_filter)
             start = _format_schedule_date(display_start_raw)
@@ -4073,14 +4067,21 @@ def _build_report_context(
 
         if collateral_name in {"", "N/A", "Collateral"}:
             try:
+                brand_keys, brand_placeholders = _campaign_key_placeholders(selected_campaign, brand_campaign_variants)
+                collateral_filter = ""
+                fallback_params: list[Any] = [*brand_keys]
+                if current_collateral_ids:
+                    collateral_filter = f"AND t.collateral_id::text IN ({_placeholders(current_collateral_ids)})"
+                    fallback_params.extend(current_collateral_ids)
                 fallback_collateral = _fetch_dicts(
-                    """
+                    f"""
                     SELECT MIN(NULLIF(c.title, '')) AS collateral_title
                     FROM silver.fact_collateral_transaction t
                     LEFT JOIN bronze.collateral_management_collateral c ON c.id = t.collateral_id
-                    WHERE t.brand_campaign_id = %s
+                    WHERE {_normalized_sql('t.brand_campaign_id')} IN ({brand_placeholders})
+                      {collateral_filter}
                     """,
-                    [selected_campaign],
+                    fallback_params,
                 )
             except DatabaseError:
                 fallback_collateral = []
@@ -4477,11 +4478,11 @@ def _build_report_context(
         "field_rep_summary": field_rep_summary,
         "old_collaterals": old_collaterals,
         "current_field_rep_collateral_id": current_field_rep_collateral_ids[0] if current_field_rep_collateral_ids else "",
-        "selected_collateral_id": current_field_rep_collateral_ids[0] if requested_collateral_id and current_field_rep_collateral_ids else "",
+        "selected_collateral_id": current_field_rep_collateral_ids[0] if current_field_rep_collateral_ids else "",
         "field_rep_detail_url": _field_rep_detail_url(
             selected_campaign,
             week_filter,
-            current_field_rep_collateral_ids[0] if requested_collateral_id and current_field_rep_collateral_ids else None,
+            current_field_rep_collateral_ids[0] if current_field_rep_collateral_ids else None,
         ),
         "collateral_cards": collateral_cards,
         "show_collateral_comparison_extras": show_collateral_comparison_extras,
