@@ -2837,6 +2837,58 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_collateral_transaction_v2"]], ["COL-2"])
         self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_share_event_v2"]], ["COL-2"])
 
+    def test_legacy_hide_rule_does_not_filter_v2_inclinic_collaterals(self):
+        rules = [
+            {
+                "system_key": "inclinic",
+                "schema_name": "raw_server2",
+                "table_name": "collateral_management_campaigncollateral",
+                "entity_type": "collateral",
+                "record_identifier_normalized": normalize_record_identifier("COL-1"),
+                "rule_mode": "hide",
+                "is_active": True,
+            }
+        ]
+        source = {
+            "inclinic_collateral_v2": [{"old_id": "COL-1"}],
+            "inclinic_campaign_collateral_v2": [{"old_collateral_id": "COL-1"}],
+            "inclinic_collateral_transaction_v2": [{"old_collateral_id": "COL-1"}],
+            "inclinic_share_event_v2": [{"old_collateral_id": "COL-1"}],
+        }
+
+        filtered = v2_reporting._apply_raw_visibility_to_source(source, rules)
+
+        self.assertEqual([row["old_id"] for row in filtered["inclinic_collateral_v2"]], ["COL-1"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_campaign_collateral_v2"]], ["COL-1"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_collateral_transaction_v2"]], ["COL-1"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_share_event_v2"]], ["COL-1"])
+
+    def test_explicit_v2_hide_rule_filters_v2_inclinic_collateral_hierarchy(self):
+        rules = [
+            {
+                "system_key": "inclinic",
+                "schema_name": "raw_v2_inclinic",
+                "table_name": "inclinic_collateral_v2",
+                "entity_type": "collateral",
+                "record_identifier_normalized": normalize_record_identifier("COL-1"),
+                "rule_mode": "hide",
+                "is_active": True,
+            }
+        ]
+        source = {
+            "inclinic_collateral_v2": [{"old_id": "COL-1"}, {"old_id": "COL-2"}],
+            "inclinic_campaign_collateral_v2": [{"old_collateral_id": "COL-1"}, {"old_collateral_id": "COL-2"}],
+            "inclinic_collateral_transaction_v2": [{"old_collateral_id": "COL-1"}, {"old_collateral_id": "COL-2"}],
+            "inclinic_share_event_v2": [{"old_collateral_id": "COL-1"}, {"old_collateral_id": "COL-2"}],
+        }
+
+        filtered = v2_reporting._apply_raw_visibility_to_source(source, rules)
+
+        self.assertEqual([row["old_id"] for row in filtered["inclinic_collateral_v2"]], ["COL-2"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_campaign_collateral_v2"]], ["COL-2"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_collateral_transaction_v2"]], ["COL-2"])
+        self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_share_event_v2"]], ["COL-2"])
+
     def test_raw_visibility_filter_keep_only_inclinic_collateral_hierarchy(self):
         rules = [
             {

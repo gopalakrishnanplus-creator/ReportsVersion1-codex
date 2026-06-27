@@ -24,6 +24,7 @@ from etl.reporting_corrections import (
     normalize_phone,
 )
 from etl.reporting_privacy import (
+    RAW_VISIBILITY_RULE_MODE_HIDE,
     RAW_VISIBILITY_RULE_MODE_KEEP_ONLY,
     active_campaign_privacy_allowlist,
     active_person_privacy_rules,
@@ -31,7 +32,6 @@ from etl.reporting_privacy import (
     filter_rows_by_campaign_fields,
     normalize_record_identifier,
     person_privacy_allowed_campaigns_for_row,
-    raw_visibility_entity_ids,
     row_matches_raw_visibility_ids,
     row_visible_by_person_privacy,
 )
@@ -1468,7 +1468,16 @@ def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw
             row for row in output.get(source_key, []) if row_matches_raw_visibility_ids(row, keep_ids, fields)
         ]
 
-    campaign_ids = raw_visibility_entity_ids(raw_visibility_rules, "campaign", system_key="inclinic")
+    campaign_ids = _raw_visibility_ids_for_table_refs(
+        raw_visibility_rules,
+        "campaign",
+        system_key="inclinic",
+        rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
+        table_refs={
+            (RAW_V2_MASTER_SCHEMA, "campaign_v2"),
+            (RAW_V2_INCLINIC_SCHEMA, "inclinic_campaign_v2"),
+        },
+    )
     if campaign_ids:
         for source_key, fields in {
             "campaign_v2": ("legacy_campaign_id", "id", "campaign_id", "campaign_uuid", "brand_campaign_id", "source_pk_value"),
@@ -1483,7 +1492,16 @@ def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw
         }.items():
             remove_hidden(source_key, campaign_ids, fields)
 
-    field_rep_ids = raw_visibility_entity_ids(raw_visibility_rules, "field_rep", system_key="inclinic")
+    field_rep_ids = _raw_visibility_ids_for_table_refs(
+        raw_visibility_rules,
+        "field_rep",
+        system_key="inclinic",
+        rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
+        table_refs={
+            (RAW_V2_MASTER_SCHEMA, "field_rep_v2"),
+            (RAW_V2_INCLINIC_SCHEMA, "inclinic_field_rep_identity_v2"),
+        },
+    )
     if field_rep_ids:
         for source_key, fields in {
             "field_rep_v2": (
@@ -1524,7 +1542,16 @@ def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw
         }.items():
             remove_hidden(source_key, field_rep_ids, fields)
 
-    doctor_ids = raw_visibility_entity_ids(raw_visibility_rules, "doctor", system_key="inclinic")
+    doctor_ids = _raw_visibility_ids_for_table_refs(
+        raw_visibility_rules,
+        "doctor",
+        system_key="inclinic",
+        rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
+        table_refs={
+            (RAW_V2_INCLINIC_SCHEMA, "inclinic_assigned_doctor_roster_v2"),
+            (RAW_V2_MASTER_SCHEMA, "doctor_field_rep_roster_bridge_v2"),
+        },
+    )
     if doctor_ids:
         for source_key, fields in {
             "doctor_field_rep_roster_bridge_v2": (
@@ -1589,7 +1616,16 @@ def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw
         }.items():
             retain_visible(source_key, collateral_keep_ids, fields)
     else:
-        collateral_ids = raw_visibility_entity_ids(raw_visibility_rules, "collateral", system_key="inclinic")
+        collateral_ids = _raw_visibility_ids_for_table_refs(
+            raw_visibility_rules,
+            "collateral",
+            system_key="inclinic",
+            rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
+            table_refs={
+                (RAW_V2_INCLINIC_SCHEMA, "inclinic_collateral_v2"),
+                (RAW_V2_INCLINIC_SCHEMA, "inclinic_campaign_collateral_v2"),
+            },
+        )
         if collateral_ids:
             for source_key, fields in {
                 "inclinic_collateral_v2": ("old_id", "collateral_uuid", "source_pk_value"),
@@ -1615,10 +1651,22 @@ def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw
             }.items():
                 remove_hidden(source_key, collateral_ids, fields)
 
-    share_ids = raw_visibility_entity_ids(raw_visibility_rules, "share", system_key="inclinic")
+    share_ids = _raw_visibility_ids_for_table_refs(
+        raw_visibility_rules,
+        "share",
+        system_key="inclinic",
+        rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
+        table_refs={(RAW_V2_INCLINIC_SCHEMA, "inclinic_share_event_v2")},
+    )
     remove_hidden("inclinic_share_event_v2", share_ids, ("old_id", "share_event_uuid", "source_pk_value"))
 
-    transaction_ids = raw_visibility_entity_ids(raw_visibility_rules, "transaction", system_key="inclinic")
+    transaction_ids = _raw_visibility_ids_for_table_refs(
+        raw_visibility_rules,
+        "transaction",
+        system_key="inclinic",
+        rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
+        table_refs={(RAW_V2_INCLINIC_SCHEMA, "inclinic_collateral_transaction_v2")},
+    )
     remove_hidden(
         "inclinic_collateral_transaction_v2",
         transaction_ids,
