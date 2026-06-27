@@ -1420,6 +1420,8 @@ def _apply_person_privacy_to_source(source: dict[str, list[dict[str, Any]]], per
             for row in output.get(source_key, []):
                 rep_id = _field(row, "field_rep_id", "campaign_fieldrep_id", "current_campaign_fieldrep_id", "registered_by_id", "old_field_rep_id")
                 allowed_campaigns = restricted_rep_allowed_campaigns.get(rep_id)
+                if allowed_campaigns is not None and not allowed_campaigns:
+                    continue
                 if allowed_campaigns and not filter_rows_by_campaign_fields([row], allowed_campaigns, ("legacy_campaign_id", "campaign_id", "old_campaign_id", "old_brand_campaign_id", "brand_campaign_id")):
                     continue
                 filtered_rows.append(row)
@@ -1468,121 +1470,160 @@ def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw
             row for row in output.get(source_key, []) if row_matches_raw_visibility_ids(row, keep_ids, fields)
         ]
 
-    campaign_ids = _raw_visibility_ids_for_table_refs(
+    campaign_scope_fields = {
+        "campaign_v2": ("legacy_campaign_id", "id", "campaign_id", "campaign_uuid", "brand_campaign_id", "source_pk_value"),
+        "campaign_management_campaign": ("id", "brand_campaign_id", "campaign_id", "campaign_uuid", "source_pk_value"),
+        "campaign_field_rep_assignment_v2": ("legacy_campaign_id", "campaign_id", "campaign_uuid"),
+        "doctor_field_rep_roster_bridge_v2": ("legacy_campaign_id", "campaign_id", "campaign_uuid"),
+        "inclinic_assigned_doctor_roster_v2": ("legacy_campaign_id", "campaign_id", "campaign_uuid"),
+        "inclinic_campaign_collateral_v2": ("legacy_campaign_id", "campaign_id", "old_campaign_id", "brand_campaign_id", "campaign_uuid"),
+        "inclinic_campaign_field_rep_assignment_v2": ("legacy_campaign_id", "campaign_id", "old_campaign_id", "brand_campaign_id", "campaign_uuid"),
+        "inclinic_collateral_transaction_v2": ("legacy_campaign_id", "old_brand_campaign_id", "brand_campaign_id", "campaign_id", "campaign_uuid"),
+        "inclinic_share_event_v2": ("legacy_campaign_id", "old_brand_campaign_id", "brand_campaign_id", "campaign_id", "campaign_uuid"),
+    }
+    campaign_table_refs = {
+        (RAW_V2_MASTER_SCHEMA, "campaign_v2"),
+        (RAW_V2_INCLINIC_SCHEMA, "inclinic_campaign_v2"),
+    }
+    campaign_keep_ids = _raw_visibility_ids_for_table_refs(
         raw_visibility_rules,
         "campaign",
         system_key="inclinic",
-        rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
-        table_refs={
-            (RAW_V2_MASTER_SCHEMA, "campaign_v2"),
-            (RAW_V2_INCLINIC_SCHEMA, "inclinic_campaign_v2"),
-        },
+        rule_mode=RAW_VISIBILITY_RULE_MODE_KEEP_ONLY,
+        table_refs=campaign_table_refs,
     )
-    if campaign_ids:
-        for source_key, fields in {
-            "campaign_v2": ("legacy_campaign_id", "id", "campaign_id", "campaign_uuid", "brand_campaign_id", "source_pk_value"),
-            "campaign_management_campaign": ("id", "brand_campaign_id", "campaign_id", "campaign_uuid", "source_pk_value"),
-            "campaign_field_rep_assignment_v2": ("legacy_campaign_id", "campaign_id", "campaign_uuid"),
-            "doctor_field_rep_roster_bridge_v2": ("legacy_campaign_id", "campaign_id", "campaign_uuid"),
-            "inclinic_assigned_doctor_roster_v2": ("legacy_campaign_id", "campaign_id", "campaign_uuid"),
-            "inclinic_campaign_collateral_v2": ("legacy_campaign_id", "campaign_id", "old_campaign_id", "brand_campaign_id", "campaign_uuid"),
-            "inclinic_campaign_field_rep_assignment_v2": ("legacy_campaign_id", "campaign_id", "old_campaign_id", "brand_campaign_id", "campaign_uuid"),
-            "inclinic_collateral_transaction_v2": ("legacy_campaign_id", "old_brand_campaign_id", "brand_campaign_id", "campaign_id", "campaign_uuid"),
-            "inclinic_share_event_v2": ("legacy_campaign_id", "old_brand_campaign_id", "brand_campaign_id", "campaign_id", "campaign_uuid"),
-        }.items():
-            remove_hidden(source_key, campaign_ids, fields)
+    if campaign_keep_ids:
+        for source_key, fields in campaign_scope_fields.items():
+            retain_visible(source_key, campaign_keep_ids, fields)
+    else:
+        campaign_ids = _raw_visibility_ids_for_table_refs(
+            raw_visibility_rules,
+            "campaign",
+            system_key="inclinic",
+            rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
+            table_refs=campaign_table_refs,
+        )
+        if campaign_ids:
+            for source_key, fields in campaign_scope_fields.items():
+                remove_hidden(source_key, campaign_ids, fields)
 
-    field_rep_ids = _raw_visibility_ids_for_table_refs(
+    field_rep_scope_fields = {
+        "field_rep_v2": (
+            "current_campaign_fieldrep_id",
+            "id",
+            "field_rep_uuid",
+            "current_brand_supplied_field_rep_id",
+            "brand_supplied_field_rep_id",
+            "source_pk_value",
+        ),
+        "inclinic_field_rep_identity_v2": (
+            "campaign_fieldrep_id",
+            "field_rep_uuid",
+            "source_value",
+            "source_value_normalized",
+            "source_pk_value",
+        ),
+        "campaign_field_rep_assignment_v2": ("field_rep_id", "campaign_fieldrep_id", "field_rep_uuid", "source_pk_value"),
+        "doctor_field_rep_roster_bridge_v2": ("field_rep_id", "campaign_fieldrep_id", "old_field_rep_id", "field_rep_uuid"),
+        "inclinic_assigned_doctor_roster_v2": ("field_rep_id", "campaign_fieldrep_id", "old_field_rep_id", "field_rep_uuid"),
+        "inclinic_campaign_field_rep_assignment_v2": ("field_rep_id", "campaign_fieldrep_id", "old_field_rep_id", "field_rep_uuid"),
+        "inclinic_collateral_transaction_v2": (
+            "field_rep_id",
+            "campaign_fieldrep_id",
+            "old_field_rep_id",
+            "brand_supplied_field_rep_id",
+            "old_field_rep_unique_id",
+            "field_rep_uuid",
+        ),
+        "inclinic_share_event_v2": (
+            "field_rep_id",
+            "campaign_fieldrep_id",
+            "old_field_rep_id",
+            "brand_supplied_field_rep_id",
+            "old_field_rep_unique_id",
+            "field_rep_uuid",
+        ),
+    }
+    field_rep_table_refs = {
+        (RAW_V2_MASTER_SCHEMA, "field_rep_v2"),
+        (RAW_V2_INCLINIC_SCHEMA, "inclinic_field_rep_identity_v2"),
+    }
+    field_rep_keep_ids = _raw_visibility_ids_for_table_refs(
         raw_visibility_rules,
         "field_rep",
         system_key="inclinic",
-        rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
-        table_refs={
-            (RAW_V2_MASTER_SCHEMA, "field_rep_v2"),
-            (RAW_V2_INCLINIC_SCHEMA, "inclinic_field_rep_identity_v2"),
-        },
+        rule_mode=RAW_VISIBILITY_RULE_MODE_KEEP_ONLY,
+        table_refs=field_rep_table_refs,
     )
-    if field_rep_ids:
-        for source_key, fields in {
-            "field_rep_v2": (
-                "current_campaign_fieldrep_id",
-                "id",
-                "field_rep_uuid",
-                "current_brand_supplied_field_rep_id",
-                "brand_supplied_field_rep_id",
-                "source_pk_value",
-            ),
-            "inclinic_field_rep_identity_v2": (
-                "campaign_fieldrep_id",
-                "field_rep_uuid",
-                "source_value",
-                "source_value_normalized",
-                "source_pk_value",
-            ),
-            "campaign_field_rep_assignment_v2": ("field_rep_id", "campaign_fieldrep_id", "field_rep_uuid", "source_pk_value"),
-            "doctor_field_rep_roster_bridge_v2": ("field_rep_id", "campaign_fieldrep_id", "old_field_rep_id", "field_rep_uuid"),
-            "inclinic_assigned_doctor_roster_v2": ("field_rep_id", "campaign_fieldrep_id", "old_field_rep_id", "field_rep_uuid"),
-            "inclinic_campaign_field_rep_assignment_v2": ("field_rep_id", "campaign_fieldrep_id", "old_field_rep_id", "field_rep_uuid"),
-            "inclinic_collateral_transaction_v2": (
-                "field_rep_id",
-                "campaign_fieldrep_id",
-                "old_field_rep_id",
-                "brand_supplied_field_rep_id",
-                "old_field_rep_unique_id",
-                "field_rep_uuid",
-            ),
-            "inclinic_share_event_v2": (
-                "field_rep_id",
-                "campaign_fieldrep_id",
-                "old_field_rep_id",
-                "brand_supplied_field_rep_id",
-                "old_field_rep_unique_id",
-                "field_rep_uuid",
-            ),
-        }.items():
-            remove_hidden(source_key, field_rep_ids, fields)
+    if field_rep_keep_ids:
+        for source_key, fields in field_rep_scope_fields.items():
+            retain_visible(source_key, field_rep_keep_ids, fields)
+    else:
+        field_rep_ids = _raw_visibility_ids_for_table_refs(
+            raw_visibility_rules,
+            "field_rep",
+            system_key="inclinic",
+            rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
+            table_refs=field_rep_table_refs,
+        )
+        if field_rep_ids:
+            for source_key, fields in field_rep_scope_fields.items():
+                remove_hidden(source_key, field_rep_ids, fields)
 
-    doctor_ids = _raw_visibility_ids_for_table_refs(
+    doctor_scope_fields = {
+        "doctor_field_rep_roster_bridge_v2": (
+            "doctor_phone_normalized",
+            "doctor_phone_raw",
+            "doctor_uuid",
+            "inclinic_doctor_uuid",
+            "source_pk_value",
+        ),
+        "inclinic_assigned_doctor_roster_v2": (
+            "doctor_phone_normalized",
+            "doctor_phone_raw",
+            "doctor_uuid",
+            "inclinic_doctor_uuid",
+            "source_pk_value",
+        ),
+        "inclinic_collateral_transaction_v2": (
+            "doctor_phone_normalized",
+            "old_doctor_number",
+            "doctor_uuid",
+            "inclinic_doctor_uuid",
+            "old_doctor_unique_id",
+        ),
+        "inclinic_share_event_v2": (
+            "doctor_phone_normalized",
+            "old_doctor_identifier",
+            "doctor_uuid",
+            "inclinic_doctor_uuid",
+        ),
+    }
+    doctor_table_refs = {
+        (RAW_V2_INCLINIC_SCHEMA, "inclinic_assigned_doctor_roster_v2"),
+        (RAW_V2_MASTER_SCHEMA, "doctor_field_rep_roster_bridge_v2"),
+    }
+    doctor_keep_ids = _raw_visibility_ids_for_table_refs(
         raw_visibility_rules,
         "doctor",
         system_key="inclinic",
-        rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
-        table_refs={
-            (RAW_V2_INCLINIC_SCHEMA, "inclinic_assigned_doctor_roster_v2"),
-            (RAW_V2_MASTER_SCHEMA, "doctor_field_rep_roster_bridge_v2"),
-        },
+        rule_mode=RAW_VISIBILITY_RULE_MODE_KEEP_ONLY,
+        table_refs=doctor_table_refs,
     )
-    if doctor_ids:
-        for source_key, fields in {
-            "doctor_field_rep_roster_bridge_v2": (
-                "doctor_phone_normalized",
-                "doctor_phone_raw",
-                "doctor_uuid",
-                "inclinic_doctor_uuid",
-                "source_pk_value",
-            ),
-            "inclinic_assigned_doctor_roster_v2": (
-                "doctor_phone_normalized",
-                "doctor_phone_raw",
-                "doctor_uuid",
-                "inclinic_doctor_uuid",
-                "source_pk_value",
-            ),
-            "inclinic_collateral_transaction_v2": (
-                "doctor_phone_normalized",
-                "old_doctor_number",
-                "doctor_uuid",
-                "inclinic_doctor_uuid",
-                "old_doctor_unique_id",
-            ),
-            "inclinic_share_event_v2": (
-                "doctor_phone_normalized",
-                "old_doctor_identifier",
-                "doctor_uuid",
-                "inclinic_doctor_uuid",
-            ),
-        }.items():
-            remove_hidden(source_key, doctor_ids, fields)
+    if doctor_keep_ids:
+        for source_key, fields in doctor_scope_fields.items():
+            retain_visible(source_key, doctor_keep_ids, fields)
+    else:
+        doctor_ids = _raw_visibility_ids_for_table_refs(
+            raw_visibility_rules,
+            "doctor",
+            system_key="inclinic",
+            rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
+            table_refs=doctor_table_refs,
+        )
+        if doctor_ids:
+            for source_key, fields in doctor_scope_fields.items():
+                remove_hidden(source_key, doctor_ids, fields)
 
     collateral_keep_ids = _raw_visibility_ids_for_table_refs(
         raw_visibility_rules,
@@ -1651,27 +1692,53 @@ def _apply_raw_visibility_to_source(source: dict[str, list[dict[str, Any]]], raw
             }.items():
                 remove_hidden(source_key, collateral_ids, fields)
 
-    share_ids = _raw_visibility_ids_for_table_refs(
+    share_table_refs = {(RAW_V2_INCLINIC_SCHEMA, "inclinic_share_event_v2")}
+    share_keep_ids = _raw_visibility_ids_for_table_refs(
         raw_visibility_rules,
         "share",
         system_key="inclinic",
-        rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
-        table_refs={(RAW_V2_INCLINIC_SCHEMA, "inclinic_share_event_v2")},
+        rule_mode=RAW_VISIBILITY_RULE_MODE_KEEP_ONLY,
+        table_refs=share_table_refs,
     )
-    remove_hidden("inclinic_share_event_v2", share_ids, ("old_id", "share_event_uuid", "source_pk_value"))
+    if share_keep_ids:
+        retain_visible("inclinic_share_event_v2", share_keep_ids, ("old_id", "share_event_uuid", "source_pk_value"))
+    else:
+        share_ids = _raw_visibility_ids_for_table_refs(
+            raw_visibility_rules,
+            "share",
+            system_key="inclinic",
+            rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
+            table_refs=share_table_refs,
+        )
+        remove_hidden("inclinic_share_event_v2", share_ids, ("old_id", "share_event_uuid", "source_pk_value"))
 
-    transaction_ids = _raw_visibility_ids_for_table_refs(
+    transaction_table_refs = {(RAW_V2_INCLINIC_SCHEMA, "inclinic_collateral_transaction_v2")}
+    transaction_keep_ids = _raw_visibility_ids_for_table_refs(
         raw_visibility_rules,
         "transaction",
         system_key="inclinic",
-        rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
-        table_refs={(RAW_V2_INCLINIC_SCHEMA, "inclinic_collateral_transaction_v2")},
+        rule_mode=RAW_VISIBILITY_RULE_MODE_KEEP_ONLY,
+        table_refs=transaction_table_refs,
     )
-    remove_hidden(
-        "inclinic_collateral_transaction_v2",
-        transaction_ids,
-        ("old_id", "transaction_uuid", "old_transaction_id", "source_pk_value"),
-    )
+    if transaction_keep_ids:
+        retain_visible(
+            "inclinic_collateral_transaction_v2",
+            transaction_keep_ids,
+            ("old_id", "transaction_uuid", "old_transaction_id", "source_pk_value"),
+        )
+    else:
+        transaction_ids = _raw_visibility_ids_for_table_refs(
+            raw_visibility_rules,
+            "transaction",
+            system_key="inclinic",
+            rule_mode=RAW_VISIBILITY_RULE_MODE_HIDE,
+            table_refs=transaction_table_refs,
+        )
+        remove_hidden(
+            "inclinic_collateral_transaction_v2",
+            transaction_ids,
+            ("old_id", "transaction_uuid", "old_transaction_id", "source_pk_value"),
+        )
 
     return output
 

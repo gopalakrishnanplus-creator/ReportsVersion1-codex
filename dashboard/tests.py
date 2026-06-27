@@ -190,8 +190,6 @@ class DashboardRoutingTests(SimpleTestCase):
                 "collateral_title": "Mini CME First-1000-Days Micronutrient Gaps in Urban India",
                 "schedule_start_date": "2025-12-01",
                 "schedule_end_date": "2026-12-01",
-                "campaign_start_date": "2025-12-01",
-                "campaign_end_date": "2026-12-01",
             },
             {
                 "collateral_id": "13",
@@ -678,6 +676,29 @@ class DashboardRoutingTests(SimpleTestCase):
         self.assertTrue(
             row_visible_by_person_privacy(
                 {"campaign_id": "Other Campaign", "email": "real.user@example.com"},
+                rules,
+                campaign_fields=("campaign_id",),
+                email_fields=("email",),
+                phone_fields=("phone",),
+            )
+        )
+
+    def test_person_privacy_helper_hides_matching_person_everywhere_without_allowed_campaign(self):
+        rules = [
+            {
+                "email": "test.user@example.com",
+                "email_normalized": "test.user@example.com",
+                "phone": "",
+                "phone_normalized": "",
+                "allowed_campaign_id": "",
+                "allowed_campaign_id_normalized": "",
+                "is_active": True,
+            }
+        ]
+
+        self.assertFalse(
+            row_visible_by_person_privacy(
+                {"campaign_id": "Any Campaign", "email": "test.user@example.com"},
                 rules,
                 campaign_fields=("campaign_id",),
                 email_fields=("email",),
@@ -1440,10 +1461,15 @@ class DashboardAccessViewTests(SimpleTestCase):
             return_value=[
                 {
                     "value": "inclinic||raw_v2_inclinic||inclinic_collateral_v2",
+                    "system_key": "inclinic",
                     "system_label": "InClinic Reporting",
+                    "entity_type": "collateral",
+                    "entity_label": "Collateral / content",
+                    "label": "InClinic collateral master",
                     "schema_name": "raw_v2_inclinic",
                     "table_name": "inclinic_collateral_v2",
-                    "entity_label": "Collateral / content",
+                    "default_identifier_column": "old_id",
+                    "is_v2_source": True,
                     "column_options": [{"value": "old_id", "label": "old_id"}],
                 }
             ],
@@ -1484,7 +1510,9 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reporting Privacy Controls")
         self.assertContains(response, "1 active RAW visibility rule")
-        self.assertContains(response, "Identifier column")
+        self.assertContains(response, "Source system")
+        self.assertContains(response, "Table group")
+        self.assertContains(response, "Source table")
         self.assertContains(response, "Visibility action")
         self.assertContains(response, "Hide matched values")
         self.assertContains(response, "old_id")
@@ -1492,6 +1520,8 @@ class DashboardAccessViewTests(SimpleTestCase):
         self.assertContains(response, "1 active person visibility rule")
         self.assertContains(response, "test.user@example.com")
         self.assertContains(response, "83ce7fc7c965433ab2b9717394abe3c1")
+        self.assertNotContains(response, "Advanced Campaign-wide Allowlist")
+        self.assertNotContains(response, "Campaign-wide allowlist inactive")
 
     def test_internal_data_admin_privacy_post_adds_raw_visibility_rules(self):
         with patch("dashboard.internal_data_admin._require_auth", return_value=None), patch(
@@ -1569,8 +1599,8 @@ class DashboardAccessViewTests(SimpleTestCase):
                     "person_label": "Test user 1",
                     "email": "test.user@example.com",
                     "phone": "9876543210",
-                    "allowed_campaign_id": "83ce7fc7c965433ab2b9717394abe3c1",
-                    "reason": "Testing user should appear only in approved campaign",
+                    "allowed_campaign_id": "",
+                    "reason": "Testing user should be hidden everywhere",
                 },
             )
 
@@ -1580,8 +1610,8 @@ class DashboardAccessViewTests(SimpleTestCase):
             person_label="Test user 1",
             email="test.user@example.com",
             phone="9876543210",
-            allowed_campaign_id="83ce7fc7c965433ab2b9717394abe3c1",
-            reason="Testing user should appear only in approved campaign",
+            allowed_campaign_id="",
+            reason="Testing user should be hidden everywhere",
             created_by="internal_admin",
         )
 
@@ -2970,6 +3000,33 @@ class V2ReportingPreservationTests(SimpleTestCase):
         self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_campaign_collateral_v2"]], ["27"])
         self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_collateral_transaction_v2"]], ["27"])
         self.assertEqual([row["old_collateral_id"] for row in filtered["inclinic_share_event_v2"]], ["27"])
+
+    def test_raw_visibility_keep_only_filters_inclinic_transactions(self):
+        rules = [
+            {
+                "system_key": "inclinic",
+                "schema_name": "raw_v2_inclinic",
+                "table_name": "inclinic_collateral_transaction_v2",
+                "entity_type": "transaction",
+                "record_identifier_normalized": normalize_record_identifier("TX-2"),
+                "rule_mode": "keep_only",
+                "is_active": True,
+            }
+        ]
+        source = {
+            "inclinic_collateral_transaction_v2": [
+                {"old_transaction_id": "TX-1"},
+                {"old_transaction_id": "TX-2"},
+            ],
+            "inclinic_share_event_v2": [
+                {"old_id": "SHARE-1"},
+            ],
+        }
+
+        filtered = v2_reporting._apply_raw_visibility_to_source(source, rules)
+
+        self.assertEqual([row["old_transaction_id"] for row in filtered["inclinic_collateral_transaction_v2"]], ["TX-2"])
+        self.assertEqual([row["old_id"] for row in filtered["inclinic_share_event_v2"]], ["SHARE-1"])
 
     def test_raw_visibility_filter_hides_pe_content_hierarchy(self):
         rules = [

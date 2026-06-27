@@ -4058,6 +4058,25 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
     active_person_rules = [rule for rule in person_rules if rule.get("is_active")]
     raw_visibility_rules = list_raw_visibility_rules(include_inactive=True)
     active_raw_visibility_rules = [rule for rule in raw_visibility_rules if rule.get("is_active")]
+    raw_visibility_table_options = list_raw_visibility_table_options()
+    raw_visibility_system_options = list(
+        {
+            option["system_key"]: {
+                "system_key": option["system_key"],
+                "system_label": option["system_label"],
+            }
+            for option in raw_visibility_table_options
+        }.values()
+    )
+    raw_visibility_entity_options = list(
+        {
+            option["entity_type"]: {
+                "entity_type": option["entity_type"],
+                "entity_label": option["entity_label"],
+            }
+            for option in raw_visibility_table_options
+        }.values()
+    )
     return render(
         request,
         "dashboard/internal_data_admin/privacy.html",
@@ -4068,7 +4087,9 @@ def internal_data_admin_privacy(request: HttpRequest) -> HttpResponse:
             "active_person_rules": active_person_rules,
             "raw_visibility_rules": raw_visibility_rules,
             "active_raw_visibility_rules": active_raw_visibility_rules,
-            "raw_visibility_table_options": list_raw_visibility_table_options(),
+            "raw_visibility_table_options": raw_visibility_table_options,
+            "raw_visibility_system_options": raw_visibility_system_options,
+            "raw_visibility_entity_options": raw_visibility_entity_options,
             "is_allowlist_active": bool(active_rules),
             "is_person_privacy_active": bool(active_person_rules),
             "is_raw_visibility_active": bool(active_raw_visibility_rules),

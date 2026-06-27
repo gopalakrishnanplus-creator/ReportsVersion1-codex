@@ -3553,6 +3553,36 @@ def _collateral_uses_campaign_fallback_dates(row: dict[str, Any]) -> bool:
     return bool(start and end and campaign_start and campaign_end and start == campaign_start and end == campaign_end)
 
 
+def _collateral_date_span(row: dict[str, Any]) -> int | None:
+    start = _parse_schedule_date(_collateral_display_start(row))
+    end = _parse_schedule_date(_collateral_display_end(row))
+    if not start or not end or end < start:
+        return None
+    return (end - start).days
+
+
+def _collateral_is_broad_duplicate(row: dict[str, Any], schedule_rows: list[dict[str, Any]]) -> bool:
+    name_key = _normalize_lookup_key(_collateral_display_name(row, ""))
+    start = _parse_schedule_date(_collateral_display_start(row))
+    end = _parse_schedule_date(_collateral_display_end(row))
+    span = _collateral_date_span(row)
+    if not name_key or not start or not end or span is None:
+        return False
+    for other in schedule_rows:
+        if other is row:
+            continue
+        if _normalize_lookup_key(_collateral_display_name(other, "")) != name_key:
+            continue
+        other_start = _parse_schedule_date(_collateral_display_start(other))
+        other_end = _parse_schedule_date(_collateral_display_end(other))
+        other_span = _collateral_date_span(other)
+        if not other_start or not other_end or other_span is None:
+            continue
+        if start <= other_start and end >= other_end and span > other_span and span >= 90:
+            return True
+    return False
+
+
 def _collateral_status_label(row: dict[str, Any]) -> str:
     start = _parse_schedule_date(_collateral_display_start(row))
     end = _parse_schedule_date(_collateral_display_end(row))
@@ -3587,7 +3617,10 @@ def _format_collateral_options(
         if (
             collateral_id != selected_id
             and name_key in names_with_specific_schedule
-            and _collateral_uses_campaign_fallback_dates(row)
+            and (
+                _collateral_uses_campaign_fallback_dates(row)
+                or _collateral_is_broad_duplicate(row, schedule_rows)
+            )
         ):
             continue
         status_label = _collateral_status_label(row)

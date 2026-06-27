@@ -372,6 +372,9 @@ def list_raw_visibility_table_options(system_key: str | None = None) -> list[dic
         enriched["entity_label"] = RAW_VISIBILITY_ENTITY_LABELS.get(enriched["entity_type"], enriched["entity_type"])
         enriched["identifier_help"] = ", ".join(enriched["identifier_fields"])
         enriched["value"] = f"{enriched['system_key']}||{enriched['schema_name']}||{enriched['table_name']}"
+        default_identifier_fields = enriched.get("keep_only_identifier_fields") or enriched["identifier_fields"]
+        enriched["default_identifier_column"] = default_identifier_fields[0]
+        enriched["is_v2_source"] = enriched["schema_name"].startswith("raw_v2_")
         enriched["column_options"] = [
             {
                 "value": field,
@@ -418,14 +421,21 @@ def ensure_campaign_privacy_table() -> None:
                 email_normalized TEXT NOT NULL DEFAULT '',
                 phone TEXT NOT NULL DEFAULT '',
                 phone_normalized TEXT NOT NULL DEFAULT '',
-                allowed_campaign_id TEXT NOT NULL,
-                allowed_campaign_id_normalized TEXT NOT NULL,
+                allowed_campaign_id TEXT NOT NULL DEFAULT '',
+                allowed_campaign_id_normalized TEXT NOT NULL DEFAULT '',
                 reason TEXT NOT NULL DEFAULT '',
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 created_by TEXT NOT NULL DEFAULT '',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
+            """
+        )
+        cursor.execute(
+            f"""
+            ALTER TABLE {_qident(PRIVACY_SCHEMA)}.{_qident(PERSON_PRIVACY_TABLE)}
+            ALTER COLUMN allowed_campaign_id SET DEFAULT '',
+            ALTER COLUMN allowed_campaign_id_normalized SET DEFAULT ''
             """
         )
         cursor.execute(
@@ -560,8 +570,6 @@ def create_person_privacy_rule(
     reason = _clean(reason)
     if not email_normalized and not phone_normalized:
         raise ValueError("Email or phone is required.")
-    if not allowed_campaign_id_normalized:
-        raise ValueError("Allowed campaign ID is required.")
     if len(reason) < 8:
         raise ValueError("A clear reason is required.")
 
@@ -649,16 +657,13 @@ def create_raw_visibility_rule(
     rule_mode = _clean(rule_mode or RAW_VISIBILITY_RULE_MODE_HIDE).lower()
     if rule_mode not in RAW_VISIBILITY_RULE_MODES:
         raise ValueError("Select whether these RAW values should be hidden or kept visible.")
-    if rule_mode == RAW_VISIBILITY_RULE_MODE_KEEP_ONLY and (
-        option["system_key"] != "inclinic" or option["entity_type"] != "collateral"
-    ):
-        raise ValueError("Show-only rules are currently supported for InClinic collateral/content records.")
     if (
         rule_mode == RAW_VISIBILITY_RULE_MODE_KEEP_ONLY
+        and option.get("keep_only_identifier_fields")
         and identifier_column not in option.get("keep_only_identifier_fields", ())
     ):
         keep_only_fields = ", ".join(option.get("keep_only_identifier_fields", ()))
-        raise ValueError(f"Show-only rules for collaterals must use a collateral identity column: {keep_only_fields}.")
+        raise ValueError(f"Show-only rules for this table must use one of these identity columns: {keep_only_fields}.")
     record_identifier = _clean(record_identifier)
     normalized = normalize_record_identifier(record_identifier)
     reason = _clean(reason)
