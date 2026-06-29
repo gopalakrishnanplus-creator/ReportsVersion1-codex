@@ -1289,6 +1289,100 @@ class SapaGrowthLogicTests(SimpleTestCase):
         self.assertEqual(dim_rows[0]["campaign_label"], "Campaign A (Brand A)")
         self.assertEqual(dim_rows[0]["field_rep_id"], "FR1")
 
+    def test_campaign_doctor_dimension_dedupes_v2_and_legacy_same_doctor(self):
+        rows_by_table = {
+            "campaign_campaign": [{"id": "camp-a", "name": "Campaign A", "brand_id": "brand-a", "system_rfa": "true"}],
+            "campaign_brand": [{"id": "brand-a", "name": "Brand A"}],
+            "campaign_fieldrep": [{"id": "fieldrep-1", "brand_supplied_field_rep_id": "FR1", "full_name": "Rep One"}],
+            "campaign_campaignfieldrep": [{"campaign_id": "camp-a", "field_rep_id": "fieldrep-1"}],
+            "campaign_doctor": [
+                {
+                    "id": "doctor-uuid-1",
+                    "doctor_id": "DOC-1",
+                    "legacy_doctor_id": "campaign-row-1",
+                    "full_name": "Doctor One V2",
+                    "_source_table": "doctor_v2",
+                    "created_at": "2026-06-01 08:00:00",
+                },
+                {
+                    "id": "campaign-row-1",
+                    "doctor_id": "DOC-1",
+                    "full_name": "Doctor One Legacy",
+                    "_source_table": "campaign_doctor",
+                    "created_at": "2026-06-01 08:05:00",
+                },
+            ],
+            "campaign_doctorcampaignenrollment": [
+                {
+                    "campaign_id": "camp-a",
+                    "doctor_id": "campaign-row-1",
+                    "registered_by_id": "fieldrep-1",
+                    "registered_at": "2026-06-01 09:00:00",
+                }
+            ],
+            "redflags_doctor": [{"doctor_id": "DOC-1", "first_name": "Doctor", "last_name": "One"}],
+        }
+        replace_calls = []
+
+        with patch("etl.sapa_growth.silver.fetch_table", side_effect=lambda _schema, table: rows_by_table.get(table, [])), patch(
+            "etl.sapa_growth.silver.replace_table",
+            side_effect=lambda schema, table, columns, rows: replace_calls.append((schema, table, columns, list(rows))),
+        ), patch("etl.sapa_growth.silver.active_campaign_privacy_allowlist", return_value=set()), patch(
+            "etl.sapa_growth.silver.active_person_privacy_rules",
+            return_value=[],
+        ), patch("etl.sapa_growth.silver.active_raw_visibility_rules", return_value=[]):
+            sapa_silver.build_silver("run-1")
+
+        dim_call = next(call for call in replace_calls if call[1] == "dim_doctor_clinic")
+        dim_rows = dim_call[3]
+        self.assertEqual(len(dim_rows), 1)
+        self.assertEqual(dim_rows[0]["source_doctor_id"], "DOC-1")
+        self.assertEqual(dim_rows[0]["campaign_key"], "camp-a")
+        self.assertEqual(dim_rows[0]["field_rep_id"], "FR1")
+        self.assertEqual(dim_rows[0]["has_campaign_source"], "true")
+        self.assertEqual(dim_rows[0]["has_redflags_source"], "true")
+
+    def test_current_v2_enrollments_do_not_backfill_stale_legacy_enrollments_for_same_campaign(self):
+        rows_by_table = {
+            "campaign_campaign": [{"id": "camp-a", "name": "Campaign A", "brand_id": "brand-a", "system_rfa": "true"}],
+            "campaign_brand": [{"id": "brand-a", "name": "Brand A"}],
+            "campaign_fieldrep": [{"id": "fieldrep-1", "brand_supplied_field_rep_id": "FR1", "full_name": "Rep One"}],
+            "campaign_campaignfieldrep": [{"campaign_id": "camp-a", "field_rep_id": "fieldrep-1"}],
+            "campaign_doctor": [
+                {"id": "row-current", "doctor_id": "DOC-CURRENT", "full_name": "Current Doctor"},
+                {"id": "row-deleted", "doctor_id": "DOC-DELETED", "full_name": "Deleted Legacy Doctor"},
+            ],
+            "campaign_doctorcampaignenrollment": [
+                {
+                    "campaign_id": "camp-a",
+                    "doctor_id": "row-current",
+                    "registered_by_id": "fieldrep-1",
+                    "registered_at": "2026-06-01 09:00:00",
+                    "_source_table": "doctor_campaign_enrollment_v2",
+                },
+                {
+                    "campaign_id": "camp-a",
+                    "doctor_id": "row-deleted",
+                    "registered_by_id": "fieldrep-1",
+                    "registered_at": "2026-06-01 09:05:00",
+                    "_source_table": "campaign_doctorcampaignenrollment",
+                },
+            ],
+        }
+        replace_calls = []
+
+        with patch("etl.sapa_growth.silver.fetch_table", side_effect=lambda _schema, table: rows_by_table.get(table, [])), patch(
+            "etl.sapa_growth.silver.replace_table",
+            side_effect=lambda schema, table, columns, rows: replace_calls.append((schema, table, columns, list(rows))),
+        ), patch("etl.sapa_growth.silver.active_campaign_privacy_allowlist", return_value=set()), patch(
+            "etl.sapa_growth.silver.active_person_privacy_rules",
+            return_value=[],
+        ), patch("etl.sapa_growth.silver.active_raw_visibility_rules", return_value=[]):
+            sapa_silver.build_silver("run-1")
+
+        dim_call = next(call for call in replace_calls if call[1] == "dim_doctor_clinic")
+        self.assertEqual([row["source_doctor_id"] for row in dim_call[3]], ["DOC-CURRENT"])
+
     def test_dashboard_pdf_export_returns_pdf_attachment(self):
         request = RequestFactory().post(
             "/sapa-growth/export/dashboard.pdf",

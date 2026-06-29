@@ -269,10 +269,101 @@ def _norm_id(value: Any) -> str:
     return "".join(ch.lower() for ch in raw if ch.isalnum())
 
 
+def _first_clean(row: dict[str, Any] | None, *fields: str) -> str | None:
+    row = row or {}
+    for field in fields:
+        value = clean_text(row.get(field))
+        if value is not None:
+            return value
+    return None
+
+
+def _row_values(row: dict[str, Any] | None, *fields: str) -> list[str]:
+    row = row or {}
+    values: list[str] = []
+    seen: set[str] = set()
+    for field in fields:
+        value = clean_text(row.get(field))
+        if value and value not in seen:
+            values.append(value)
+            seen.add(value)
+    return values
+
+
 def _campaign_specific_doctor_key(base_key: str, campaign_key: str) -> str:
     if not campaign_key:
         return base_key
     return f"{base_key}::campaign:{campaign_key}"
+
+
+def _doctor_dimension_identity(row: dict[str, Any]) -> tuple[str, str, str]:
+    campaign_token = _norm_id(row.get("campaign_key") or row.get("campaign_id"))
+    doctor_id = _first_clean(row, "source_doctor_id")
+    if doctor_id:
+        return ("doctor_id", campaign_token, doctor_id)
+    email = (_first_clean(row, "canonical_email") or "").lower()
+    if email:
+        return ("email", campaign_token, email)
+    phone = normalize_phone(_first_clean(row, "canonical_phone", "canonical_whatsapp_no", "receptionist_whatsapp_number"))
+    if phone:
+        return ("phone", campaign_token, phone)
+    return ("doctor_key", campaign_token, clean_text(row.get("doctor_key")) or hash_fields(row))
+
+
+def _source_priority(row: dict[str, Any]) -> int:
+    source_table = (clean_text(row.get("_source_table")) or "").lower()
+    if source_table.endswith("_v2"):
+        return 3
+    if source_table == "campaign_doctor":
+        return 2
+    if source_table == "redflags_doctor":
+        return 1
+    return 0
+
+
+def _merge_doctor_dimension_row(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
+    for field, value in incoming.items():
+        if field.startswith("_"):
+            continue
+        if clean_text(existing.get(field)) is None and clean_text(value) is not None:
+            existing[field] = value
+    for flag in ("is_user_created_doctor", "has_campaign_source", "has_redflags_source"):
+        if incoming.get(flag) == "true":
+            existing[flag] = "true"
+    for field in ("first_seen_at", "campaign_registered_at"):
+        incoming_value = clean_text(incoming.get(field))
+        existing_value = clean_text(existing.get(field))
+        if incoming_value and (not existing_value or incoming_value < existing_value):
+            existing[field] = incoming_value
+    latest = clean_text(incoming.get("latest_seen_at"))
+    if latest and latest > (clean_text(existing.get("latest_seen_at")) or ""):
+        existing["latest_seen_at"] = latest
+    if incoming.get("_dq_status") == "PASS":
+        existing["_dq_status"] = "PASS"
+        existing["_dq_errors"] = ""
+
+
+def _dedupe_doctor_dimension_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    ordered: list[dict[str, Any]] = []
+    sorted_rows = sorted(
+        rows,
+        key=lambda row: (
+            _source_priority(row),
+            clean_text(row.get("campaign_registered_at")) or clean_text(row.get("first_seen_at")) or "",
+        ),
+        reverse=True,
+    )
+    for row in sorted_rows:
+        identity = _doctor_dimension_identity(row)
+        existing = deduped.get(identity)
+        if existing is None:
+            existing = dict(row)
+            deduped[identity] = existing
+            ordered.append(existing)
+            continue
+        _merge_doctor_dimension_row(existing, row)
+    return ordered
 
 
 def _campaign_ids_for_field_rep_login_event(
@@ -289,14 +380,24 @@ def _campaign_ids_for_field_rep_login_event(
     campaign_hint = clean_text(row.get("campaign_id")) or clean_text(meta.get("campaign_id"))
     rep_identity_values = {
         clean_text((rep or {}).get("id")),
+        clean_text((rep or {}).get("current_campaign_fieldrep_id")),
+        clean_text((rep or {}).get("field_rep_uuid")),
         clean_text((rep or {}).get("brand_supplied_field_rep_id")),
+        clean_text((rep or {}).get("current_brand_supplied_field_rep_id")),
         clean_text(row.get("action_key")),
         clean_text(row.get("field_rep_id")),
         clean_text(meta.get("field_rep_id")),
         clean_text(meta.get("brand_supplied_field_rep_id")),
     }
     rep_identity_values = {value for value in rep_identity_values if value}
-    source_rep_id = clean_text((rep or {}).get("id")) or clean_text(row.get("action_key")) or clean_text(row.get("field_rep_id")) or clean_text(meta.get("field_rep_id"))
+    source_rep_id = (
+        clean_text((rep or {}).get("id"))
+        or clean_text((rep or {}).get("current_campaign_fieldrep_id"))
+        or clean_text((rep or {}).get("field_rep_uuid"))
+        or clean_text(row.get("action_key"))
+        or clean_text(row.get("field_rep_id"))
+        or clean_text(meta.get("field_rep_id"))
+    )
 
     def rep_is_assigned(campaign_id: str) -> bool:
         if not rep_identity_values:
@@ -779,78 +880,96 @@ def build_silver(run_id: str) -> dict[str, Any]:
 
     redflag_doctor_by_id = {clean_text(row.get("doctor_id")): row for row in redflag_doctors if clean_text(row.get("doctor_id"))}
     clinic_outcome_by_doctor = {clean_text(row.get("doctor_id")): row for row in clinic_outcomes if clean_text(row.get("doctor_id"))}
-    campaign_doctor_by_row_id = {clean_text(row.get("id")): row for row in campaign_doctors if clean_text(row.get("id"))}
-    brand_by_id = {clean_text(row.get("id")): row for row in brand_rows if clean_text(row.get("id"))}
+    brand_by_id: dict[str, dict[str, Any]] = {}
+    for row in brand_rows:
+        for brand_id in _row_values(row, "id", "legacy_brand_id", "brand_uuid"):
+            brand_by_id[brand_id] = row
     has_rfa_flag_values = any(clean_text(row.get("system_rfa")) is not None for row in campaign_rows)
-    rfa_campaigns = {
-        clean_text(row.get("id")): row
-        for row in campaign_rows
-        if clean_text(row.get("id")) and (not has_rfa_flag_values or _truthy(row.get("system_rfa")))
-    }
+    rfa_campaigns: dict[str, dict[str, Any]] = {}
+    campaign_aliases: dict[str, str] = {}
+    for row in campaign_rows:
+        primary_campaign_id = _first_clean(row, "legacy_campaign_id", "id", "campaign_uuid")
+        if not primary_campaign_id or (has_rfa_flag_values and not _truthy(row.get("system_rfa"))):
+            continue
+        rfa_campaigns[primary_campaign_id] = row
+        for alias in _row_values(row, "id", "legacy_campaign_id", "campaign_uuid"):
+            campaign_aliases[_norm_id(alias)] = primary_campaign_id
+
+    def resolve_campaign_id(value: Any) -> str:
+        raw = clean_text(value)
+        if not raw:
+            return ""
+        return campaign_aliases.get(_norm_id(raw), raw)
+
     if privacy_allowlist:
         rfa_campaigns = {
             campaign_id: row
             for campaign_id, row in rfa_campaigns.items()
             if _sapa_campaign_allowed(campaign_id, privacy_allowlist)
         }
-    field_rep_by_id = {clean_text(row.get("id")): row for row in source_field_rep_rows if clean_text(row.get("id"))}
-    field_rep_by_external = {
-        _norm_id(row.get("brand_supplied_field_rep_id")): row
-        for row in source_field_rep_rows
-        if _norm_id(row.get("brand_supplied_field_rep_id"))
-    }
+    field_rep_by_id: dict[str, dict[str, Any]] = {}
+    field_rep_by_external: dict[str, dict[str, Any]] = {}
+    for row in source_field_rep_rows:
+        for field_rep_id in _row_values(row, "id", "current_campaign_fieldrep_id", "field_rep_uuid"):
+            field_rep_by_id[field_rep_id] = row
+        for external_id in _row_values(row, "brand_supplied_field_rep_id", "current_brand_supplied_field_rep_id"):
+            field_rep_by_external[_norm_id(external_id)] = row
     campaign_rep_ids: dict[str, set[str]] = defaultdict(set)
     campaign_rep_membership_ids: dict[str, set[str]] = defaultdict(set)
     rep_campaign_ids: dict[str, set[str]] = defaultdict(set)
     rep_campaign_assignments: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in campaign_field_rep_rows:
-        campaign_id = clean_text(row.get("campaign_id"))
-        field_rep_id = clean_text(row.get("field_rep_id"))
+        campaign_id = resolve_campaign_id(_first_clean(row, "campaign_id", "legacy_campaign_id", "campaign_uuid"))
+        field_rep_id = _first_clean(row, "field_rep_id", "campaign_fieldrep_id", "field_rep_uuid")
         if not campaign_id or not field_rep_id:
             continue
         if privacy_allowlist and campaign_id not in rfa_campaigns:
             continue
-        campaign_rep_ids[campaign_id].add(field_rep_id)
-        campaign_rep_membership_ids[campaign_id].add(field_rep_id)
+        assignment_rep_ids = set(_row_values(row, "field_rep_id", "campaign_fieldrep_id", "field_rep_uuid", "brand_supplied_field_rep_id"))
+        assignment_rep_ids.add(field_rep_id)
+        campaign_rep_ids[campaign_id].update(assignment_rep_ids)
+        campaign_rep_membership_ids[campaign_id].update(assignment_rep_ids)
         assigned_rep = field_rep_by_id.get(field_rep_id)
-        assigned_rep_brand_id = clean_text((assigned_rep or {}).get("brand_supplied_field_rep_id"))
-        if assigned_rep_brand_id:
-            campaign_rep_membership_ids[campaign_id].add(assigned_rep_brand_id)
-        rep_campaign_ids[field_rep_id].add(campaign_id)
+        assigned_rep_ids = set(_row_values(assigned_rep, "id", "current_campaign_fieldrep_id", "field_rep_uuid"))
+        assigned_rep_brand_ids = set(_row_values(assigned_rep, "brand_supplied_field_rep_id", "current_brand_supplied_field_rep_id"))
+        campaign_rep_ids[campaign_id].update(assigned_rep_ids)
+        campaign_rep_membership_ids[campaign_id].update(assigned_rep_ids | assigned_rep_brand_ids)
         assignment_payload = {
             "campaign_id": campaign_id,
-            "assigned_at": row.get("created_at"),
+            "assigned_at": row.get("assigned_at") or row.get("created_at"),
         }
-        rep_campaign_assignments[field_rep_id].append(assignment_payload)
-        if assigned_rep_brand_id:
-            rep_campaign_ids[assigned_rep_brand_id].add(campaign_id)
-            rep_campaign_assignments[assigned_rep_brand_id].append(assignment_payload)
+        for identity in assignment_rep_ids | assigned_rep_ids | assigned_rep_brand_ids:
+            if not identity:
+                continue
+            rep_campaign_ids[identity].add(campaign_id)
+            rep_campaign_assignments[identity].append(assignment_payload)
 
     doctor_activity_campaign_ids: dict[str, set[str]] = defaultdict(set)
 
     def add_doctor_campaign_evidence(doctor_id: Any, campaign_id: Any) -> None:
         doctor_key = clean_text(doctor_id)
-        campaign_key = clean_text(campaign_id)
+        campaign_key = resolve_campaign_id(campaign_id)
         if doctor_key and campaign_key in rfa_campaigns:
             doctor_activity_campaign_ids[doctor_key].add(campaign_key)
 
     for row in rfa_activity_events:
-        add_doctor_campaign_evidence(row.get("doctor_uuid"), row.get("campaign_uuid"))
+        add_doctor_campaign_evidence(row.get("doctor_uuid"), row.get("campaign_uuid") or row.get("campaign_id"))
     for source_rows in (redflag_submissions, gnd_submissions, followup_rows, metric_rows):
         for row in source_rows:
             add_doctor_campaign_evidence(row.get("doctor_id"), row.get("campaign_id"))
 
     def campaign_meta(campaign_id: Any) -> tuple[str, str]:
-        campaign = rfa_campaigns.get(clean_text(campaign_id)) or {}
-        brand = brand_by_id.get(clean_text(campaign.get("brand_id"))) or {}
-        key = clean_text(campaign.get("id"))
-        campaign_name = clean_text(campaign.get("name"))
-        brand_name = clean_text(brand.get("name"))
+        resolved_campaign_id = resolve_campaign_id(campaign_id)
+        campaign = rfa_campaigns.get(resolved_campaign_id) or {}
+        brand = brand_by_id.get(_first_clean(campaign, "brand_id", "legacy_brand_id", "brand_uuid") or "") or {}
+        key = resolved_campaign_id or _first_clean(campaign, "legacy_campaign_id", "id", "campaign_uuid")
+        campaign_name = _first_clean(campaign, "name", "display_name")
+        brand_name = _first_clean(brand, "name", "display_name")
         label = f"{campaign_name} ({brand_name})" if campaign_name and brand_name else campaign_name or brand_name
         return _campaign_key_label({"campaign_id": key, "campaign_name": label})
 
     def campaign_dates(campaign_id: Any) -> dict[str, str]:
-        campaign = rfa_campaigns.get(clean_text(campaign_id)) or {}
+        campaign = rfa_campaigns.get(resolve_campaign_id(campaign_id)) or {}
         return {
             "campaign_start_date": _empty_text(iso_date(campaign.get("start_date"))),
             "campaign_end_date": _empty_text(iso_date(campaign.get("end_date"))),
@@ -866,7 +985,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
             row.get("campaign_key"),
             row.get("campaign_label"),
         )
-        return any(clean_text(value) == hint or _norm_id(value) == hint_norm for value in candidate_values)
+        return any(clean_text(value) == hint or _norm_id(value) == hint_norm or resolve_campaign_id(value) == resolve_campaign_id(hint) for value in candidate_values)
 
     def resolve_field_rep(field_rep_value: Any, campaign_id: Any = None) -> dict[str, str]:
         raw = clean_text(field_rep_value)
@@ -875,23 +994,38 @@ def build_silver(run_id: str) -> dict[str, Any]:
         if not rep and campaign_rep_set:
             first_rep_id = sorted(campaign_rep_set)[0]
             rep = field_rep_by_id.get(first_rep_id)
-        display_id = clean_text((rep or {}).get("brand_supplied_field_rep_id")) or clean_text((rep or {}).get("id")) or raw or "Unassigned"
+        display_id = _first_clean(rep, "brand_supplied_field_rep_id", "current_brand_supplied_field_rep_id", "id", "current_campaign_fieldrep_id", "field_rep_uuid") or raw or "Unassigned"
         return {
             "field_rep_id": display_id,
-            "field_rep_name": clean_text((rep or {}).get("full_name")) or display_id,
+            "field_rep_name": _first_clean(rep, "full_name", "display_name") or display_id,
             "field_rep_state": clean_text((rep or {}).get("state")) or "",
         }
 
+    v2_enrollment_campaign_ids = {
+        resolve_campaign_id(_first_clean(row, "campaign_id", "legacy_campaign_id", "campaign_uuid"))
+        for row in campaign_enrollments
+        if clean_text(row.get("_source_table")) == "doctor_campaign_enrollment_v2"
+    }
+    v2_enrollment_campaign_ids.discard("")
+    if v2_enrollment_campaign_ids:
+        campaign_enrollments = [
+            row
+            for row in campaign_enrollments
+            if clean_text(row.get("_source_table")) == "doctor_campaign_enrollment_v2"
+            or resolve_campaign_id(_first_clean(row, "campaign_id", "legacy_campaign_id", "campaign_uuid")) not in v2_enrollment_campaign_ids
+        ]
+
     enrollments_by_campaign_doctor_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in campaign_enrollments:
-        campaign_id = clean_text(row.get("campaign_id"))
-        campaign_doctor_id = clean_text(row.get("doctor_id"))
-        if not campaign_id or campaign_id not in rfa_campaigns or not campaign_doctor_id:
+        campaign_id = resolve_campaign_id(_first_clean(row, "campaign_id", "legacy_campaign_id", "campaign_uuid"))
+        campaign_doctor_ids = _row_values(row, "doctor_id", "legacy_doctor_id", "doctor_uuid")
+        if not campaign_id or campaign_id not in rfa_campaigns or not campaign_doctor_ids:
             continue
-        enrollments_by_campaign_doctor_id[campaign_doctor_id].append(row)
+        for campaign_doctor_id in campaign_doctor_ids:
+            enrollments_by_campaign_doctor_id[campaign_doctor_id].append(row)
 
     def campaign_info_from_id(campaign_id: Any, rep_value: Any = None, registered_at: Any = None) -> dict[str, str] | None:
-        campaign_id = clean_text(campaign_id)
+        campaign_id = resolve_campaign_id(campaign_id)
         if not campaign_id or campaign_id not in rfa_campaigns:
             return None
         campaign_key, campaign_label = campaign_meta(campaign_id)
@@ -910,20 +1044,24 @@ def build_silver(run_id: str) -> dict[str, Any]:
         }
 
     def enrollment_campaigns_for_doctor(campaign_row: dict[str, Any], doctor_row: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        row_id = clean_text(campaign_row.get("id"))
-        logical_doctor_id = clean_text(campaign_row.get("doctor_id"))
+        row_id = _first_clean(campaign_row, "id", "legacy_doctor_id", "doctor_uuid")
+        logical_doctor_id = _first_clean(campaign_row, "doctor_id", "legacy_doctor_id", "doctor_uuid")
         fallback_rep_value = (
             campaign_row.get("registered_by_id")
+            or campaign_row.get("registered_by_field_rep_uuid")
             or campaign_row.get("field_rep_id")
             or campaign_row.get("registered_by")
             or (doctor_row or {}).get("field_rep_id")
         )
-        enrollment_keys = [value for value in (row_id, logical_doctor_id) if value]
+        enrollment_keys = _row_values(campaign_row, "id", "doctor_id", "legacy_doctor_id", "doctor_uuid")
         enrollments = []
         seen_enrollment_keys = set()
         for key in enrollment_keys:
             for enrollment in enrollments_by_campaign_doctor_id.get(key, []):
-                dedup_key = (clean_text(enrollment.get("campaign_id")), clean_text(enrollment.get("doctor_id")))
+                dedup_key = (
+                    resolve_campaign_id(_first_clean(enrollment, "campaign_id", "legacy_campaign_id", "campaign_uuid")),
+                    _first_clean(enrollment, "doctor_id", "legacy_doctor_id", "doctor_uuid"),
+                )
                 if dedup_key in seen_enrollment_keys:
                     continue
                 seen_enrollment_keys.add(dedup_key)
@@ -931,14 +1069,14 @@ def build_silver(run_id: str) -> dict[str, Any]:
         output = []
         for enrollment in enrollments:
             info = campaign_info_from_id(
-                enrollment.get("campaign_id"),
-                enrollment.get("registered_by_id") or fallback_rep_value,
+                _first_clean(enrollment, "campaign_id", "legacy_campaign_id", "campaign_uuid"),
+                _first_clean(enrollment, "registered_by_id", "registered_by_field_rep_uuid") or fallback_rep_value,
                 enrollment.get("registered_at") or enrollment.get("created_at"),
             )
             if info:
                 output.append(info)
         if not output:
-            for direct_campaign_id in (campaign_row.get("campaign_id"), campaign_row.get("brand_campaign_id")):
+            for direct_campaign_id in (campaign_row.get("campaign_id"), campaign_row.get("brand_campaign_id"), campaign_row.get("legacy_campaign_id"), campaign_row.get("campaign_uuid")):
                 info = campaign_info_from_id(
                     direct_campaign_id,
                     fallback_rep_value,
@@ -949,7 +1087,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     break
         if output:
             return output
-        if privacy_allowlist:
+        if privacy_allowlist or rfa_campaigns:
             return []
         campaign_key, campaign_label = _campaign_key_label(campaign_row, doctor_row)
         rep_info = resolve_field_rep((doctor_row or {}).get("field_rep_id"))
@@ -1001,11 +1139,10 @@ def build_silver(run_id: str) -> dict[str, Any]:
     included_doctor_ids: set[str] = set()
 
     for campaign_row in campaign_doctors:
-        doctor_id = clean_text(campaign_row.get("doctor_id"))
+        doctor_id = _first_clean(campaign_row, "doctor_id", "legacy_doctor_id", "doctor_uuid", "id")
         doctor_row = redflag_doctor_by_id.get(doctor_id)
-        clinic_outcome_row = clinic_outcome_by_doctor.get(doctor_id)
-        base_doctor_key = canonical_doctor_key(doctor_id, campaign_row.get("id"))
-        first_name, last_name = split_full_name(campaign_row.get("full_name"))
+        base_doctor_key = canonical_doctor_key(doctor_id, _first_clean(campaign_row, "id", "legacy_doctor_id", "doctor_uuid"))
+        first_name, last_name = split_full_name(_first_clean(campaign_row, "full_name", "display_name"))
         if doctor_row:
             first_name = clean_text(doctor_row.get("first_name")) or first_name
             last_name = clean_text(doctor_row.get("last_name")) or last_name
@@ -1016,18 +1153,18 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     "doctor_key": _campaign_specific_doctor_key(base_doctor_key, campaign_key),
                     "source_doctor_id": doctor_id or "",
                     "base_doctor_key": base_doctor_key,
-                    "campaign_doctor_row_id": _empty_text(campaign_row.get("id")),
+                    "campaign_doctor_row_id": _empty_text(_first_clean(campaign_row, "id", "legacy_doctor_id", "doctor_uuid")),
                     "campaign_id": campaign_info["campaign_id"],
                     "campaign_key": campaign_key,
                     "campaign_label": campaign_info["campaign_label"],
                     "campaign_registered_at": _empty_text(iso_datetime(campaign_info.get("registered_at"))),
                     "campaign_start_date": campaign_info["campaign_start_date"],
                     "campaign_end_date": campaign_info["campaign_end_date"],
-                    "canonical_display_name": display_name_from_sources(campaign_row, doctor_row),
+                    "canonical_display_name": _first_clean(campaign_row, "full_name", "display_name") or display_name_from_sources(campaign_row, doctor_row),
                     "first_name": first_name or "",
                     "last_name": last_name or "",
-                    "canonical_email": _empty_text(campaign_row.get("email") or (doctor_row or {}).get("email")),
-                    "canonical_phone": _empty_text(campaign_row.get("phone") or (doctor_row or {}).get("clinic_phone")),
+                    "canonical_email": _empty_text(_first_clean(campaign_row, "email", "primary_email") or (doctor_row or {}).get("email")),
+                    "canonical_phone": _empty_text(_first_clean(campaign_row, "phone", "primary_phone_normalized", "phone_normalized") or (doctor_row or {}).get("clinic_phone")),
                     "canonical_whatsapp_no": _empty_text((doctor_row or {}).get("whatsapp_no")),
                     "receptionist_whatsapp_number": _empty_text((doctor_row or {}).get("receptionist_whatsapp_number")),
                     "clinic_name": _empty_text((doctor_row or {}).get("clinic_name")),
@@ -1051,6 +1188,7 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     "_silver_updated_at": now_iso,
                     "_dq_status": "PASS",
                     "_dq_errors": "",
+                    "_source_table": _empty_text(campaign_row.get("_source_table")),
                 }
             )
         if doctor_id:
@@ -1105,8 +1243,11 @@ def build_silver(run_id: str) -> dict[str, Any]:
                     "_silver_updated_at": now_iso,
                     "_dq_status": "FAIL" if not doctor_id else "PASS",
                     "_dq_errors": "Missing doctor_id in redflags_doctor" if not doctor_id else "",
+                    "_source_table": "redflags_doctor",
                 }
             )
+
+    dim_rows = _dedupe_doctor_dimension_rows(dim_rows)
 
     person_restricted_source_doctor_ids = {
         clean_text(row.get("source_doctor_id"))
@@ -1279,14 +1420,14 @@ def build_silver(run_id: str) -> dict[str, Any]:
 
     def field_rep_display(rep: dict[str, Any] | None, raw_value: str, meta: dict[str, Any] | None = None) -> dict[str, str]:
         meta = meta or {}
-        source_id = clean_text((rep or {}).get("id")) or raw_value
-        display_id = clean_text((rep or {}).get("brand_supplied_field_rep_id")) or source_id or "Unassigned"
+        source_id = _first_clean(rep, "id", "current_campaign_fieldrep_id", "field_rep_uuid") or raw_value
+        display_id = _first_clean(rep, "brand_supplied_field_rep_id", "current_brand_supplied_field_rep_id") or source_id or "Unassigned"
         return {
             "source_field_rep_id": source_id or display_id,
             "field_rep_id": display_id,
-            "field_rep_name": clean_text((rep or {}).get("full_name")) or clean_text(meta.get("field_rep_name")) or display_id,
+            "field_rep_name": _first_clean(rep, "full_name", "display_name") or clean_text(meta.get("field_rep_name")) or display_id,
             "state": clean_text((rep or {}).get("state")) or "",
-            "field_rep_email": clean_text(meta.get("email")) or "",
+            "field_rep_email": clean_text(meta.get("email")) or _first_clean(rep, "primary_email") or "",
             "login_method": clean_text(meta.get("login_method")) or "",
             "user_agent": clean_text(meta.get("user_agent")) or "",
         }
